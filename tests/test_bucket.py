@@ -5,6 +5,7 @@ import json
 from unittest import mock
 from .common import *
 
+
 class TestBucket(TosTestCase):
     @mock.patch('requests.Session.request')
     def test_create_bucket(self, mock_request):
@@ -23,26 +24,26 @@ class TestBucket(TosTestCase):
     @mock.patch('requests.Session.request')
     def test_list_buckets(self, mock_request):
         mock_data = {
-           'Owner':{
-               'ID':'id-test',
-               'Name':'name-test'
-           },
-           'Buckets':[
-               {
-                   'Name':'bkt1',
-                   'Location': self.location,
-                   'CreationDate':self.date,
-                   'ExtranetEndpoint': 'tos-ext.volces.com',
-                   'IntranetEndpoint': 'tos-int.volces.com'
-               },
-               {
-                   'Name': 'bkt2',
-                   'Location': self.location,
-                   'CreationDate': self.date,
-                   'ExtranetEndpoint': 'tos-ext.volces.com',
-                   'IntranetEndpoint': 'tos-int.volces.com'
-               }
-           ]
+            'Owner': {
+                'ID': 'id-test',
+                'Name': 'name-test'
+            },
+            'Buckets': [
+                {
+                    'Name': 'bkt1',
+                    'Location': self.location,
+                    'CreationDate': self.date,
+                    'ExtranetEndpoint': 'tos-ext.volces.com',
+                    'IntranetEndpoint': 'tos-int.volces.com'
+                },
+                {
+                    'Name': 'bkt2',
+                    'Location': self.location,
+                    'CreationDate': self.date,
+                    'ExtranetEndpoint': 'tos-ext.volces.com',
+                    'IntranetEndpoint': 'tos-int.volces.com'
+                }
+            ]
         }
         mock_request.return_value = MockResponse(body=json.dumps(mock_data))
 
@@ -61,6 +62,18 @@ class TestBucket(TosTestCase):
         self.assertEqual(res.bucket_list[1].creation_date, self.date)
         self.assertEqual(res.bucket_list[1].extranet_endpoint, 'tos-ext.volces.com')
         self.assertEqual(res.bucket_list[1].intranet_endpoint, 'tos-int.volces.com')
+
+        mock_data = {
+            'Owner': {
+                'ID': 'id-test',
+                'Name': 'name-test'
+            }
+        }
+        mock_request.return_value = MockResponse(body=json.dumps(mock_data))
+        res = self.client.list_buckets()
+        self.assertEqual(res.owner.id, 'id-test')
+        self.assertEqual(res.owner.name, 'name-test')
+        self.assertEqual(len(res.bucket_list), 0)
 
     @mock.patch('requests.Session.request')
     def test_delete_bucket(self, mock_request):
