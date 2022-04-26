@@ -15,7 +15,8 @@ def convert_list_buckets_result(resp):
         get_value(data['Owner'], 'Name'),
     )
 
-    for bkt in data['Buckets']:
+    bkt_list = get_value(data, 'Buckets') or []
+    for bkt in bkt_list:
         result.bucket_list.append(BucketInfo(
             get_value(bkt, 'Name'),
             get_value(bkt, 'Location'),
