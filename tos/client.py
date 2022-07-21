@@ -1,43 +1,56 @@
 # -*- coding: utf-8 -*-
-import requests
-import hashlib
 import base64
-import logging
 import functools
+import hashlib
 import json
-import platform
-from . import exceptions
-from tos.__version__ import __version__
+import logging
+import warnings
+from datetime import datetime
+from hashlib import sha256
+from typing import Dict
+from typing import IO
+from typing import Union
+from urllib.parse import quote
 
-from .models import RequestResult, HeadBucketResult, CreateBucketResult, HeadObjectResult, \
-    PutObjectResult, GetObjectResult, AppendObjectResult
+import requests
+from deprecated import deprecated
+from requests.structures import CaseInsensitiveDict
+
+from tos.__version__ import __version__
+from . import exceptions
+from .consts import CONNECT_TIMEOUT, PAYLOAD_BUFFER, EMPTY_SHA256_HASH, GMT_DATE_FORMAT
 from .convertor import convert_list_buckets_result, convert_list_objects_result, convert_list_object_versions_result, \
     convert_list_multipart_uploads_result, convert_list_parts_result, convert_create_multipart_upload_result, \
     convert_upload_part_copy_result, convert_complete_multipart_upload_result, convert_copy_object_result, \
     convert_get_object_acl_result, convert_delete_objects_result
-from .utils import to_bytes, to_str, get_value, get_content_type
 from .http import Request, Response
-
-from .consts import CONNECT_TIMEOUT, PAYLOAD_BUFFER, EMPTY_SHA256_HASH, GMT_DATE_FORMAT
-
-from hashlib import sha256
-from urllib.parse import quote
-
-from typing import IO
-from typing import Union
-from typing import Dict
-from datetime import datetime
-from requests.structures import CaseInsensitiveDict
+from .models import RequestResult, HeadBucketResult, CreateBucketResult, HeadObjectResult, \
+    PutObjectResult, GetObjectResult, AppendObjectResult
+from .utils import to_bytes, to_str, get_value, get_content_type
 
 logger = logging.getLogger(__name__)
 
 USER_AGENT = 'volc-tos-sdk-python/{0}'.format(__version__)
 
+REGION_MAP = {'cn-beijing': 'tos-cn-beijing.volces.com', 'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
+              'cn-shanghai': 'tos-cn-shanghai.volces.com'}
+
+
+def _is_valid_region(region: str):
+    return region == 'cn-beijing' or region == 'cn-guangzhou' or region == 'cn-shanghai'
+
+
+def _if_map(region: str, endpoint: str):
+    if _is_valid_region(region):
+        return REGION_MAP[region]
+    else:
+        return endpoint
+
 
 class TosClient():
     def __init__(self, auth, endpoint, connect_timeout=None, connection_pool_size=10, recognize_content_type=True):
         self.auth = auth
-        self.endpoint = self._format_endpoint(endpoint)
+        self.endpoint = self._format_endpoint(_if_map(auth.region, endpoint))
         self.host = self._get_host(endpoint)
         self.scheme = self._get_scheme(endpoint)
         self.timeout = connect_timeout or CONNECT_TIMEOUT
@@ -49,6 +62,7 @@ class TosClient():
         self.session.mount('https://', requests.adapters.HTTPAdapter(pool_connections=connection_pool_size,
                                                                      pool_maxsize=connection_pool_size))
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def generate_presigned_url(self, Method: str, Bucket: str = None, Key: str = None, Params: Dict = None,
                                ExpiresIn: int = None):
         """
@@ -60,6 +74,7 @@ class TosClient():
         :param: HttpMethod: HTTP 方法， 如'GET', 'PUT' 等
         :return: 带签名的url
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         key = to_str(Key)
         params = Params or {}
         req = Request(
@@ -71,6 +86,7 @@ class TosClient():
         )
         return self.auth._sign_url(req, ExpiresIn)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def create_bucket(self, Bucket: str, ACL: str = None, GrantFullControl: str = None, GrantRead: str = None,
                       GrantReadACP: str = None, GrantWrite: str = None, GrantWriteACP: str = None):
         """
@@ -86,6 +102,7 @@ class TosClient():
 
         :return: CreateBucketResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
         if ACL:
             headers['x-tos-acl'] = ACL
@@ -106,6 +123,7 @@ class TosClient():
             'create_bucket, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return CreateBucketResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def delete_bucket(self, Bucket: str):
         """
         删除指定bucket，bucket内不能有对象及分片数据
@@ -113,33 +131,39 @@ class TosClient():
 
         :return: RequestResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, method='DELETE')
         logger.info(
             'delete_bucket, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return RequestResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def head_bucket(self, Bucket: str):
         """
         获取指定bucket信息
         :param Bucket: 桶名
         :return: Response
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, method='HEAD')
         logger.info(
             'head_bucket, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return HeadBucketResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def list_buckets(self):
         """
         列举用户的bucket
 
         :return: ListBucketResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(method='GET')
         logger.info(
             'list_buckets, req id: {0}, status code: {1}'.format(resp.request_id, resp.status))
         return convert_list_buckets_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def list_objects(self, Bucket: str, Delimiter: str = None, EncodingType: str = None, Marker: str = None,
                      MaxKeys: int = None, Prefix: str = None):
         """
@@ -153,6 +177,7 @@ class TosClient():
 
         :return: ListObjectsResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {}
         if Delimiter:
             params['delimiter'] = Delimiter
@@ -170,6 +195,7 @@ class TosClient():
             'list_objects, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return convert_list_objects_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def list_object_versions(self, Bucket: str, Delimiter: str = None, EncodingType: str = None, KeyMarker: str = None,
                              MaxKeys: int = None, Prefix: str = None, VersionIdMarker: str = None):
         """
@@ -183,6 +209,7 @@ class TosClient():
         :param VersionIdMarker: 版本号分页标志
         :return: ListObjectVersionsResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {'versions': ''}
         if Delimiter:
             params['delimiter'] = Delimiter
@@ -203,6 +230,7 @@ class TosClient():
                                                                                       resp.status))
         return convert_list_object_versions_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def list_multipart_uploads(self, Bucket: str, Delimiter: str = None, EncodingType: str = None,
                                KeyMarker: str = None, MaxUploads: int = None, Prefix: str = None,
                                UploadIdMarker: str = None):
@@ -218,6 +246,7 @@ class TosClient():
 
         :return: ListMultipartUploadsResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {'uploads': ''}
         if Delimiter:
             params['delimiter'] = Delimiter
@@ -238,6 +267,7 @@ class TosClient():
                                                                                         resp.status))
         return convert_list_multipart_uploads_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def list_parts(self, Bucket: str, Key: str, UploadId: str, MaxParts: int = None, PartNumberMarker: int = None):
         """
         列举已经上传的分片
@@ -249,6 +279,7 @@ class TosClient():
 
         :return: ListPartsResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {'uploadId': UploadId}
         if MaxParts:
             params['max-parts'] = MaxParts
@@ -260,6 +291,7 @@ class TosClient():
             Bucket, Key, resp.request_id, resp.status))
         return convert_list_parts_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def abort_multipart_upload(self, Bucket: str, Key: str, UploadId: str):
         """
         取消分片上传
@@ -269,12 +301,14 @@ class TosClient():
 
         :return: RequestResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, key=Key, method='DELETE', params={'uploadId': UploadId})
         logger.info(
             'abort_multipart_upload, bucket: {0}, key: {1}, uploadId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, UploadId, resp.request_id, resp.status))
         return RequestResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def create_multipart_upload(self, Bucket: str, Key: str, ACL: str = None, CacheControl: str = None,
                                 ContentDisposition: str = None, ContentEncoding: str = None,
                                 ContentLanguage: str = None, ContentType: str = None, Expires: datetime = None,
@@ -304,6 +338,7 @@ class TosClient():
 
         :return: CreateMultipartUploadResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
         if Metadata:
             for k in Metadata:
@@ -350,6 +385,7 @@ class TosClient():
                 Bucket, Key, resp.request_id, resp.status))
         return convert_create_multipart_upload_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def upload_part(self, Bucket: str, Key: str, PartNumber: int, UploadId: str, Body: Union[bytes, IO] = None):
         """
         上传分片
@@ -361,6 +397,7 @@ class TosClient():
 
         :return: PutObjectResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, key=Key, method='PUT', params={'uploadId': UploadId, 'partNumber': PartNumber},
                          data=Body)
         logger.info(
@@ -368,6 +405,7 @@ class TosClient():
                 Bucket, Key, UploadId, PartNumber, resp.request_id, resp.status))
         return PutObjectResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def upload_part_copy(self, Bucket: str, CopySource: Union[str, Dict], Key: str, PartNumber: int, UploadId: str,
                          CopySourceIfMatch: str = None, CopySourceIfModifiedSince: datetime = None,
                          CopySourceIfNoneMatch: str = None, CopySourceIfUnmodifiedSince: datetime = None,
@@ -387,6 +425,7 @@ class TosClient():
 
         :return: UploadPartCopyResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
         if isinstance(CopySource, str):
             headers['x-tos-copy-source'] = CopySource
@@ -415,6 +454,7 @@ class TosClient():
                 Bucket, Key, UploadId, PartNumber, resp.request_id, resp.status))
         return convert_upload_part_copy_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def complete_multipart_upload(self, Bucket: str, Key: str, UploadId: str, MultipartUpload: Dict = None):
         """
         合并分片
@@ -432,6 +472,7 @@ class TosClient():
 
         :return: CompleteMultipartUploadResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         data = json.dumps(MultipartUpload)
         resp = self._req(bucket=Bucket, key=Key, method='POST', params={'uploadId': UploadId}, data=data)
         logger.info(
@@ -439,6 +480,7 @@ class TosClient():
                 Bucket, Key, UploadId, resp.request_id, resp.status))
         return convert_complete_multipart_upload_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def put_object(self, Bucket: str, Key: str, ACL: str = None, Body: Union[bytes, IO] = None,
                    CacheControl: str = None, ContentDisposition: str = None, ContentEncoding: str = None,
                    ContentMD5: str = None, ContentLanguage: str = None, ContentType: str = None,
@@ -470,6 +512,7 @@ class TosClient():
 
         :return: PutObjectResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
         if Metadata:
             for k in Metadata:
@@ -519,6 +562,7 @@ class TosClient():
                 Bucket, Key, resp.request_id, resp.status))
         return PutObjectResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def get_object(self, Bucket: str, Key: str, IfMatch: str = None, IfModifiedSince: datetime = None,
                    IfNoneMatch: str = None, IfUnmodifiedSince: datetime = None, Range: str = None,
                    ResponseCacheControl: str = None, ResponseContentDisposition: str = None,
@@ -547,6 +591,7 @@ class TosClient():
 
         :return: RequestResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
         if IfMatch:
             headers['If-Match'] = IfMatch
@@ -589,6 +634,7 @@ class TosClient():
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return GetObjectResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def head_object(self, Bucket: str, Key: str, IfMatch: str = None, IfModifiedSince: datetime = None,
                     IfNoneMatch: str = None, IfUnmodifiedSince: datetime = None, Range: str = None,
                     VersionId: str = None, SSECustomerAlgorithm: str = None, SSECustomerKey: str = None,
@@ -609,6 +655,7 @@ class TosClient():
 
         :return: HeadObjectResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
         if IfMatch:
             headers['If-Match'] = IfMatch
@@ -636,6 +683,7 @@ class TosClient():
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return HeadObjectResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def delete_object(self, Bucket: str, Key: str, VersionId: str = None):
         """
         删除对象
@@ -645,6 +693,7 @@ class TosClient():
 
         :return: RequestResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {}
         if VersionId:
             params = {'versionId': VersionId}
@@ -654,6 +703,7 @@ class TosClient():
                 Bucket, Key, resp.request_id, resp.status))
         return RequestResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def copy_object(self, Bucket: str, CopySource: Union[str, Dict], Key: str, ACL: str = None,
                     CacheControl: str = None,
                     ContentDisposition: str = None, ContentEncoding: str = None, ContentLanguage: str = None,
@@ -692,6 +742,7 @@ class TosClient():
 
         :return: CopyObjectResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         headers = {}
 
         if isinstance(CopySource, str):
@@ -755,6 +806,7 @@ class TosClient():
                                                                                        resp.status))
         return convert_copy_object_result(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def append_object(self, Bucket: str, Key: str, Offset: str, ACL: str = None, Body: Union[bytes, IO] = None,
                       CacheControl: str = None, ContentDisposition: str = None, ContentEncoding: str = None,
                       ContentMD5: str = None, ContentLanguage: str = None, ContentType: str = None,
@@ -786,6 +838,7 @@ class TosClient():
 
         :return: AppanedObjectResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {'append': ''}
         params['offset'] = Offset
         headers = {}
@@ -837,6 +890,7 @@ class TosClient():
                 Bucket, Key, resp.request_id, resp.status))
         return AppendObjectResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def put_object_acl(self, Bucket: str, Key: str, ACL: str = None, AccessControlPolicy: Dict = None,
                        GrantFullControl: str = None, GrantRead: str = None, GrantReadACP: str = None,
                        GrantWrite: str = None, GrantWriteACP: str = None, VersionId: str = None):
@@ -872,6 +926,7 @@ class TosClient():
 
         :return: RequestResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {'acl': ''}
         if VersionId:
             params['versionId'] = VersionId
@@ -901,6 +956,7 @@ class TosClient():
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return RequestResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def get_object_acl(self, Bucket: str, Key: str, VersionId: str = None):
         """
         获取对象的acl
@@ -909,6 +965,7 @@ class TosClient():
         :param VersionId: 版本号
         :return: GetObjectAclResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         params = {'acl': ''}
         if VersionId:
             params['versionId'] = VersionId
@@ -918,7 +975,8 @@ class TosClient():
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return convert_get_object_acl_result(resp)
 
-    def set_object_metadata(self, Bucket: str, Key: str, ObjectMetadata: Dict={}):
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
+    def set_object_metadata(self, Bucket: str, Key: str, ObjectMetadata: Dict = {}):
         """
         设置对象元数据
         :param Bucket: 桶名
@@ -926,11 +984,14 @@ class TosClient():
         :param ObjectMetadata: 要修改的元数据
         :return:
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, key=Key, method='Post', headers=ObjectMetadata, params={'metadata': ''})
         logger.info(
-            'set_object_metadata, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
+            'set_object_metadata, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id,
+                                                                                     resp.status))
         return RequestResult(resp)
 
+    @deprecated(version='2.1.0', reason="please use TosClientV2")
     def delete_objects(self, Bucket: str, Delete: Dict):
         """
         批量删除对象
@@ -947,6 +1008,7 @@ class TosClient():
 
         :return: DeleteObjectsResult
         """
+        warnings.warn("please use TosClientV2", DeprecationWarning)
         data = json.dumps(Delete)
 
         headers = {}
@@ -958,7 +1020,7 @@ class TosClient():
 
     def _format_endpoint(self, endpoint):
         if not endpoint.startswith('http://') and not endpoint.startswith('https://'):
-            return 'http://' + endpoint
+            return 'https://' + endpoint
         else:
             return endpoint
 

@@ -2,10 +2,10 @@ import tos
 
 ak = "your ak"
 sk = "your sk"
-endpoint = "endpoint"
-region = 'region'
-bucket_name = "bucket"
-key_name = "key"
+endpoint = "boe-official-test.volces.com"
+region = "cn-north-3"
+bucket_name = "sun-1"
+key_name = "test_key"
 
 client = tos.TosClient(tos.Auth(ak, sk, region), endpoint)
 try:
