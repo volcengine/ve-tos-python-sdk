@@ -8,12 +8,13 @@ TOS Python SDK为Python开发者提供了访问火山引擎对象存储服务TOS
 
 SDK提供了针对桶、对象操作的示例代码，方便使用者参考使用。
 
-| **示例代码**         | **示例说明**                                                 |
-| -------------------- | ------------------------------------------------------------ |
-| bucket_basic.py      | 创建桶，列举用户桶，获取桶信息和删桶等                       |
-| object_basic.py      | 创建桶，上传对象，下载对象，查看对象信息，列举对象，删除对象等 |
-| multipart_basic.py   | 多段上传对象，包括初始化、上传、合并多段，取消分片上传，列举分片任务和已经上传的分片等 |
-
+| **示例代码**         | **示例说明**                                    |
+| -------------------- |---------------------------------------------|
+| bucket_v2.py      | 创建桶，列举用户桶，获取桶信息和删桶等                         |
+| object_v2.py       | 创建桶，上传对象，下载对象，查看对象信息，列举对象，删除对象等             |
+| object_v2_extra.py   | 包括设置和获取用户自定义元数据、拷贝对象、追加上传对象等                |
+| multipart_v2.py   | 多段上传对象，包括初始化、上传、合并多段，取消分片上传，列举分片任务和已经上传的分片等 |
+| upload.py   | 断点续传上传                                      |
 
 # 快速入门
 
@@ -26,12 +27,15 @@ SDK提供了针对桶、对象操作的示例代码，方便使用者参考使�
 TOS Python客户端初始化，提供了一系列接口用来与TOS服务进行交互，用来管理桶和对象等TOS上的资源。初始化客户端时，需要带上accesskey，secretkey，endpoint和region。初始化代码如下：
 
 ```python
-ak = "Your Access Key"
-sk = "Your Secret Key"
+import tos
+
+ak = "your access key"
+sk = "your secret key"
 endpoint = "your endpoint"
-region = "your bucket's region"
-# 创建 TosClient 实例
-client = tos.TosClient(tos.Auth(ak, sk, region), endpoint)
+region = "your region"
+bucket_name = "your bucket name"
+object_key = "your object key"
+client = tos.TosClientV2(ak, sk, endpoint, region)  
 ```
 
 ## 创建桶
@@ -40,8 +44,8 @@ client = tos.TosClient(tos.Auth(ak, sk, region), endpoint)
 
 ```python
 # 创建桶
-resp = client.create_bucket(Bucket=bucket_name)
-assert resp.status == 200                                
+resp = client.create_bucket(bucket_name)
+assert resp.status_code == 200                                
 ```
 
 ## 上传对象
@@ -50,8 +54,8 @@ assert resp.status == 200
 
 ```python
 # 调用 put_object 将对象上传到桶中                     
-resp = client.put_object(Bucket=bucket_name, Key=key_name, Body="123")
-assert resp.status == 200       
+resp = client.put_object(bucket_name, key_name, content="123")
+assert resp.status_code == 200       
 ```
 ## 下载对象
 
@@ -59,8 +63,8 @@ assert resp.status == 200
 
 ```python
 # 调用 get_object 接口从桶中获取对象
-resp = client.get_object(Bucket=bucket_name, Key=key_name)
-assert resp.status == 200
+resp = client.get_object(bucket_name, key_name)
+assert resp.status_code == 200
 ```
 
 ## 删除对象
@@ -69,10 +73,12 @@ assert resp.status == 200
 
 ```python
 # 调用 put_object 将对象上传到桶中                     
-resp = client.put_object(Bucket=bucket_name, Key=key_name, Body="123")
-assert resp.status == 200   
+resp = client.put_object(bucket_name, key_name, content="123")
+assert resp.status_code == 200   
 # 调用 delete_object 从桶中删除对象
-resp = client.delete_object(Bucket=bucket_name, Key=key_name)
-assert resp.status == 204
+resp = client.delete_object(bucket_name, key_name)
+assert resp.status_code == 204
 ```
 
+## License
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.html)

@@ -8,7 +8,9 @@ from setuptools import find_packages, setup
 REQUIRES = [
     'six>=1.11.0,<2.0.0',
     'requests>=2.19.1,<3.0.0',
-    'pytz>=2013.6'
+    'pytz>=2013.6',
+    'crcmod>=1.7',
+    'Deprecated>=1.2.13'
 ]
 
 here = os.path.abspath(os.path.dirname(__file__))
@@ -23,7 +25,7 @@ with open('README.md', 'rb') as f:
 setup(
     name='tos',
     version=about['__version__'],
-    description='Volc TOS (Tinder Storage Service) SDK',
+    description='Volc TOS (Tinder Object Storage) SDK',
     long_description=readme,
     url='https://www.volcengine.com/',
     classifiers=[

@@ -5,6 +5,9 @@ import unittest
 
 from requests.structures import CaseInsensitiveDict
 
+from tests.test_v2_bucker import random_string
+
+
 class TosTestCase(unittest.TestCase):
     def __init__(self, *args, **kwargs):
         super(TosTestCase, self).__init__(*args, **kwargs)
@@ -35,3 +38,17 @@ class MockResponse():
         def generate():
             yield self.body
         return generate()
+
+
+def random_bytes(n):
+    return to_bytes(random_string(n))
+
+
+def to_bytes(data):
+    """若输入为str（即unicode），则转为utf-8编码的bytes；其他则原样返回"""
+    if isinstance(data, str):
+        return data.encode(encoding='utf-8')
+    else:
+        return data
+
+
