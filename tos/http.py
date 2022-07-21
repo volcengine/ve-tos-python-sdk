@@ -21,7 +21,6 @@ class Response(object):
         self.status = resp.status_code
         self.headers = CaseInsensitiveDict(resp.headers)
         self.request_id = self.headers.get('x-tos-request-id', '')
-
         self._all_read = False
 
     def __iter__(self):

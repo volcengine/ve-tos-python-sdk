@@ -11,6 +11,7 @@ region = 'region'
 bucket_name = "bucket"
 key_name = "key"
 
+
 def get_federation_credential():
     global count
     count += 1
