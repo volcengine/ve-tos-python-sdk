@@ -3,6 +3,7 @@ import datetime
 import hashlib
 import os
 import unittest
+from io import StringIO
 
 from tests.common import random_bytes
 from tests.test_v2_bucker import random_string
@@ -45,11 +46,11 @@ class TestObject(unittest.TestCase):
         put_object_out = self.client.put_object(bucket_name, key=key, content=content)
         self.assertTrue(len(put_object_out.etag) > 0)
         self.assertTrue(len(put_object_out.id2) > 0)
-        self.assertTrue(len(put_object_out.hash_crc64_ecma) > 0)
+        self.assertTrue(put_object_out.hash_crc64_ecma > 0)
 
         head_object_out = self.client.head_object(bucket_name, key)
         self.assertTrue(len(head_object_out.etag) > 0)
-        self.assertTrue(len(head_object_out.hash_crc64_ecma) > 0)
+        self.assertTrue(head_object_out.hash_crc64_ecma > 0)
         self.assertTrue(len(head_object_out.meta) == 0)
         self.assertTrue(len(head_object_out.object_type) > 0)
         self.assertTrue(head_object_out.last_modified is not None)
@@ -95,6 +96,14 @@ class TestObject(unittest.TestCase):
 
         self.client.delete_object(bucket_name, key)
         self.client.delete_bucket(bucket_name)
+
+    def test_with_string_io(self):
+        io = StringIO('a')
+        io.seek(0)
+        self.client.create_bucket("string-io")
+        self.client.put_object(bucket='string-io', key="2", content=io)
+        self.client.delete_object(bucket='string-io', key="2")
+        self.client.delete_bucket(bucket='string-io')
 
     def test_put_with_options(self):
         bucket_name = self.bucket_name + '-put-with-options'
@@ -146,11 +155,8 @@ class TestObject(unittest.TestCase):
         self.client.create_bucket(bucket_name)
         put_object_out = self.client.put_object(bucket_name, key=key, content=content)
         get_object_out = self.client.get_object(bucket_name, key)
-        for i in get_object_out:
-            print(1, i)
-
-        self.assertEqual(get_object_out.client_crc, 0)
-        self.assertEqual(get_object_out.hash_crc64_ecma, '0')
+        # self.assertEqual(get_object_out.client_crc, 0)
+        self.assertEqual(get_object_out.hash_crc64_ecma, 0)
 
         self.client.delete_object(bucket_name, key)
         self.client.delete_bucket(bucket_name)
@@ -363,7 +369,7 @@ class TestObject(unittest.TestCase):
         object = []
         object.append(Delete(key_1, "", False, ""))
         object.append(Delete(key_1, "", False, ""))
-        delete_out = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=True)
+        delete_out = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
 
         self.client.delete_object(bucket_name, key_1)
         self.client.delete_object(bucket_name, key_2)
@@ -508,8 +514,8 @@ class TestObject(unittest.TestCase):
 
         self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
         append_object_out = self.client.append_object(bucket_name, key, 0, content=content)
-        self.assertTrue(len(append_object_out.hash_crc64_ecma) > 0)
-        self.assertEqual(append_object_out.next_append_offset, '1024')
+        self.assertTrue(append_object_out.hash_crc64_ecma > 0)
+        self.assertEqual(append_object_out.next_append_offset, 1024)
         self.client.delete_object(bucket_name, key)
 
         key = self.random_key('.js')
@@ -545,8 +551,8 @@ class TestObject(unittest.TestCase):
                                                       meta=meta,
                                                       website_redirect_location='/test',
                                                       )
-        self.assertTrue(len(append_object_out.hash_crc64_ecma) > 0)
-        self.assertEqual(append_object_out.next_append_offset, '1024')
+        self.assertTrue(append_object_out.hash_crc64_ecma > 0)
+        self.assertEqual(append_object_out.next_append_offset, 1024)
         get_object_out = self.client.get_object(bucket_name, key)
         self.assertTrue(get_object_out.object_type == 'Appendable')
 
