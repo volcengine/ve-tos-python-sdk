@@ -54,7 +54,7 @@ class TestMultipart(unittest.TestCase):
         self.assertEqual(complete_out.bucket, bucket_name)
         self.assertTrue(len(complete_out.key) > 0)
         self.assertTrue(len(complete_out.etag) > 0)
-        self.assertTrue(len(complete_out.hash_crc64_ecma) > 0)
+        self.assertTrue(complete_out.hash_crc64_ecma > 0)
 
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content + content)
@@ -180,7 +180,7 @@ class TestMultipart(unittest.TestCase):
         self.assertEqual(complete_out.bucket, bucket_name)
         self.assertTrue(len(complete_out.key) > 0)
         self.assertTrue(len(complete_out.etag) > 0)
-        self.assertTrue(len(complete_out.hash_crc64_ecma) > 0)
+        self.assertTrue(complete_out.hash_crc64_ecma > 0)
 
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content + content)
