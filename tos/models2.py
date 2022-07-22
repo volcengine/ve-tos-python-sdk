@@ -77,7 +77,7 @@ class PutObjectOutput(ResponseInfo):
         self.ssec_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
         self.ssec_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
         self.version_id = get_value(resp.headers, "x-tos-version-id")
-        self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma")
+        self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
 
 
 class CopyObjectOutput(ResponseInfo):
@@ -95,7 +95,8 @@ class DeleteObjectOutput(ResponseInfo):
 
 
 class Delete(object):
-    def __init__(self, key: str, version_id: str = None, delete_marker: bool = None, delete_marker_version_id: str = None):
+    def __init__(self, key: str, version_id: str = None, delete_marker=None,
+                 delete_marker_version_id: str = None):
         self.key = key
         self.version_id = version_id
         self.delete_marker = delete_marker
@@ -168,7 +169,7 @@ class HeadObjectOutput(ResponseInfo):
         self.sse_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
         self.sse__key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
         self.website_redirect_location = get_value(resp.headers, "x-tos-website-redirect-location")
-        self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma")
+        self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
         self.storage_class = StorageClassType(get_value(resp.headers, "x-tos-storage-class"))
         self.meta = CaseInsensitiveDict()
         self.object_type = get_value(resp.headers, "x-tos-object-type")
@@ -194,7 +195,7 @@ class HeadObjectOutput(ResponseInfo):
             self.delete_marker = False
 
         self.content_type = get_value(resp.headers, "content-type")
-        self.content_length = get_value(resp.headers, "content-length", int)
+        self.content_length = get_value(resp.headers, "content-length", lambda x: int(x))
         self.cache_control = get_value(resp.headers, "cache-control")
         content_dis_str = get_value(resp.headers, 'content-disposition')
         if content_dis_str:
@@ -243,7 +244,7 @@ class ListObjectsOutput(ResponseInfo):
                 etag=get_etag(object),
                 size=get_value(object, 'Size'),
                 storage_class=StorageClassType(get_value(object, 'StorageClass')),
-                hash_crc64_ecma=get_value(object, "HashCrc64ecma")
+                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -359,7 +360,6 @@ class GetObjectOutput(HeadObjectOutput):
         if progress_callback:
             self.content = utils.add_progress_listener_func(resp, progress_callback, self.content_length,
                                                             download_operator=True)
-
         if rate_limiter:
             self.content = utils.add_rate_limiter_func(self.content, rate_limiter)
 
@@ -372,17 +372,17 @@ class GetObjectOutput(HeadObjectOutput):
     def __iter__(self):
         return iter(self.content)
 
-    @property
-    def client_crc(self):
-        return self.content.crc
+    # @property
+    # def client_crc(self):
+    #     return self.content.crc
 
 
 class AppendObjectOutput(ResponseInfo):
     def __init__(self, resp: Response):
         super(AppendObjectOutput, self).__init__(resp)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
-        self.next_append_offset = get_value(resp.headers, "x-tos-next-append-offset")
-        self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma")
+        self.next_append_offset = get_value(resp.headers, "x-tos-next-append-offset", lambda x: int(x))
+        self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
 
 
 class CreateMultipartUploadOutput(ResponseInfo):
@@ -407,7 +407,7 @@ class UploadPartOutput(ResponseInfo):
         self.etag = get_etag(resp.headers)
         self.ssec_algorithm = get_value(resp.headers, 'x-tos-server-side-encryption-customer-algorithm')
         self.ssec_key_md5 = get_value(resp.headers, 'x-tos-server-side-encryption-customer-key-md5')
-        self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma')
+        self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma', lambda x: int(x))
 
 
 class CompleteMultipartUploadOutput(ResponseInfo):
@@ -419,7 +419,7 @@ class CompleteMultipartUploadOutput(ResponseInfo):
         self.etag = get_etag(data)
         self.location = get_value(data, 'Location')
         self.version_id = get_value(resp.headers, 'x-tos-version-id')
-        self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma')
+        self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma', lambda x: int(x))
 
 
 class AbortMultipartUpload(ResponseInfo):
@@ -428,10 +428,10 @@ class AbortMultipartUpload(ResponseInfo):
 
 
 class UploadPartCopyOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp: Response, part_number):
         super(UploadPartCopyOutput, self).__init__(resp)
         data = json.loads(resp.read())
-        self.part_number = 0
+        self.part_number = part_number
         self.etag = get_etag(data)
         self.last_modified = get_value(data, "LastModified")
         self.copy_source_version_id = get_value(resp.headers, 'x-tos-copy-source-version-id')
@@ -458,7 +458,7 @@ class ListMultipartUploadsOutput(ResponseInfo):
         self.next_upload_id_marker = get_value(data, 'NextUploadIdMarker')
         self.delimiter = get_value(data, 'Delimiter')
         self.prefix = get_value(data, 'Prefix')
-        self.max_uploads = get_value(data, 'MaxUploads')
+        self.max_uploads = get_value(data, 'MaxUploads', lambda x: int(x))
         self.common_prefixes = []
         self.uploads = []
         if get_value(data, 'EncodingType'):
@@ -505,9 +505,9 @@ class ListPartsOutput(ResponseInfo):
         self.bucket = get_value(data, 'Bucket')
         self.key = get_value(data, 'Key')
         self.upload_id = get_value(data, 'UploadId')
-        self.part_number_marker = get_value(data, 'PartNumberMarker')
+        self.part_number_marker = get_value(data, 'PartNumberMarker', lambda x: int(x))
         self.next_part_number_marker = get_value(data, 'NextPartNumberMarker')
-        self.max_parts = get_value(data, 'MaxParts')
+        self.max_parts = get_value(data, 'MaxParts', lambda x: int(x))
         self.storage_class = StorageClassType(get_value(data, 'StorageClass'))
         self.parts = []
         if get_value(data, 'EncodingType'):
@@ -556,24 +556,21 @@ class PreSignedURLOutput(object):
 
 
 class UploadFileOutput(ResponseInfo):
-    def __init__(self, resp: Response):
-        super(UploadFileOutput, self).__init__(resp)
-        data = json.loads(resp.read())
-
-        self.bucket = get_value(data, 'Bucket')
-        self.key = get_value(object, 'Key')
-        self.upload_id = get_value(data, "UploadId")
-        self.location = get_value(data, 'Location')
-        if get_value(data, 'EncodingType'):
-            self.encoding_type = get_value(data, 'EncodingType')
-        else:
-            self.encoding_type = 'url'
-
-        self.etag = get_etag(resp.headers)
-        self.ssec_algorithm = get_value(resp.headers, 'x-tos-server-side-encryption-customer-algorithm')
-        self.ssec_key_md5 = get_value(resp.headers, 'x-tos-server-side-encryption-customer-key-md5')
-        self.version_id = get_value(resp.headers, 'x-tos-version-id')
-        self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma')
+    def __init__(self, resp: CompleteMultipartUploadOutput, ssec_algorithm, ssec_key_md5, upload_id, encoding_type):
+        self.request_id = resp.request_id
+        self.id2 = resp.id2
+        self.status_code = resp.status_code
+        self.header = resp.header
+        self.bucket = resp.bucket
+        self.key = resp.key
+        self.etag = resp.etag
+        self.location = resp.location
+        self.upload_id = upload_id
+        self.version_id = resp.version_id
+        self.hash_crc64_ecma = resp.hash_crc64_ecma
+        self.encoding_type = encoding_type
+        self.ssec_algorithm = ssec_algorithm
+        self.ssec_key_md5 = ssec_key_md5
 
 
 class PartInfo(object):

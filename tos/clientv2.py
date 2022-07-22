@@ -33,7 +33,7 @@ from .models2 import Owner, CreateBucketOutput, HeadBucketOutput, ListBucketsOut
     CopyObjectOutput, DeleteObjectOutput, GetObjectACLOutput, HeadObjectOutput, ListObjectsOutput, PutObjectACLOutput, \
     PutObjectOutput, PreSignedURLOutput, AppendObjectOutput, SetObjectMetaOutput, GetObjectOutput, \
     CreateMultipartUploadOutput, UploadPartOutput, ListMultipartUploadsOutput, ListPartsOutput, UploadPartCopyOutput, \
-    AbortMultipartUpload, PartInfo, CompleteMultipartUploadOutput, _PartToDo, DeleteObjectsOutput
+    AbortMultipartUpload, PartInfo, CompleteMultipartUploadOutput, _PartToDo, DeleteObjectsOutput, UploadFileOutput
 from .utils import to_bytes, to_str, get_value, get_content_type, is_utf8_with_trigger, meta_header_encode, \
     _make_copy_source, to_unicode, _make_range_string, \
     _make_upload_part_file_content, get_parent_directory_from_File, generate_http_proxies, \
@@ -240,7 +240,7 @@ def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDi
             headers['x-tos-meta-' + k] = Metadata[k]
         headers = meta_header_encode(headers)
     if ContentLength:
-        headers['Content-Length'] = ContentLength
+        headers['Content-Length'] = str(ContentLength)
     if ACL:
         headers['x-tos-acl'] = ACL.value
     if GrantFullControl:
@@ -366,12 +366,12 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
     if StorageClass:
         headers['x-tos-storage-class'] = StorageClass.value
     if ContentLength:
-        headers['Content-Length'] = ContentLength
+        headers['Content-Length'] = str(ContentLength)
     return headers
 
 
 def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheControl, ContentDisposition, ContentEncoding,
-                                         ContentLanguage, ContentLength, ContentMD5, ContentSha256, ContentType,
+                                         ContentLanguage, ContentType,
                                          EncodingType, Expires, GrantFullControl, GrantRead, GrantReadACP,
                                          GrantWriteACP, Key, Metadata, SSECustomerAlgorithm, SSECustomerKey,
                                          SSECustomerKeyMD5, ServerSideEncryption, WebsiteRedirectLocation,
@@ -417,12 +417,6 @@ def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheContr
         headers['x-tos-server-side-encryption'] = ServerSideEncryption
     if EncodingType:
         headers['encoding-type'] = EncodingType
-    if ContentLength:
-        headers['Content-Length'] = ContentLength
-    if ContentMD5:
-        headers['Content-MD5'] = ContentMD5
-    if ContentSha256:
-        headers['x-tos-content-sha25'] = ContentSha256
     if StorageClass:
         headers['x-tos-storage-class'] = StorageClass.value
 
@@ -473,7 +467,7 @@ def _get_upload_part_headers(content_length, content_md5, server_side_encryption
                              ssec_key_md5):
     headers = {}
     if content_length:
-        headers['Content-Length'] = content_length
+        headers['Content-Length'] = str(content_length)
     if content_md5:
         headers['Content-MD5'] = content_md5
     if ssec_algorithm:
@@ -617,15 +611,13 @@ class TosClientV2(TosClient):
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
-                                              connect_timeout=connection_time,
-                                              )
+                                              connect_timeout=connection_time)
         else:
             super(TosClientV2, self).__init__(auth=Auth(ak, sk, region, sts=security_token),
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
-                                              connect_timeout=connection_time,
-                                              )
+                                              connect_timeout=connection_time)
         self.max_retry_count = max_retry_count
         self.dns_cache_time = dns_cache_time
         self.request_timeout = request_timeout
@@ -635,7 +627,7 @@ class TosClientV2(TosClient):
         self.proxy_port = proxy_port
         self.proxy_username = proxy_username
         self.proxy_password = proxy_password
-        self.enable_crc = enable_crc
+        self.enable_crc = False
         self.proxies = generate_http_proxies(proxy_host, proxy_port, proxy_username, proxy_password)
 
     def pre_signed_url(self, http_method: HttpMethodType, bucket: str,
@@ -1036,7 +1028,7 @@ class TosClientV2(TosClient):
 
     # @_log_execution_time
     def put_object(self, bucket: str, key: str,
-                   content_length: str = None,
+                   content_length: int = None,
                    content_md5: str = None,
                    content_sha256: str = None,
                    cache_control: str = None,
@@ -1132,7 +1124,7 @@ class TosClientV2(TosClient):
 
     # @_log_execution_time
     def put_object_from_file(self, bucket: str, key: str, file_path: str,
-                             content_length: str = None,
+                             content_length: int = None,
                              content_md5: str = None,
                              content_sha256: str = None,
                              cache_control: str = None,
@@ -1198,7 +1190,7 @@ class TosClientV2(TosClient):
     # @_log_execution_time
     def append_object(self, bucket: str, key: str, offset: int,
                       content=None,
-                      content_length: str = None,
+                      content_length: int = None,
                       cache_control: str = None,
                       content_disposition: str = None,
                       content_encoding: str = None,
@@ -1444,9 +1436,6 @@ class TosClientV2(TosClient):
     # @_log_execution_time
     def create_multipart_upload(self, bucket, key,
                                 encoding_type: str = None,
-                                content_length: str = None,
-                                content_md5: str = None,
-                                content_sha256: str = None,
                                 cache_control: str = None,
                                 content_disposition: str = None,
                                 content_encoding: str = None,
@@ -1470,9 +1459,6 @@ class TosClientV2(TosClient):
         :param bucket: 桶名
         :param key: 对象名
         :param encoding_type: 指定对返回的内容进行编码的编码类型
-        :param content_length: 对象大小
-        :param content_md5: 对象的md5值
-        :param content_sha256: 对象的sha256值
         :param cache_control:  是否开启缓存
         :param content_disposition: 对象被下载时的名称
         :param content_encoding: 对象的编码方式
@@ -1499,7 +1485,7 @@ class TosClientV2(TosClient):
 
         headers = _get_create_multipart_upload_headers(self.recognize_content_type, acl, cache_control,
                                                        content_disposition, content_encoding,
-                                                       content_language, content_length, content_md5, content_sha256,
+                                                       content_language,
                                                        content_type, encoding_type, expires, grant_full_control,
                                                        grant_read, grant_read_acp, grant_write_acp, key, meta,
                                                        ssec_algorithm, ssec_key, ssec_key_md5,
@@ -1513,9 +1499,6 @@ class TosClientV2(TosClient):
     # @_log_execution_time
     def upload_file(self, bucket, key, file_path: str,
                     encoding_type: str = None,
-                    content_length: str = None,
-                    content_md5: str = None,
-                    content_sha256: str = None,
                     cache_control: str = None,
                     content_disposition: str = None,
                     content_encoding: str = None,
@@ -1548,10 +1531,6 @@ class TosClientV2(TosClient):
         :param bucket: 桶名
         :param key: 对象名
         :param encoding_type: 指定对返回的内容进行编码的编码类型
-        :param content_length: 对象大小
-
-        :param content_md5: 对象的md5值
-        :param content_sha256: 对象的sha256值
         :param cache_control:  是否开启缓存
         :param content_disposition: 对象被下载时的名称
         :param content_encoding: 对象的编码方式
@@ -1621,9 +1600,6 @@ class TosClientV2(TosClient):
 
             try:
                 create_mult_upload = self.create_multipart_upload(bucket=bucket, key=key, encoding_type=encoding_type,
-                                                                  content_length=content_length,
-                                                                  content_md5=content_md5,
-                                                                  content_sha256=content_sha256,
                                                                   cache_control=cache_control,
                                                                   content_disposition=content_disposition,
                                                                   content_encoding=content_encoding,
@@ -1658,7 +1634,7 @@ class TosClientV2(TosClient):
                 'upload_id': upload_id,
                 'ssec_algorithm': ssec_algorithm,
                 'ssec_key_md5': ssec_key_md5,
-                'encoding_type': encoding_type,
+                'encoding_type': create_mult_upload.encoding_type,
                 'file_path': file_path,
                 'file_info': {
                     'last_modified': last_modify,
@@ -1679,7 +1655,7 @@ class TosClientV2(TosClient):
 
         result = uploader.upload()
 
-        return result
+        return UploadFileOutput(result, ssec_algorithm, ssec_key_md5, upload_id, record['encoding_type'])
 
     # @_log_execution_time
     # def _download_file(self, bucket: str, key: str, file_path: str,
@@ -1794,7 +1770,7 @@ class TosClientV2(TosClient):
                     ssec_key: str = None,
                     ssec_key_md5: str = None,
                     server_side_encryption: str = None,
-                    content_length: str = None,
+                    content_length: int = None,
                     content=None,
                     data_transfer_listener=None,
                     rate_limiter=None) -> UploadPartOutput:
@@ -1971,7 +1947,7 @@ class TosClientV2(TosClient):
                          params={'uploadId': upload_id, 'partNumber': part_number},
                          headers=headers)
 
-        return UploadPartCopyOutput(resp)
+        return UploadPartCopyOutput(resp, part_number)
 
     # @_log_execution_time
     def list_multipart_uploads(self, bucket: str,
@@ -1979,7 +1955,7 @@ class TosClientV2(TosClient):
                                delimiter: str = None,
                                key_marker: str = None,
                                upload_id_marker: str = None,
-                               max_uploads: int = None,
+                               max_uploads: int = 1000,
                                encoding_type: str = None) -> ListMultipartUploadsOutput:
         """列举正在进行的分片上传任务
 
@@ -2004,7 +1980,7 @@ class TosClientV2(TosClient):
     # @_log_execution_time
     def list_parts(self, bucket: str, key: str, upload_id: str,
                    part_number_marker: int = None,
-                   max_parts: int = None,
+                   max_parts: int = 1000,
                    encoding_type: str = None) -> ListPartsOutput:
         """ 列举段
 
@@ -2021,13 +1997,6 @@ class TosClientV2(TosClient):
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Get.value, params=params)
 
         return ListPartsOutput(resp)
-
-        # def set_multi_version(self, bucket):
-        #     param = {"versioning": ""}
-        #     body = {"Status": "Enabled"}
-        #     data = json.dumps(body)
-
-        return self._req(bucket, method=HttpMethodType.Http_Method_Put.value, params=param, data=data)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None):
         if key and (not _is_valid_object_name(key)):

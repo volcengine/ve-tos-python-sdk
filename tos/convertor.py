@@ -213,7 +213,7 @@ def convert_list_object_versions_result(resp):
     result.next_key_marker = get_value(data, 'NextKeyMarker')
     result.next_version_id_marker = get_value(data, 'NextVersionIdMarker')
     result.delimiter = get_value(data, 'Delimiter')
-    result.max_keys = get_value(data, 'MaxKeys', int)
+    result.max_keys = get_value(data, 'MaxKeys', lambda x: int(x))
 
     if get_value(data, 'EncodingType'):
         result.encoding_type = get_value(data, 'EncodingType')
@@ -239,7 +239,7 @@ def convert_list_object_versions_result(resp):
             get_value(object, 'IsLatest'),
             last_modified,
             get_etag(object),
-            get_value(object, 'Size'),
+            get_value(object, 'Size', lambda x: int(x)),
             get_value(object, 'StorageClass'),
             get_value(object, 'VersionId')
         )
@@ -339,13 +339,13 @@ def convert_get_object_acl_output(resp: Response) -> GetObjectACLOutput:
 def convert_head_object_output(resp: Response) -> HeadObjectOutput:
     output = HeadObjectOutput(resp)
     output.content_type = get_value(resp.headers, 'content-type')
-    output.content_length = get_value(resp.headers, 'content-length', int)
+    output.content_length = get_value(resp.headers, 'content-length', lambda x: int(x))
     output.etag = get_etag(resp.headers)
     output.version_id = get_value(resp.headers, 'x-tos-version-id')
     output.sse_algorithm = get_value(resp.headers, 'x-tos-server-side-encryption-customer-algorithm')
     output.sse__key_md5 = get_value(resp.headers, 'x-tos-server-side-encryption-customer-key-md5')
     output.website_redirect_location = get_value(resp.headers, 'x-tos-website-redirect-location')
-    output.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma')
+    output.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma', lambda x: int(x))
     output.storage_class = StorageClassType(get_value(resp.headers, 'x-tos-storage-class'))
     output.meta = CaseInsensitiveDict()
     output.object_type = get_value(resp.headers, 'x-tos-object-type')
@@ -407,7 +407,7 @@ def convert_list_object_versions_output(resp):
             size=get_value(object, 'Size'),
             storage_class=StorageClassType(get_value(object, 'StorageClass')),
             version_id=get_value(object, 'VersionId'),
-            hash_crc64_ecma=get_value(object, "HashCrc64ecma")
+            hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
         )
         owner_info = get_value(object, 'Owner')
         if owner_info:
