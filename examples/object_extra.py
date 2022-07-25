@@ -41,4 +41,3 @@ result = client.append_object(bucket_name, object_key, 0, 'test append object fi
 
 # 追加一行数据, 偏移量从上次相应中获取，或者通过head_object接口 返回content-length获取
 client.append_object(bucket_name, object_key, result.next_append_offset, 'test append object second time')
-

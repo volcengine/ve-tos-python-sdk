@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import datetime
-import pytz
 import json
-
-import tos
+import unittest
 from unittest import mock
-from .common import *
+
+import pytz
+
+from tests.common import MockResponse, TosTestCase
 
 
 class TestListObjects(TosTestCase):
@@ -27,16 +28,16 @@ class TestListObjects(TosTestCase):
             'Delimiter': delimiter,
             'EncodingType': encoding_type,
             'IsTruncated': True,
-            'CommonPrefixes':[
+            'CommonPrefixes': [
                 {
                     'Prefix': prefix
                 }
             ],
-            'Contents':[
+            'Contents': [
                 {
                     'Key': 'key1',
-                    'LastModified':'2021-01-01T00:00:00.000Z',
-                    'ETag':'\"etag\"',
+                    'LastModified': '2021-01-01T00:00:00.000Z',
+                    'ETag': '\"etag\"',
                     'Size': 100,
                     'StorageClass': 'STANDARD',
                     'Owner': {
@@ -114,8 +115,10 @@ class TestListObjects(TosTestCase):
         }
         mock_request.return_value = MockResponse(body=json.dumps(mock_data))
 
-        res = self.client.list_object_versions(Bucket=self.bucket_name, Delimiter=delimiter, MaxKeys=maxkeys, Prefix=prefix,
-                                       KeyMarker=key_marker, EncodingType=encoding_type, VersionIdMarker=version_id_marker)
+        res = self.client.list_object_versions(Bucket=self.bucket_name, Delimiter=delimiter, MaxKeys=maxkeys,
+                                               Prefix=prefix,
+                                               KeyMarker=key_marker, EncodingType=encoding_type,
+                                               VersionIdMarker=version_id_marker)
         self.assertEqual(res.name, self.bucket_name)
         self.assertEqual(res.prefix, prefix)
         self.assertEqual(res.key_marker, key_marker)
@@ -139,6 +142,7 @@ class TestListObjects(TosTestCase):
         self.assertEqual(res.version_list[0].version_id, 'version_id')
         self.assertEqual(res.version_list[0].owner.id, 'id')
         self.assertEqual(res.version_list[0].owner.name, 'name')
+
 
 if __name__ == '__main__':
     unittest.main()

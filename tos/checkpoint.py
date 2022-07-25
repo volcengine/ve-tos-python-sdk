@@ -6,10 +6,12 @@ from concurrent.futures import as_completed
 from typing import Dict
 
 from tos import utils
-from tos.enum import UploadEventType, DownloadEventType
-from tos.exceptions import TosClientError, TosServerError, CancelWithAbortError, CancelNotWithAbortError
+from tos.enum import DownloadEventType, UploadEventType
+from tos.exceptions import (CancelNotWithAbortError, CancelWithAbortError,
+                            TosClientError, TosServerError)
 from tos.models2 import PartInfo, UploadedPart, _PartToDo
-from tos.utils import to_unicode, SizeAdapter, _cal_upload_callback, _cal_download_callback
+from tos.utils import (SizeAdapter, _cal_download_callback,
+                       _cal_upload_callback, to_unicode)
 
 
 class CheckPointStore(object):

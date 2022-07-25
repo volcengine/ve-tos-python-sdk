@@ -19,25 +19,36 @@ from requests.structures import CaseInsensitiveDict
 
 from tos import TosClient
 from tos.__version__ import __version__
+
 from . import exceptions, utils
 from .auth import Auth
 from .checkpoint import CheckPointStore, _BreakpointUploader
 from .consts import GMT_DATE_FORMAT, UNSIGNED_PAYLOAD
-from .convertor import convert_list_buckets_output, convert_list_object_versions_output
-from .enum import HttpMethodType, StorageClassType, AzRedundancyType, MetadataDirectiveType, ACLType, DataTransferType, \
-    UploadEventType
-from .exceptions import TosClientError, TosServerError, IllegalObjectKey
+from .convertor import (convert_list_buckets_output,
+                        convert_list_object_versions_output)
+from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
+                   MetadataDirectiveType, StorageClassType, UploadEventType)
+from .exceptions import IllegalObjectKey, TosClientError, TosServerError
 from .http import Request, Response
-from .json_utils import to_put_object_acl_request, to_complete_multipart_upload_request
-from .models2 import Owner, CreateBucketOutput, HeadBucketOutput, ListBucketsOutput, DeleteBucketOutput, \
-    CopyObjectOutput, DeleteObjectOutput, GetObjectACLOutput, HeadObjectOutput, ListObjectsOutput, PutObjectACLOutput, \
-    PutObjectOutput, PreSignedURLOutput, AppendObjectOutput, SetObjectMetaOutput, GetObjectOutput, \
-    CreateMultipartUploadOutput, UploadPartOutput, ListMultipartUploadsOutput, ListPartsOutput, UploadPartCopyOutput, \
-    AbortMultipartUpload, PartInfo, CompleteMultipartUploadOutput, _PartToDo, DeleteObjectsOutput, UploadFileOutput
-from .utils import to_bytes, to_str, get_value, get_content_type, is_utf8_with_trigger, meta_header_encode, \
-    _make_copy_source, to_unicode, _make_range_string, \
-    _make_upload_part_file_content, get_parent_directory_from_File, generate_http_proxies, \
-    _cal_upload_callback
+from .json_utils import (to_complete_multipart_upload_request,
+                         to_put_object_acl_request)
+from .models2 import (AbortMultipartUpload, AppendObjectOutput,
+                      CompleteMultipartUploadOutput, CopyObjectOutput,
+                      CreateBucketOutput, CreateMultipartUploadOutput,
+                      DeleteBucketOutput, DeleteObjectOutput,
+                      DeleteObjectsOutput, GetObjectACLOutput, GetObjectOutput,
+                      HeadBucketOutput, HeadObjectOutput, ListBucketsOutput,
+                      ListMultipartUploadsOutput, ListObjectsOutput,
+                      ListPartsOutput, Owner, PartInfo, PreSignedURLOutput,
+                      PutObjectACLOutput, PutObjectOutput, SetObjectMetaOutput,
+                      UploadFileOutput, UploadPartCopyOutput, UploadPartOutput,
+                      _PartToDo)
+from .utils import (_cal_upload_callback, _make_copy_source,
+                    _make_range_string, _make_upload_part_file_content,
+                    generate_http_proxies, get_content_type,
+                    get_parent_directory_from_File, get_value,
+                    is_utf8_with_trigger, meta_header_encode, to_bytes, to_str,
+                    to_unicode)
 
 logger = logging.getLogger(__name__)
 

@@ -52,7 +52,7 @@ sk = "your secret key"
 endpoint = "your endpoint"
 region = "your region"
 bucket_name = "your bucket name"
-client = tos.TosClientV2(ak, sk, endpoint, region)                                                     
+client = tos.TosClientV2(ak, sk, endpoint, region)
 client.create_bucket(bucket_name)                            
 ```
 

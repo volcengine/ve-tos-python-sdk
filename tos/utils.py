@@ -6,13 +6,13 @@ import threading
 import time
 from urllib.parse import quote_plus, unquote_to_bytes
 
-from . import exceptions as exp
-
 import crcmod as crcmod
 import pytz
 import six
 
-from .consts import LAST_MODIFY_TIME_DATE_FORMAT, GMT_DATE_FORMAT, DEFAULT_MIMETYPE
+from . import exceptions as exp
+from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
+                     LAST_MODIFY_TIME_DATE_FORMAT)
 from .enum import DataTransferType
 from .mine_type import TYPES_MAP
 

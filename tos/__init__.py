@@ -1,11 +1,11 @@
 import logging
 
-from .client import TosClient
+from . import exceptions, models2
 from .auth import Auth, FederationAuth
+from .client import TosClient
 from .clientv2 import TosClientV2
 from .enum import *
-from .utils import to_bytes, RateLimiter
-from . import models2, exceptions
+from .utils import RateLimiter, to_bytes
 
 logger = logging.getLogger('tos')
 

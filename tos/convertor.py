@@ -4,14 +4,20 @@ from requests.structures import CaseInsensitiveDict
 
 from .enum import StorageClassType
 from .http import Response
-from .models import ListBucketResult, UserInfo, BucketInfo, GrantInfo, CreateMultipartUploadResult, \
-    ListMultipartUploadsResult, MultipartUploadInfo, CommonPrefixInfo, CopyObjectResult, UploadPartCopyResult, \
-    ListPartsResult, UploadPartInfo, CompleteMultipartUploadResult, ListObjectsResult, ObjectInfo, \
-    ListObjectVersionsResult, ObjectVersionInfo, DeleteMarkerInfo, DeleteObjectsResult, DeletedObjectInfo, \
-    DeletedErrInfo, GetObjectAclResult
-from .models2 import ListedObjectVersion, ListObjectVersionsOutput, Owner, \
-    ListBucketsOutput, ListedBucket, GetObjectACLOutput, HeadObjectOutput
-from .utils import parse_modify_time_to_utc_datetime, get_value, get_etag, parse_gmt_time_to_utc_datetime
+from .models import (BucketInfo, CommonPrefixInfo,
+                     CompleteMultipartUploadResult, CopyObjectResult,
+                     CreateMultipartUploadResult, DeletedErrInfo,
+                     DeletedObjectInfo, DeleteMarkerInfo, DeleteObjectsResult,
+                     GetObjectAclResult, GrantInfo, ListBucketResult,
+                     ListMultipartUploadsResult, ListObjectsResult,
+                     ListObjectVersionsResult, ListPartsResult,
+                     MultipartUploadInfo, ObjectInfo, ObjectVersionInfo,
+                     UploadPartCopyResult, UploadPartInfo, UserInfo)
+from .models2 import (GetObjectACLOutput, HeadObjectOutput, ListBucketsOutput,
+                      ListedBucket, ListedObjectVersion,
+                      ListObjectVersionsOutput, Owner)
+from .utils import (get_etag, get_value, parse_gmt_time_to_utc_datetime,
+                    parse_modify_time_to_utc_datetime)
 
 
 def convert_list_buckets_result(resp):

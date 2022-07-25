@@ -5,8 +5,8 @@ import string
 import time as tim
 import unittest
 
-from tos.clientv2 import TosClientV2
-from tos.enum import StorageClassType, ACLType
+from tos import TosClientV2
+from tos.enum import ACLType, StorageClassType
 from tos.exceptions import TosClientError, TosServerError
 
 
@@ -58,7 +58,7 @@ class TestBucket(unittest.TestCase):
                                    self.client.list_buckets().buckets))
 
         key = 'a.txt'
-        put_object_out = self.client.put_object(bucket_name, key=key, content="content")
+        self.client.put_object(bucket_name, key=key, content="content")
 
         head_bucket_out = self.client.head_bucket(bucket_name)
         self.assertEqual(head_bucket_out.storage_class, StorageClassType.Storage_Class_Ia)
@@ -75,8 +75,8 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(TosServerError):
             self.client.delete_bucket(bucket_name)
 
-        delete_object_out = self.client.delete_object(bucket_name, key)
-        delete_bucket_out = self.client.delete_bucket(bucket_name)
+        self.client.delete_object(bucket_name, key)
+        self.client.delete_bucket(bucket_name)
 
         with self.assertRaises(TosServerError):
             self.client.head_bucket(bucket_name + "-")
@@ -107,11 +107,8 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(TosServerError):
             self.client.head_bucket(bucket_name)
 
-        create_bucket_out = self.client.create_bucket(bucket_name,
-                                                      storage_class=StorageClassType.Storage_Class_Ia)
-        self.retry_assert(lambda: bucket_name in
-                                  (b.name for b in
-                                   self.client.list_buckets().buckets))
+        self.client.create_bucket(bucket_name, storage_class=StorageClassType.Storage_Class_Ia)
+        self.retry_assert(lambda: bucket_name in (b.name for b in self.client.list_buckets().buckets))
 
         list_bucket_out = self.client.list_buckets()
         self.assertTrue(len(list_bucket_out.buckets) >= 1)
@@ -131,10 +128,8 @@ class TestBucket(unittest.TestCase):
 
     def test_bucket_with_acl(self):
         bucket_name = self.bucket_name + "-acl"
-        create_bucket_acl_out = self.client.create_bucket(bucket_name, acl=ACLType.ACL_Bucket_Owner_Full_Control)
-        self.retry_assert(lambda: bucket_name in
-                                  (b.name for b in
-                                   self.client.list_buckets().buckets))
+        self.client.create_bucket(bucket_name, acl=ACLType.ACL_Bucket_Owner_Full_Control)
+        self.retry_assert(lambda: bucket_name in (b.name for b in self.client.list_buckets().buckets))
 
         self.client.delete_bucket(bucket_name)
 
@@ -148,7 +143,7 @@ class TestBucket(unittest.TestCase):
             else:
                 objects = self.client.list_objects(bkc.name)
                 for obj in objects.contents:
-                    if obj.key == None:
+                    if obj.key is None:
                         print(obj)
                         print(bkc)
                     self.client.delete_object(bkc.name, obj.key)
@@ -165,3 +160,7 @@ class TestBucket(unittest.TestCase):
                 tim.sleep(i + 2)
 
         self.assertTrue(False)
+
+
+if __name__ == "__main__":
+    unittest.main()
