@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
+import datetime
 import hmac
 import logging
 from hashlib import sha256
 from urllib.parse import quote
-import datetime
 
-from .consts import UNSIGNED_PAYLOAD, DATE_FORMAT
+from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD
 from .credential import FederationCredentials, StaticCredentials
 from .utils import normalize_url_path, to_bytes
 

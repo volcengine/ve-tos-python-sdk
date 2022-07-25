@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 
-import tos
 import json
+import unittest
 from unittest import mock
-from .common import *
+
+from tests.common import MockResponse, TosTestCase
 
 
 class TestBucket(TosTestCase):

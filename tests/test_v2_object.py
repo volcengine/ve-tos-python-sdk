@@ -9,10 +9,11 @@ from tests.common import random_bytes
 from tests.test_v2_bucker import random_string
 from tos.checkpoint import CancelHook
 from tos.clientv2 import TosClientV2
-from tos.enum import AzRedundancyType, ACLType, GranteeType, CannedType, PermissionType, \
-    DataTransferType, StorageClassType, MetadataDirectiveType
-from tos.exceptions import TosServerError, TosClientError
-from tos.models2 import Delete, Grantee, Grant, ListObjectsOutput, Owner
+from tos.enum import (ACLType, AzRedundancyType, CannedType, DataTransferType,
+                      GranteeType, MetadataDirectiveType, PermissionType,
+                      StorageClassType)
+from tos.exceptions import TosClientError, TosServerError
+from tos.models2 import Delete, Grant, Grantee, ListObjectsOutput, Owner
 from tos.utils import RateLimiter
 
 
@@ -78,7 +79,7 @@ class TestObject(unittest.TestCase):
 
         meta = {'name': '张三', 'age': '12'}
         self.client.put_object(bucket_name, key, content=b'')
-        put_object_out = self.client.put_object(bucket_name, key=key,
+        self.client.put_object(bucket_name, key=key,
                                                 content=content,
                                                 meta=meta
                                                 )
@@ -153,7 +154,7 @@ class TestObject(unittest.TestCase):
         content = b''
 
         self.client.create_bucket(bucket_name)
-        put_object_out = self.client.put_object(bucket_name, key=key, content=content)
+        self.client.put_object(bucket_name, key=key, content=content)
         get_object_out = self.client.get_object(bucket_name, key)
         # self.assertEqual(get_object_out.client_crc, 0)
         self.assertEqual(get_object_out.hash_crc64_ecma, 0)
@@ -213,12 +214,6 @@ class TestObject(unittest.TestCase):
 
         self.client.delete_bucket(bucket_name)
 
-    def test_put_with_client_encryption(self):
-        bucket_name = self.bucket_name + '-put-object-with-client-encryption'
-        key = self.random_key('.js')
-        content = random_bytes(100)
-        pass
-
     def test_put_with_data_transfer_listener(self):
         bucket_name = self.bucket_name + '-put-object-with-transfer-listener'
         key = self.random_key('.js')
@@ -252,9 +247,9 @@ class TestObject(unittest.TestCase):
 
         self.client.create_bucket(bucket_name)
 
-        put_file_out = self.client.put_object_from_file(bucket=bucket_name, key=key, file_path=file_name)
+        self.client.put_object_from_file(bucket=bucket_name, key=key, file_path=file_name)
 
-        out_file_name = self.client.get_object_to_file(bucket_name, key, "out.txt")
+        self.client.get_object_to_file(bucket_name, key, "out.txt")
 
         with open('out.txt', 'rb') as wf:
             self.assertEqual(wf.read(), content)
@@ -291,9 +286,9 @@ class TestObject(unittest.TestCase):
 
         cancel = MyCancel()
 
-        upload_out = self.client.upload_file(bucket_name, key, file_path=file_name,
-                                             upload_event_listener=upload_event_listener,
-                                             cancel_hook=cancel)
+        self.client.upload_file(bucket_name, key, file_path=file_name,
+                                upload_event_listener=upload_event_listener,
+                                cancel_hook=cancel)
 
         def process(type, err, bucket, key, version_id, file_path, checkpoint_file, temp_file, download_info):
             print(type, err, bucket, key, version_id, file_path, checkpoint_file, temp_file, download_info)
@@ -369,7 +364,7 @@ class TestObject(unittest.TestCase):
         object = []
         object.append(Delete(key_1, "", False, ""))
         object.append(Delete(key_1, "", False, ""))
-        delete_out = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
+        self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
 
         self.client.delete_object(bucket_name, key_1)
         self.client.delete_object(bucket_name, key_2)
@@ -382,10 +377,10 @@ class TestObject(unittest.TestCase):
         content = random_bytes(100)
         self.client.create_bucket(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
-        put_out = self.client.put_object(bucket_name_1, key, content=content)
-        copy_out = self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
-        head_out = self.client.head_object(bucket_name_2, key)
-        get_out = self.client.get_object(bucket_name_2, key)
+        self.client.put_object(bucket_name_1, key, content=content)
+        self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
+        self.client.head_object(bucket_name_2, key)
+        self.client.get_object(bucket_name_2, key)
 
         self.client.delete_object(bucket_name_1, key)
 
@@ -404,22 +399,22 @@ class TestObject(unittest.TestCase):
         self.client.create_bucket(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
         meta = {'姓名': '张三'}
-        put_object_out = self.client.put_object(bucket_name_1, key=key,
-                                                content=content,
-                                                cache_control='CacheControl',
-                                                acl=ACLType.ACL_Private,
-                                                content_encoding='utf-8',
-                                                content_disposition='/sunyushantest',
-                                                content_length='100',
-                                                content_language='english',
-                                                expires=datetime.date(2023, 1, 29),
-                                                website_redirect_location='/test',
-                                                meta=meta
-                                                )
+        self.client.put_object(bucket_name_1, key=key,
+                               content=content,
+                               cache_control='CacheControl',
+                               acl=ACLType.ACL_Private,
+                               content_encoding='utf-8',
+                               content_disposition='/sunyushantest',
+                               content_length='100',
+                               content_language='english',
+                               expires=datetime.date(2023, 1, 29),
+                               website_redirect_location='/test',
+                               meta=meta
+                               )
 
-        copy_object_out = self.client.copy_object(bucket_name_2, key, src_bucket=bucket_name_1, src_key=key,
-                                                  metadata_directive=MetadataDirectiveType.Metadata_Directive_Copy)
-        head_out = self.client.head_object(bucket_name_2, key)
+        self.client.copy_object(bucket_name_2, key, src_bucket=bucket_name_1, src_key=key,
+                                metadata_directive=MetadataDirectiveType.Metadata_Directive_Copy)
+        self.client.head_object(bucket_name_2, key)
         get_object_out = self.client.get_object(bucket_name_2, key)
 
         self.assertTrue(len(get_object_out.cache_control) > 0)
@@ -445,23 +440,23 @@ class TestObject(unittest.TestCase):
         self.client.create_bucket(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
         meta = {'姓名': '张三'}
-        put_object_out = self.client.put_object(bucket_name_1, key=key,
-                                                content=content)
+        self.client.put_object(bucket_name_1, key=key,
+                               content=content)
 
-        copy_object_out = self.client.copy_object(bucket_name_2, key, src_bucket=bucket_name_1, src_key=key,
-                                                  cache_control='CacheControl',
-                                                  acl=ACLType.ACL_Private,
-                                                  content_encoding='utf-8',
-                                                  content_disposition='/sunyushantest',
-                                                  content_language='english',
-                                                  expires=datetime.date(2023, 1, 29),
-                                                  website_redirect_location='/test',
-                                                  meta=meta,
-                                                  storage_class=StorageClassType.Storage_Class_Ia,
-                                                  metadata_directive=MetadataDirectiveType.Metadata_Directive_Replace
-                                                  )
+        self.client.copy_object(bucket_name_2, key, src_bucket=bucket_name_1, src_key=key,
+                                cache_control='CacheControl',
+                                acl=ACLType.ACL_Private,
+                                content_encoding='utf-8',
+                                content_disposition='/sunyushantest',
+                                content_language='english',
+                                expires=datetime.date(2023, 1, 29),
+                                website_redirect_location='/test',
+                                meta=meta,
+                                storage_class=StorageClassType.Storage_Class_Ia,
+                                metadata_directive=MetadataDirectiveType.Metadata_Directive_Replace
+                                )
 
-        head_out = self.client.head_object(bucket_name_2, key)
+        self.client.head_object(bucket_name_2, key)
         get_object_out = self.client.get_object(bucket_name_2, key)
 
         self.assertTrue(len(get_object_out.cache_control) > 0)
@@ -495,8 +490,8 @@ class TestObject(unittest.TestCase):
         put_object_out_v2 = self.client.put_object(bucket_name, key=key, content=content)
         version_2 = put_object_out_v2.version_id
 
-        out = self.client.get_object(bucket_name, key)
-        list_out = self.client.list_object_versions(bucket_name)
+        self.client.get_object(bucket_name, key)
+        self.client.list_object_versions(bucket_name)
         self.client.delete_object(bucket_name, key, version_id=version_1)
         self.client.delete_object(bucket_name, key, version_id=version_2)
 
@@ -521,8 +516,8 @@ class TestObject(unittest.TestCase):
         key = self.random_key('.js')
         append_out_1 = self.client.append_object(bucket_name, key, 0, content=content[0:100], pre_hash_crc64_ecma=0)
 
-        append_out_2 = self.client.append_object(bucket_name, key, 100, content=content[100:],
-                                                 pre_hash_crc64_ecma=append_out_1.hash_crc64_ecma)
+        self.client.append_object(bucket_name, key, 100, content=content[100:],
+                                  pre_hash_crc64_ecma=append_out_1.hash_crc64_ecma)
 
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content)
@@ -566,7 +561,7 @@ class TestObject(unittest.TestCase):
 
         self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
 
-        put_object_out_v1 = self.client.put_object(bucket_name, key=key, content=content)
+        self.client.put_object(bucket_name, key=key, content=content)
         list_object_out = self.client.list_objects(bucket_name)
         self.assertEqual(list_object_out.name, bucket_name)
         self.assertFalse(list_object_out.is_truncated)
@@ -642,9 +637,9 @@ class TestObject(unittest.TestCase):
                     deletes.append(Delete(key=path))
                     self.client.put_object(bucket_name, path, content=b'')
 
-        out1 = self.client.list_objects(bucket_name, prefix='0')
-        out2 = self.client.list_objects(bucket_name, prefix='1')
-        out3 = self.client.list_objects(bucket_name, prefix='0/1')
+        self.client.list_objects(bucket_name, prefix='0')
+        self.client.list_objects(bucket_name, prefix='1')
+        self.client.list_objects(bucket_name, prefix='0/1')
 
         out4 = self.client.list_objects(bucket_name, delimiter='/')
 
@@ -684,7 +679,7 @@ class TestObject(unittest.TestCase):
         meta = {'name': 'sunyushan', 'age': '10'}
         self.client.put_object(bucket_name, key=key, content=random_bytes(10), meta=meta)
         meta['name'] = '张三'
-        set_out = self.client.set_object_meta(bucket_name, key, meta=meta)
+        self.client.set_object_meta(bucket_name, key, meta=meta)
 
         get_object_out = self.client.get_object(bucket_name, key=key)
         self.assertEqual(meta['name'], get_object_out.meta['name'])
@@ -699,7 +694,7 @@ class TestObject(unittest.TestCase):
         meta = {'name': 'jason', 'age': '10'}
         self.client.put_object(bucket_name, key=key, content=random_bytes(10), meta=meta)
 
-        get_object_out = self.client.get_object(bucket_name, key=key)
+        self.client.get_object(bucket_name, key=key)
         self.client.delete_object(bucket_name, key=key)
 
         self.client.delete_bucket(bucket_name)
@@ -738,8 +733,8 @@ class TestObject(unittest.TestCase):
                                                                                         rw_once_bytes, type))
 
         limiter = RateLimiter(1200, 10000)
-        put_out = self.client.put_object(bucket_name, key=key, content=content, data_transfer_listener=progress,
-                                         rate_limiter=limiter)
+        self.client.put_object(bucket_name, key=key, content=content, data_transfer_listener=progress,
+                               rate_limiter=limiter)
 
         get_object_out = self.client.get_object(bucket_name, key=key, data_transfer_listener=progress)
         self.assertEqual(get_object_out.read(), content)
@@ -759,7 +754,7 @@ class TestObject(unittest.TestCase):
         self.client.put_object_acl(bucket_name, key, acl=ACLType.ACL_Bucket_Owner_Full_Control)
         self.client.put_object_acl(bucket_name, key, owner=Owner("123", "test"), grants=grants)
 
-        out = self.client.get_object_acl(bucket_name, key)
+        self.client.get_object_acl(bucket_name, key)
 
         self.client.delete_object(bucket_name, key)
         self.client.delete_bucket(bucket_name)
@@ -790,3 +785,7 @@ class TestObject(unittest.TestCase):
     def random_key(self, suffix=''):
         key = self.prefix + random_string(12) + suffix
         return key
+
+
+if __name__ == '__main__':
+    unittest.main()

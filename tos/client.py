@@ -7,9 +7,7 @@ import logging
 import warnings
 from datetime import datetime
 from hashlib import sha256
-from typing import Dict
-from typing import IO
-from typing import Union
+from typing import IO, Dict, Union
 from urllib.parse import quote
 
 import requests
@@ -17,16 +15,25 @@ from deprecated import deprecated
 from requests.structures import CaseInsensitiveDict
 
 from tos.__version__ import __version__
+
 from . import exceptions
-from .consts import CONNECT_TIMEOUT, PAYLOAD_BUFFER, EMPTY_SHA256_HASH, GMT_DATE_FORMAT
-from .convertor import convert_list_buckets_result, convert_list_objects_result, convert_list_object_versions_result, \
-    convert_list_multipart_uploads_result, convert_list_parts_result, convert_create_multipart_upload_result, \
-    convert_upload_part_copy_result, convert_complete_multipart_upload_result, convert_copy_object_result, \
-    convert_get_object_acl_result, convert_delete_objects_result
+from .consts import (CONNECT_TIMEOUT, EMPTY_SHA256_HASH, GMT_DATE_FORMAT,
+                     PAYLOAD_BUFFER)
+from .convertor import (convert_complete_multipart_upload_result,
+                        convert_copy_object_result,
+                        convert_create_multipart_upload_result,
+                        convert_delete_objects_result,
+                        convert_get_object_acl_result,
+                        convert_list_buckets_result,
+                        convert_list_multipart_uploads_result,
+                        convert_list_object_versions_result,
+                        convert_list_objects_result, convert_list_parts_result,
+                        convert_upload_part_copy_result)
 from .http import Request, Response
-from .models import RequestResult, HeadBucketResult, CreateBucketResult, HeadObjectResult, \
-    PutObjectResult, GetObjectResult, AppendObjectResult
-from .utils import to_bytes, to_str, get_value, get_content_type
+from .models import (AppendObjectResult, CreateBucketResult, GetObjectResult,
+                     HeadBucketResult, HeadObjectResult, PutObjectResult,
+                     RequestResult)
+from .utils import get_content_type, get_value, to_bytes, to_str
 
 logger = logging.getLogger(__name__)
 

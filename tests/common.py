@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 
-import tos
 import unittest
 
 from requests.structures import CaseInsensitiveDict
 
+import tos
 from tests.test_v2_bucker import random_string
 
 
@@ -37,6 +37,7 @@ class MockResponse():
     def iter_content(self, chunk_size=1, decode_unicode=False):
         def generate():
             yield self.body
+
         return generate()
 
 
@@ -50,5 +51,3 @@ def to_bytes(data):
         return data.encode(encoding='utf-8')
     else:
         return data
-
-

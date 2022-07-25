@@ -4,12 +4,14 @@ from datetime import datetime
 
 from requests.structures import CaseInsensitiveDict
 
-from tos.enum import StorageClassType, PermissionType, GranteeType, CannedType
+from tos.enum import CannedType, GranteeType, PermissionType, StorageClassType
 from tos.http import Response
+
 from . import utils
 from .models import CommonPrefixInfo
-from .utils import get_value, get_etag, parse_gmt_time_to_utc_datetime, parse_modify_time_to_utc_datetime, \
-    meta_header_decode
+from .utils import (get_etag, get_value, meta_header_decode,
+                    parse_gmt_time_to_utc_datetime,
+                    parse_modify_time_to_utc_datetime)
 
 
 class ResponseInfo(object):
@@ -309,12 +311,6 @@ class Grants(object):
         self.display_name = display_name
         self.type = type
         self.canned = canned
-
-
-class Grant(object):
-    def __init__(self, grantee: Grantee, permission: PermissionType):
-        self.grantee = grantee
-        self.permission = permission
 
 
 class PutObjectACLOutput(ResponseInfo):

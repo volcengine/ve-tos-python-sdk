@@ -52,5 +52,3 @@ else:
 # 清除本地文件
 os.remove('本地文件名.txt')
 os.remove('xx.txt')
-
-
