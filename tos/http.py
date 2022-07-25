@@ -1,6 +1,7 @@
+from requests.structures import CaseInsensitiveDict
+
 from .consts import CHUNK_SIZE
 from .utils import to_bytes
-from requests.structures import CaseInsensitiveDict
 
 
 class Request(object):

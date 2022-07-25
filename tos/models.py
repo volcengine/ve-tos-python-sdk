@@ -1,6 +1,7 @@
-import json
+
 from requests.structures import CaseInsensitiveDict
-from .utils import get_value, get_etag, parse_gmt_time_to_utc_datetime
+
+from .utils import get_etag, get_value, parse_gmt_time_to_utc_datetime
 
 
 class RequestResult(object):
@@ -305,4 +306,3 @@ class DeletedErrInfo(object):
         self.message = message
         self.key = key
         self.version_id = version_id
-

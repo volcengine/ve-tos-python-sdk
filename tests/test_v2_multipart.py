@@ -5,7 +5,7 @@ import unittest
 from tests.common import random_bytes
 from tests.test_v2_bucker import random_string
 from tos.clientv2 import TosClientV2
-from tos.enum import StorageClassType, ACLType
+from tos.enum import ACLType, StorageClassType
 from tos.exceptions import TosServerError
 from tos.models2 import UploadedPart
 
@@ -81,9 +81,9 @@ class TestMultipart(unittest.TestCase):
                                                          part_number=i, content=content)
             parts.append(UploadedPart(i, upload_part_output.etag))
 
-        list_parts = self.client.list_parts(bucket_name, key, mult_out.upload_id)
+        self.client.list_parts(bucket_name, key, mult_out.upload_id)
 
-        complete_out = self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
+        self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
 
         get_out = self.client.get_object(bucket_name, key)
         self.assertTrue(len(get_out.cache_control) > 0)
@@ -117,8 +117,7 @@ class TestMultipart(unittest.TestCase):
                                                    src_bucket=src_bucket_name, src_key=key)
         parts.append(UploadedPart(2, part_copy_2.etag))
 
-        complete_out = self.client.complete_multipart_upload(save_bucket_name, key, out.upload_id, parts)
-
+        self.client.complete_multipart_upload(save_bucket_name, key, out.upload_id, parts)
 
         get_out = self.client.get_object(save_bucket_name, key)
         self.assertEqual(get_out.read(), content + content)
@@ -142,7 +141,7 @@ class TestMultipart(unittest.TestCase):
 
         self.client.abort_multipart_upload(bucket_name, key, mult_out.upload_id)
         with self.assertRaises(TosServerError):
-            list_out = self.client.list_parts(bucket_name, key, mult_out.upload_id)
+            self.client.list_parts(bucket_name, key, mult_out.upload_id)
 
         self.client.delete_object(bucket_name, key)
         self.client.delete_bucket(bucket_name)
@@ -206,8 +205,8 @@ class TestMultipart(unittest.TestCase):
                                                                        part_size=5 * 1024 * 1024)
                 parts.append(UploadedPart(i, upload_part_output.etag))
 
-            list_parts = self.client.list_parts(bucket_name, key, mult_out.upload_id)
-            complete_out = self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
+            self.client.list_parts(bucket_name, key, mult_out.upload_id)
+            self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
             get_out = self.client.get_object(bucket_name, key)
             self.assertEqual(get_out.read(), content)
 
@@ -221,13 +220,16 @@ class TestMultipart(unittest.TestCase):
         key = self.random_key('.js')
 
         for i in range(100):
-            mult_out = self.client.create_multipart_upload(bucket_name, key+ str(i))
+            self.client.create_multipart_upload(bucket_name, key + str(i))
 
-        out = self.client.list_multipart_uploads(bucket_name, max_uploads=10)
-        print(1)
+        self.client.list_multipart_uploads(bucket_name, max_uploads=10)
 
     def random_key(self, suffix=''):
         key = self.prefix + random_string(12) + suffix
         self.key_list.append(key)
 
         return key
+
+
+if __name__ == '__main__':
+    unittest.main()
