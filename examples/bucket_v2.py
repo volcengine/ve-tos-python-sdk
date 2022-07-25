@@ -27,4 +27,3 @@ print(list_buckets.buckets)
 
 # 删除桶
 client.delete_bucket(bucket_name)
-

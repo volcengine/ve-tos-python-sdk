@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import datetime
-import pytz
 import json
-
-import tos
+import unittest
 from unittest import mock
-from .common import *
+
+import pytz
+
+from tests.common import MockResponse, TosTestCase
 
 
 class TestMultipart(TosTestCase):
@@ -81,7 +82,8 @@ class TestMultipart(TosTestCase):
                 },
             ]
         }
-        res = self.client.complete_multipart_upload(Bucket=self.bucket_name, Key=self.key_name, UploadId='upload-id', MultipartUpload=upload)
+        res = self.client.complete_multipart_upload(Bucket=self.bucket_name, Key=self.key_name, UploadId='upload-id',
+                                                    MultipartUpload=upload)
         self.assertEqual(res.location, self.location)
         self.assertEqual(res.bucket, self.bucket_name)
         self.assertEqual(res.key, self.key_name)
@@ -148,7 +150,6 @@ class TestMultipart(TosTestCase):
         self.assertEqual(len(res.common_prefix_list), 1)
         self.assertEqual(res.common_prefix_list[0].prefix, prefix)
 
-
     @mock.patch('requests.Session.request')
     def test_list_parts(self, mock_request):
         upload_id = 'upload-id'
@@ -169,7 +170,7 @@ class TestMultipart(TosTestCase):
                 'ID': 'id',
                 'DisplayName': 'name'
             },
-            'Parts':[
+            'Parts': [
                 {
                     'PartNumber': 11,
                     'LastModified': '2021-01-01T00:00:00.000Z',
@@ -180,7 +181,8 @@ class TestMultipart(TosTestCase):
         }
         mock_request.return_value = MockResponse(body=json.dumps(mock_data))
 
-        res = self.client.list_parts(Bucket=self.bucket_name, Key=self.key_name, UploadId=upload_id, MaxParts=max_parts, PartNumberMarker=part_number_marker)
+        res = self.client.list_parts(Bucket=self.bucket_name, Key=self.key_name, UploadId=upload_id, MaxParts=max_parts,
+                                     PartNumberMarker=part_number_marker)
         self.assertEqual(res.bucket, self.bucket_name)
         self.assertEqual(res.key, self.key_name)
         self.assertEqual(res.upload_id, upload_id)

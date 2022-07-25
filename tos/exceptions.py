@@ -2,7 +2,7 @@ import json
 
 from .http import Response
 from .models2 import ResponseInfo
-from .utils import to_str, get_value
+from .utils import get_value, to_str
 
 _TOS_ERROR_TO_EXCEPTION = {}
 

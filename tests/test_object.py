@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 
 import datetime
-import pytz
 import json
-
-import tos
+import unittest
 from unittest import mock
-from .common import *
+
+import pytz
+
+from tests.common import MockResponse, TosTestCase
 
 
 class TestObject(TosTestCase):
