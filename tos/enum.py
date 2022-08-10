@@ -1,6 +1,5 @@
 from enum import Enum
 
-
 """
 统一枚举定义文件
 """

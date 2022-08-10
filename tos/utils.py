@@ -1,6 +1,8 @@
 import datetime
 import errno
+import logging
 import os.path
+import re
 import sys
 import threading
 import time
@@ -12,9 +14,13 @@ import six
 
 from . import exceptions as exp
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
-                     LAST_MODIFY_TIME_DATE_FORMAT)
-from .enum import DataTransferType
+                     LAST_MODIFY_TIME_DATE_FORMAT, MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
+                     CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM)
+from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
+    GranteeType, CannedType
 from .mine_type import TYPES_MAP
+
+logger = logging.getLogger(__name__)
 
 
 def get_value(kv, key, handler=lambda x: x):
@@ -48,36 +54,6 @@ def to_str(data):
     return data
 
 
-def normalize_url_path(path):
-    if not path:
-        return '/'
-    return remove_dot_segments(path)
-
-
-def remove_dot_segments(url):
-    if not url:
-        return ''
-    input_url = url.split('/')
-    output_list = []
-    for x in input_url:
-        if x and x != '.':
-            if x == '..':
-                if output_list:
-                    output_list.pop()
-            else:
-                output_list.append(x)
-
-    if url[0] == '/':
-        first = '/'
-    else:
-        first = ''
-    if url[-1] == '/' and output_list:
-        last = '/'
-    else:
-        last = ''
-    return first + '/'.join(output_list) + last
-
-
 def parse_modify_time_to_utc_datetime(value):
     return datetime.datetime.strptime(value, LAST_MODIFY_TIME_DATE_FORMAT).replace(tzinfo=pytz.utc)
 
@@ -92,9 +68,19 @@ def get_content_type(key):
     return TYPES_MAP[ext] if ext in TYPES_MAP else DEFAULT_MIMETYPE
 
 
+def init_path(path: str):
+    if os.path.isdir(path) or os.path.isfile(path):
+        return
+    # 默认path为文件夹路径:
+    os.makedirs(path)
+
+
 def _make_range_string(start, last):
     if start is None and last is None:
         return ''
+
+    if start is not None and last is not None and start > last:
+        raise exp.TosClientError('invalid range format')
 
     return 'bytes=' + _range(start, last)
 
@@ -176,9 +162,6 @@ def _make_copy_source(src_bucket, src_key, src_version_id):
     return copy_source
 
 
-_CHUNK = 8 * 1024
-
-
 def _make_upload_part_file_content(file, offset, part_size, size):
     """创建 具备offset 和读取长度 file-object
     """
@@ -190,16 +173,20 @@ def _make_upload_part_file_content(file, offset, part_size, size):
     file.seek(offset, os.SEEK_SET)
 
     if part_size == -1 or (part_size + offset) >= size:
-        return SizeAdapter(file, size - offset)
+        return SizeAdapter(file, size - offset, init_offset=offset, can_reset=True)
     else:
-        return SizeAdapter(file, part_size)
+        return SizeAdapter(file, part_size, init_offset=offset, can_reset=True)
 
 
 class SizeAdapter(object):
-    def __init__(self, file_object, size):
+    def __init__(self, file_object, size, init_offset=None, can_reset=False):
         self.file_object = file_object
         self.size = size
         self.offset = 0
+        self.init_offset = init_offset
+        self.can_reset = can_reset
+        if init_offset:
+            self.file_object.seek(init_offset, os.SEEK_SET)
 
     def read(self, amt=None):
         if self.offset >= self.size:
@@ -216,6 +203,12 @@ class SizeAdapter(object):
     @property
     def len(self):
         return self.size
+
+    def reset(self):
+        if self.can_reset:
+            self.offset = 0
+            if self.init_offset is not None:
+                self.file_object.seek(self.init_offset, os.SEEK_SET)
 
 
 def meta_header_encode(query, doseq=False, safe='', encoding=None, errors=None,
@@ -268,7 +261,7 @@ def meta_header_encode(query, doseq=False, safe='', encoding=None, errors=None,
             else:
                 try:
                     # Is this a sufficient test for sequence-ness?
-                    x = len(v)
+                    len(v)
                 except TypeError:
                     # not a sequence
                     v = quote_via(str(v), safe, encoding, errors)
@@ -284,12 +277,10 @@ def meta_header_encode(query, doseq=False, safe='', encoding=None, errors=None,
     return headers
 
 
-def meta_header_decode(headers, encoding='utf-8', errors='replace'):
+def meta_header_decode(headers):
     decode_headers = {}
-    if encoding is None:
-        encoding = 'utf-8'
-    if errors is None:
-        errors = 'replace'
+    encoding = 'utf-8'
+    errors = 'replace'
 
     for en in headers:
         k = en
@@ -368,7 +359,8 @@ class _ReaderAdapter(object):
     """
 
     def __init__(self, data, progress_callback=None, size=None, crc_callback=None,
-                 limiter_callback=None, download_operator=False):
+                 limiter_callback=None, download_operator=False, can_reset=False,
+                 init_offset=None):
         self.data = to_bytes(data)
         self.progress_callback = progress_callback
         self.size = size
@@ -377,6 +369,13 @@ class _ReaderAdapter(object):
 
         self.crc_callback = crc_callback
         self.limiter_callback = limiter_callback
+        if hasattr(data, 'can_reset'):
+            self.can_reset = data.can_reset
+        else:
+            self.can_reset = can_reset
+        self.init_offset = init_offset
+        if self.init_offset is not None:
+            self.data.seek(init_offset, os.SEEK_SET)
 
     @property
     def len(self):
@@ -389,8 +388,7 @@ class _ReaderAdapter(object):
         return self.next()
 
     def next(self):
-        content = self.read(_CHUNK)
-
+        content = self.read(CHUNK_SIZE)
         if content:
             return content
         else:
@@ -413,7 +411,7 @@ class _ReaderAdapter(object):
         if isinstance(self.data, bytes):
             content = self.data[self.offset:self.offset + bytes_to_read]
         else:
-            content = self.data.read(bytes_to_read)
+            content = to_bytes(self.data.read(bytes_to_read))
 
         self.offset += bytes_to_read
 
@@ -422,7 +420,7 @@ class _ReaderAdapter(object):
 
         _cal_crc_callback(self.crc_callback, content)
 
-        _cal_rate_limiter_callback(self.limiter_callback, 1)
+        _cal_rate_limiter_callback(self.limiter_callback, bytes_to_read)
 
         return content
 
@@ -433,8 +431,45 @@ class _ReaderAdapter(object):
         else:
             return 0
 
+    def reset(self):
+        if self.can_reset:
+            self.offset = 0
+            if self.crc_callback:
+                self.crc_callback = self.crc_callback.reset()
+            if self.init_offset is not None:
+                self.data.seek(self.init_offset, os.SEEK_SET)
+            if isinstance(self.data, _ReaderAdapter) or isinstance(self.data, SizeAdapter):
+                self.data.reset()
 
-def add_progress_listener_func(data, progress_callback, size=None, download_operator=False):
+
+def init_content(data, can_reset=None, init_offset=None):
+    if isinstance(data, _ReaderAdapter):
+        return data
+
+    if can_reset is True:
+        return add_Background_func(data, can_reset=True, init_offset=init_offset)
+
+    if hasattr(data, 'seek') and hasattr(data, 'tell') and init_offset is not None:
+        return add_Background_func(data, can_reset=True, init_offset=init_offset)
+
+    if isinstance(data, SizeAdapter):
+        return add_Background_func(data, can_reset=True)
+
+    if not (hasattr(data, 'seek') and hasattr(data, 'tell')):
+        return add_Background_func(data, can_reset=True)
+
+    return add_Background_func(data, can_reset=False)
+
+
+def add_Background_func(data, size=None, can_reset=False, init_offset=None):
+    data = to_bytes(data)
+    if size is None:
+        size = _get_size(data)
+    return _ReaderAdapter(data, size=size, can_reset=can_reset, init_offset=init_offset)
+
+
+def add_progress_listener_func(data, progress_callback, size=None, download_operator=False, can_reset=False,
+                               init_offset=None):
     """
     向data添加进度条监控功能，通过adapter模式实现
     """
@@ -444,27 +479,28 @@ def add_progress_listener_func(data, progress_callback, size=None, download_oper
         size = _get_size(data)
 
     return _ReaderAdapter(data=data, progress_callback=progress_callback, size=size,
-                          download_operator=download_operator)
+                          download_operator=download_operator, can_reset=can_reset, init_offset=init_offset)
 
 
-def add_rate_limiter_func(data, rate_limiter):
+def add_rate_limiter_func(data, rate_limiter, can_reset=False, init_offset=None):
     """
     返回一个适配器，从而在读取、上传 'data'时，能够通过令牌桶算法进行限速
     """
     data = to_bytes(data)
 
-    return _ReaderAdapter(data=data, limiter_callback=rate_limiter, size=_get_size(data))
+    return _ReaderAdapter(data=data, limiter_callback=rate_limiter, size=_get_size(data), can_reset=can_reset,
+                          init_offset=init_offset)
 
 
-def add_crc_func(data, init_crc=0, discard=0, size=None):
+def add_crc_func(data, init_crc=0, discard=0, size=None, can_reset=False):
     """
     向data中添加crc计算功能，实现上传和下载对象后得到本地对象crc计算值
     """
     data = to_bytes(data)
-    if size == None:
+    if size is None:
         size = _get_size(data)
 
-    return _ReaderAdapter(data, size=size, crc_callback=Crc64(init_crc))
+    return _ReaderAdapter(data, size=size, crc_callback=Crc64(init_crc), can_reset=can_reset)
 
 
 def _get_size(data):
@@ -496,24 +532,25 @@ class RateLimiter(object):
         self._rate = rate
         self._capacity = capacity
         self._current_amount = 0
-        self._demand_count = 0
         self._last_consume_time = int(time.time())
         self._lock = threading.Lock()
 
-    # token_amount是发送数据需要的令牌数
+    # want是发送数据需要的令牌数
     def acquire(self, want):
         with self._lock:
             increment = (int(time.time()) - self._last_consume_time) * self._rate  # 计算从上次发送到这次发送，新发放的令牌数量
             self._current_amount = min(
                 increment + self._current_amount, self._capacity)  # 令牌数量不能超过桶的容量
             if want > self._current_amount:  # 如果没有⾜够的令牌，则不能发送数据
-                self._demand_count += want
-                time_to_wait = (self._demand_count - self._current_amount) / self._rate
+                time_to_wait = (want - self._current_amount) / self._rate
                 return TokenBucketResult(False, int(time_to_wait))
             self._last_consume_time = int(time.time())
             self._current_amount -= want
-            self._demand_count = max(self._demand_count - want, 0)
             return TokenBucketResult(True, 0)
+
+    def reset(self):
+        r = RateLimiter(self._rate, self._capacity)
+        return r
 
 
 class Crc64(object):
@@ -522,6 +559,7 @@ class Crc64(object):
 
     def __init__(self, init_crc=0):
         init_crc = int(init_crc)
+        self.init_crc = init_crc
         self.crc64 = crcmod.Crc(self._POLY, initCrc=init_crc, rev=True, xorOut=self._XOROUT)
 
         self.crc64_combineFun = mkCombineFun(self._POLY, initCrc=init_crc, rev=True, xorOut=self._XOROUT)
@@ -539,6 +577,10 @@ class Crc64(object):
     @property
     def crc(self):
         return self.crc64.crcValue
+
+    def reset(self):
+        c = Crc64(init_crc=self.init_crc)
+        return c
 
 
 def check_crc(operation, client_crc, tos_crc, request_id):
@@ -599,7 +641,7 @@ def mkCombineFun(poly, initCrc=~long(0), rev=True, xorOut=0):
     if sizeBits == 64:
         fun = _combine64
     else:
-        raise NotImplemented
+        raise NotImplementedError
 
     def combine_fun(crc1, crc2, len2):
         return fun(poly, initCrc ^ xorOut, rev, xorOut, crc1, crc2, len2)
@@ -713,3 +755,162 @@ def _verifyParams(poly, initCrc, xorOut):
         xorOut = int(xorOut)
 
     return (sizeBits, initCrc, xorOut)
+
+
+class CacheEntry(object):
+    def __init__(self, host, ip_list, expire):
+        self.host = host
+        infos = []
+        for ip in ip_list:
+            infos.append(AddrInfo(ip[0], ip[1]))
+        self.ip_list = infos
+        self.expire = expire
+        self.lock = threading.Lock()
+
+    def remove(self, entry):
+        with self.lock:
+            if entry in self.ip_list:
+                self.ip_list.remove(entry)
+
+    def copy_ip_list(self):
+        return self.ip_list.copy()
+
+
+class AddrInfo(object):
+    def __init__(self, ip, port):
+        self.ip = ip
+        self.port = port
+
+
+class DnsCacheService(object):
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.cache = {}
+
+    def get_ip_list(self, host: str) -> CacheEntry:
+        now = int(time.time())
+        with self.lock:
+            if host in self.cache:
+                info = self.cache[host]
+                if info.expire >= now:
+                    return info
+                self.cache.pop(host)
+
+    def add(self, host, ip_list, expire):
+        entry = CacheEntry(host, ip_list, expire)
+        with self.lock:
+            if host in self.cache:
+                return
+            self.cache[host] = entry
+            logger.info('in-request: add cache host:{}'.format(host))
+
+    def remove(self, host):
+        with self.lock:
+            if host in self.cache:
+                self.cache.pop(host)
+
+
+def check_enum_type(acl=None, storage_class=None, metadata_directive=None, az_redundancy=None,
+                    permission=None, grantee=None, canned=None):
+    if acl:
+        check_acl_type(acl)
+
+    if storage_class:
+        check_storage_class_type(storage_class)
+
+    if metadata_directive:
+        check_metadata_directive_type(metadata_directive)
+
+    if az_redundancy:
+        check_az_redundancy_type(az_redundancy)
+
+    if permission:
+        check_permission_type(permission)
+
+    if grantee:
+        check_grantee_type(grantee)
+
+    if canned:
+        check_canned_type(canned)
+
+
+def check_acl_type(obj):
+    if not isinstance(obj, ACLType):
+        raise exp.TosClientError('invalid acl type')
+
+
+def check_storage_class_type(obj):
+    if not isinstance(obj, StorageClassType):
+        raise exp.TosClientError('invalid storage class')
+
+
+def check_metadata_directive_type(obj):
+    if not isinstance(obj, MetadataDirectiveType):
+        raise exp.TosClientError('invalid metadata directive type')
+
+
+def check_az_redundancy_type(obj):
+    if not isinstance(obj, AzRedundancyType):
+        raise exp.TosClientError('invalid az redundancy type')
+
+
+def check_permission_type(obj):
+    if not isinstance(obj, PermissionType):
+        raise exp.TosClientError('invalid permission type')
+
+
+def check_grantee_type(obj):
+    if not isinstance(obj, GranteeType):
+        raise exp.TosClientError('invalid grantee type')
+
+
+def check_canned_type(obj):
+    if not isinstance(obj, CannedType):
+        raise exp.TosClientError('invalid canned type')
+
+
+def check_part_size(part_size):
+    if not (part_size is not None and MIN_PART_SIZE <= part_size <= MAX_PART_SIZE):
+        raise exp.TosClientError('invalid part size, the size must be [5242880, 5368709120], size={}'.format(part_size))
+
+
+def check_part_number(size, part_size):
+    number = get_number(size, part_size)
+    if number > MAX_PART_NUMBER:
+        raise exp.TosClientError('unsupported part number, the maximum is 10000')
+
+
+def check_client_encryption_algorithm(algorithm):
+    if algorithm:
+        if algorithm not in CLIENT_ENCRYPTION_ALGORITHM:
+            return exp.TosClientError('invalid encryption-decryption algorithm')
+
+
+def check_server_encryption_algorithm(algorithm):
+    if algorithm:
+        if algorithm not in SERVER_ENCRYPTION_ALGORITHM:
+            return exp.TosClientError('invalid encryption-decryption algorithm')
+
+
+def is_ip(host):
+    p = re.compile('^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$')
+    if p.match(host):
+        return True
+    else:
+        return False
+
+
+class LogInfo(object):
+    def __init__(self):
+        self.start = time.perf_counter()
+
+    def fail(self, func_name, e):
+        logger.info('after-request: {}  exception: {}'.format(func_name, e))
+        raise e
+
+    def success(self, func_name, res):
+        end = time.perf_counter()
+        logger.info(
+            'after-request: {} exec httpCode: {}, requestId: {}, usedTime: {} s'.format(func_name, res.status,
+                                                                                        res.request_id,
+                                                                                        end - self.start))

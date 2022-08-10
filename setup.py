@@ -21,6 +21,7 @@ REQUIRES = [
     'Deprecated>=1.2.13,<2.0.0',
     'pytest-cov>=3.0.0,<4.0.0',
     'pytest>=4.0.0,<5.0.0',
+    'urllib3>=1.25.11',
 ]
 
 # 开发、测试过程中需要的依赖
@@ -29,7 +30,8 @@ DEV_REQUIRES = [
     'mypy>=0.620; python_version>="3.4"',
     'tox>=3.0.0,<4.0.0',
     'isort>=4.0.0,<5.0.0',
-    'pytest>=4.0.0,<5.0.0'
+    'pytest>=4.0.0,<5.0.0',
+    'urllib3>=1.25.11',
 ]
 
 here = os.path.abspath(os.path.dirname(__file__))

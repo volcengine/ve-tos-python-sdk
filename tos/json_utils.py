@@ -1,5 +1,5 @@
-from tos.enum import PermissionType
 from tos.models2 import Owner
+from tos.utils import check_enum_type
 
 
 def to_complete_multipart_upload_request(parts: list):
@@ -27,14 +27,17 @@ def to_put_object_acl_request(owner: Owner, grants: []):
     if owner:
         data['Owner'] = {"ID": owner.id, "DisplayName": owner.display_name}
     if grants:
-        l = []
+        convertor_grant = []
         for grant in grants:
             m = {}
             grantee = grant.grantee
-            m['Grantee'] = {'ID': grantee.id, 'Type': grantee.type.value, 'DisplayName': grantee.display_name,
-                            'Canned': grantee.canned.value}
+            check_enum_type(grantee=grantee.type, canned=grantee.canned, permission=grant.permission)
+            m['Grantee'] = {'ID': grantee.id, 'Type': grantee.type.value, 'DisplayName': grantee.display_name}
+            if grantee.canned:
+                m['Grantee']['Canned'] = grantee.canned.value
+
             m['Permission'] = grant.permission.value
-            l.append(m)
-        data['Grants'] = l
+            convertor_grant.append(m)
+        data['Grants'] = convertor_grant
 
     return data

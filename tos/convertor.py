@@ -321,7 +321,7 @@ def convert_get_object_acl_result(resp):
 
 def convert_list_buckets_output(resp: Response) -> ListBucketsOutput:
     output = ListBucketsOutput(resp)
-    data = json.loads(resp.read())
+    data = resp.json_read()
     output.owner = Owner(
         get_value(data['Owner'], 'ID'),
         get_value(data['Owner'], 'Name'),
@@ -338,45 +338,9 @@ def convert_list_buckets_output(resp: Response) -> ListBucketsOutput:
     return output
 
 
-def convert_get_object_acl_output(resp: Response) -> GetObjectACLOutput:
-    pass
-
-
-def convert_head_object_output(resp: Response) -> HeadObjectOutput:
-    output = HeadObjectOutput(resp)
-    output.content_type = get_value(resp.headers, 'content-type')
-    output.content_length = get_value(resp.headers, 'content-length', lambda x: int(x))
-    output.etag = get_etag(resp.headers)
-    output.version_id = get_value(resp.headers, 'x-tos-version-id')
-    output.sse_algorithm = get_value(resp.headers, 'x-tos-server-side-encryption-customer-algorithm')
-    output.sse__key_md5 = get_value(resp.headers, 'x-tos-server-side-encryption-customer-key-md5')
-    output.website_redirect_location = get_value(resp.headers, 'x-tos-website-redirect-location')
-    output.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma', lambda x: int(x))
-    output.storage_class = StorageClassType(get_value(resp.headers, 'x-tos-storage-class'))
-    output.meta = CaseInsensitiveDict()
-    output.object_type = get_value(resp.headers, 'x-tos-object-type')
-    if not output.object_type:
-        output.object_type = 'Normal'
-    for k in resp.headers:
-        if k.startswith('x-tos-meta-'):
-            output.meta[k[11:]] = resp.headers[k]
-
-    output.last_modified = get_value(resp.headers, 'last-modified')
-    if output.last_modified:
-        output.last_modified = parse_gmt_time_to_utc_datetime(output.last_modified)
-    output.expires = get_value(resp.headers, 'expires')
-    if output.expires:
-        output.expires = parse_gmt_time_to_utc_datetime(output.expires)
-
-    if get_value(resp.headers, 'x-tos-delete-marker'):
-        output.delete_marker = True
-    else:
-        output.delete_marker = False
-
-
 def convert_list_object_versions_output(resp):
     result = ListObjectVersionsOutput(resp)
-    data = json.loads(resp.read())
+    data = resp.json_read()
 
     result.name = get_value(data, 'Name')
     result.prefix = get_value(data, 'Prefix')
@@ -393,7 +357,7 @@ def convert_list_object_versions_output(resp):
         result.encoding_type = 'url'
 
     if get_value(data, 'IsTruncated'):
-        result.is_truncated = get_value(data, 'IsTruncated')
+        result.is_truncated = get_value(data, 'IsTruncated', lambda x: bool(x))
     else:
         result.is_truncated = False
 
