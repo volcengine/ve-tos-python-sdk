@@ -1,6 +1,5 @@
 import json
 
-from .http import Response
 from .models2 import ResponseInfo
 from .utils import get_value, to_str
 
@@ -41,7 +40,7 @@ class TosClientError(TosError):
 
 
 class TosServerError(TosError, ResponseInfo):
-    def __init__(self, resp: Response, msg: str, code: str, host_id: str, resource: str):
+    def __init__(self, resp, msg: str, code: str, host_id: str, resource: str):
         self.message = msg
         self.request_id = resp.request_id
         self.id2 = get_value(resp.headers, "x-tos-id-2")
@@ -63,7 +62,7 @@ class TosServerError(TosError, ResponseInfo):
         return str(error)
 
 
-def make_server_error(resp: Response):
+def make_server_error(resp):
     body = resp.read()
     details = _parse_error_body(body)
     code = details.get('Code', '')
@@ -90,12 +89,3 @@ class CancelWithAbortError(CancelError):
 class CancelNotWithAbortError(CancelError):
     def __init__(self, message):
         super(CancelNotWithAbortError, self).__init__(message)
-
-
-class IllegalObjectKey(Exception):
-    def __init__(self):
-        self.msg = 'invalid object name'
-
-    def __str__(self):
-        info = {'message': self.msg}
-        return str(info)

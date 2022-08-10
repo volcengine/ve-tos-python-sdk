@@ -1,4 +1,3 @@
-import abc
 import logging
 import threading
 import time
@@ -28,6 +27,9 @@ class CredentialsProvider():
     def get_credentials(self):
         return
 
+    def copy(self):
+        return
+
 
 class StaticCredentials(CredentialsProvider):
     def __init__(self, access_key_id, access_key_secret, security_token=None):
@@ -35,6 +37,10 @@ class StaticCredentials(CredentialsProvider):
 
     def get_credentials(self):
         return self.credentials
+
+    def copy(self):
+        return Credentials(self.credentials.access_key_id, self.credentials.access_key_secret,
+                           self.credentials.security_token)
 
 
 class FederationToken():
