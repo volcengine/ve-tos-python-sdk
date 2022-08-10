@@ -12,6 +12,7 @@ from urllib.parse import quote
 
 import requests
 from deprecated import deprecated
+from requests.adapters import HTTPAdapter, Retry
 from requests.structures import CaseInsensitiveDict
 
 from tos.__version__ import __version__
@@ -54,20 +55,91 @@ def _if_map(region: str, endpoint: str):
         return endpoint
 
 
+def _format_endpoint(endpoint):
+    if not endpoint.startswith('http://') and not endpoint.startswith('https://'):
+        return 'https://' + endpoint
+    else:
+        return endpoint
+
+
+def _make_uri(bucket=None, key=None):
+    if bucket and not key:
+        return '/{0}'.format(bucket)
+    if bucket and key:
+        return '/{0}/{1}'.format(bucket, key)
+    return '/'
+
+
+def _make_virtual_host_uri(key=None):
+    if key:
+        return '/{0}'.format(key)
+    return '/'
+
+
+def _get_host(endpoint):
+    if endpoint.startswith('http://'):
+        return endpoint[7:]
+    if endpoint.startswith('https://'):
+        return endpoint[8:]
+    return endpoint
+
+
+def _get_scheme(endpoint):
+    if endpoint.startswith('http://'):
+        return 'http://'
+    if endpoint.startswith('https://'):
+        return 'https://'
+    return 'https://'
+
+
+def _get_virtual_host(bucket, endpoint):
+    if bucket:
+        return bucket + '.' + _get_host(endpoint)
+    else:
+        return _get_host(endpoint)
+
+
+def _cal_content_sha256(data):
+    if data and hasattr(data, 'seek'):
+        position = data.tell()
+        read_chunksize = functools.partial(data.read,
+                                           PAYLOAD_BUFFER)
+        checksum = sha256()
+        for chunk in iter(read_chunksize, b''):
+            checksum.update(chunk)
+        hex_checksum = checksum.hexdigest()
+        data.seek(position)
+        return hex_checksum
+    elif data:
+        return sha256(data).hexdigest()
+    else:
+        return EMPTY_SHA256_HASH
+
+
+def _make_virtual_host_url(host, scheme, bucket=None, key=None):
+    url = host
+    if bucket and key:
+        url = '{0}.{1}/{2}'.format(bucket, host, quote(key, '/~'))
+    elif bucket and not key:
+        url = '{0}.{1}'.format(bucket, host)
+
+    return _format_endpoint(scheme + url)
+
+
 class TosClient():
     def __init__(self, auth, endpoint, connect_timeout=None, connection_pool_size=10, recognize_content_type=True):
         self.auth = auth
-        self.endpoint = self._format_endpoint(_if_map(auth.region, endpoint))
-        self.host = self._get_host(endpoint)
-        self.scheme = self._get_scheme(endpoint)
+        self.endpoint = _format_endpoint(_if_map(auth.region, endpoint))
+        self.host = _get_host(endpoint)
+        self.scheme = _get_scheme(endpoint)
         self.timeout = connect_timeout or CONNECT_TIMEOUT
         self.recognize_content_type = recognize_content_type
 
         self.session = requests.Session()
-        self.session.mount('http://', requests.adapters.HTTPAdapter(pool_connections=connection_pool_size,
-                                                                    pool_maxsize=connection_pool_size))
-        self.session.mount('https://', requests.adapters.HTTPAdapter(pool_connections=connection_pool_size,
-                                                                     pool_maxsize=connection_pool_size))
+        self.session.mount('http://', HTTPAdapter(pool_connections=connection_pool_size,
+                                                  pool_maxsize=connection_pool_size))
+        self.session.mount('https://', HTTPAdapter(pool_connections=connection_pool_size,
+                                                   pool_maxsize=connection_pool_size))
 
     @deprecated(version='2.1.0', reason="please use TosClientV2")
     def generate_presigned_url(self, Method: str, Bucket: str = None, Key: str = None, Params: Dict = None,
@@ -87,11 +159,11 @@ class TosClient():
         req = Request(
             Method,
             self._make_virtual_host_url(Bucket, key),
-            self._make_virtual_host_uri(key),
-            self._get_virtual_host(Bucket, self.endpoint),
+            _make_virtual_host_uri(key),
+            _get_virtual_host(Bucket, self.endpoint),
             params=params,
         )
-        return self.auth._sign_url(req, ExpiresIn)
+        return self.auth.sign_url(req, ExpiresIn)
 
     @deprecated(version='2.1.0', reason="please use TosClientV2")
     def create_bucket(self, Bucket: str, ACL: str = None, GrantFullControl: str = None, GrantRead: str = None,
@@ -1025,68 +1097,8 @@ class TosClient():
             'delete_objects, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return convert_delete_objects_result(resp)
 
-    def _format_endpoint(self, endpoint):
-        if not endpoint.startswith('http://') and not endpoint.startswith('https://'):
-            return 'https://' + endpoint
-        else:
-            return endpoint
-
-    def _make_uri(self, bucket=None, key=None):
-        if bucket and not key:
-            return '/{0}'.format(bucket)
-        if bucket and key:
-            return '/{0}/{1}'.format(bucket, key)
-        return '/'
-
     def _make_virtual_host_url(self, bucket=None, key=None):
-        url = self.host
-        if bucket and key:
-            url = '{0}.{1}/{2}'.format(bucket, self.host, quote(key, '/~'))
-        elif bucket and not key:
-            url = '{0}.{1}'.format(bucket, self.host)
-
-        return self._format_endpoint(self.scheme + url)
-
-    def _make_virtual_host_uri(self, key=None):
-        if key:
-            return '/{0}'.format(key)
-        return '/'
-
-    def _get_host(self, endpoint):
-        if endpoint.startswith('http://'):
-            return endpoint[7:]
-        if endpoint.startswith('https://'):
-            return endpoint[8:]
-        return endpoint
-
-    def _get_scheme(self, endpoint):
-        if endpoint.startswith('http://'):
-            return 'http://'
-        if endpoint.startswith('https://'):
-            return 'https://'
-        return 'http://'
-
-    def _get_virtual_host(self, bucket, endpoint):
-        if bucket:
-            return bucket + '.' + self._get_host(endpoint)
-        else:
-            return self._get_host(endpoint)
-
-    def _cal_content_sha256(self, data):
-        if data and hasattr(data, 'seek'):
-            position = data.tell()
-            read_chunksize = functools.partial(data.read,
-                                               PAYLOAD_BUFFER)
-            checksum = sha256()
-            for chunk in iter(read_chunksize, b''):
-                checksum.update(chunk)
-            hex_checksum = checksum.hexdigest()
-            data.seek(position)
-            return hex_checksum
-        elif data:
-            return sha256(data).hexdigest()
-        else:
-            return EMPTY_SHA256_HASH
+        return _make_virtual_host_url(self.host, self.scheme, bucket, key)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None):
         key = to_str(key)
@@ -1095,15 +1107,15 @@ class TosClient():
         headers = CaseInsensitiveDict(headers)
 
         if headers.get('x-tos-content-sha256') is None:
-            headers['x-tos-content-sha256'] = self._cal_content_sha256(data)
+            headers['x-tos-content-sha256'] = _cal_content_sha256(data)
 
         req = Request(method, self._make_virtual_host_url(bucket, key),
-                      self._make_virtual_host_uri(key),
-                      self._get_virtual_host(bucket, self.endpoint),
+                      _make_virtual_host_uri(key),
+                      _get_virtual_host(bucket, self.endpoint),
                       data=data,
                       params=params,
                       headers=headers)
-        self.auth._sign_request(req)
+        self.auth.sign_request(req)
 
         if 'User-Agent' not in req.headers:
             req.headers['User-Agent'] = USER_AGENT

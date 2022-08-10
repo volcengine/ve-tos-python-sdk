@@ -1,7 +1,12 @@
+import json
+from json import JSONDecodeError
+
 from requests.structures import CaseInsensitiveDict
 
+from . import exceptions
 from .consts import CHUNK_SIZE
-from .utils import to_bytes
+from .exceptions import TosClientError
+from .utils import get_value, to_bytes
 
 
 class Request(object):
@@ -21,11 +26,23 @@ class Response(object):
         self.resp = resp
         self.status = resp.status_code
         self.headers = CaseInsensitiveDict(resp.headers)
+        self.content_length = get_value(self.headers, "content-length", lambda x: int(x))
         self.request_id = self.headers.get('x-tos-request-id', '')
         self._all_read = False
+        self.offset = 0
 
     def __iter__(self):
-        return self.resp.iter_content(CHUNK_SIZE)
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        content = self.read(CHUNK_SIZE)
+        if content:
+            return content
+        else:
+            raise StopIteration
 
     def read(self, amt=None):
         if self._all_read:
@@ -38,10 +55,23 @@ class Response(object):
             content = b''.join(content_list)
 
             self._all_read = True
+            if self.content_length and len(content) != self.content_length:
+                raise exceptions.TosClientError('IO Content not equal content-length')
             return content
         else:
             try:
-                return next(self.resp.iter_content(amt))
+                read = next(self.resp.iter_content(amt))
+                self.offset += len(read)
+                return read
             except StopIteration:
+                if self.content_length and self.offset != self.content_length:
+                    raise exceptions.TosClientError('IO Content not equal content-length')
                 self._all_read = True
                 return b''
+
+    def json_read(self):
+        try:
+            body = self.read()
+            return json.loads(body)
+        except JSONDecodeError as e:
+            raise TosClientError('unable to do serialization', e)
