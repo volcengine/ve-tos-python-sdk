@@ -1,13 +1,17 @@
 import datetime
+import logging
 import os
 import unittest
 
 from tests.common import random_bytes
 from tests.test_v2_bucker import random_string
+from tos import set_logger
 from tos.clientv2 import TosClientV2
 from tos.enum import ACLType, StorageClassType
 from tos.exceptions import TosServerError
 from tos.models2 import UploadedPart
+
+set_logger(level=logging.WARNING)
 
 
 class TestMultipart(unittest.TestCase):
@@ -23,7 +27,8 @@ class TestMultipart(unittest.TestCase):
         self.key_list = []
 
     def setUp(self):
-        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region)
+        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, dns_cache_time=60 * 60,
+                                  request_timeout=10)
 
     def test_multipart(self):
         bucket_name = self.bucket_name + "-test-multipart"
@@ -68,7 +73,7 @@ class TestMultipart(unittest.TestCase):
         meta = {'name': 'sunyushan'}
         mult_out = self.client.create_multipart_upload(bucket_name, key, cache_control="Cache-Control",
                                                        content_disposition="test", content_encoding="utf-8",
-                                                       expires=datetime.date(2023, 1, 1),
+                                                       expires=datetime.datetime(2023, 1, 1),
                                                        content_language="english", content_type="text",
                                                        acl=ACLType.ACL_Bucket_Owner_Full_Control,
                                                        meta=meta,

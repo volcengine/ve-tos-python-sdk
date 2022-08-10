@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-
+import json
 import unittest
 
 from requests.structures import CaseInsensitiveDict
 
 import tos
 from tests.test_v2_bucker import random_string
+from tos import TosClientV2
 
 
 class TosTestCase(unittest.TestCase):
@@ -51,3 +52,19 @@ def to_bytes(data):
         return data.encode(encoding='utf-8')
     else:
         return data
+
+
+class TestClient2(TosClientV2):
+
+    def put_bucket_versioning(self, bucket, enable=False):
+        data = {}
+        if enable:
+            data['Status'] = 'Enabled'
+        else:
+            data['Status'] = 'Suspended'
+
+        query = {}
+        params = {'versioning': ''}
+        data = json.dumps(data)
+        resp = super(TestClient2, self)._req(bucket=bucket, method='PUT', data=data, params=params)
+        return resp

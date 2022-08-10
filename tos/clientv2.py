@@ -1,57 +1,66 @@
 # -*- coding: utf-8 -*-
 import base64
-import functools
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
-import re
+import random
 import shutil
+import socket
 import sys
+import threading
 import time
+import traceback
 import urllib.parse
 from datetime import datetime
+from socket import error as SocketError, timeout as SocketTimeout
 from typing import Dict
 
 import requests
 from requests.structures import CaseInsensitiveDict
+from urllib3.util import connection
 
 from tos import TosClient
 from tos.__version__ import __version__
-
 from . import exceptions, utils
 from .auth import Auth
-from .checkpoint import CheckPointStore, _BreakpointUploader
-from .consts import GMT_DATE_FORMAT, UNSIGNED_PAYLOAD
+from .checkpoint import (CheckPointStore, _BreakpointDownloader,
+                         _BreakpointUploader)
+from .client import _make_virtual_host_url, _make_virtual_host_uri, _get_virtual_host, _get_host, _get_scheme
+from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
+                     WHITE_LIST_FUNCTION)
 from .convertor import (convert_list_buckets_output,
                         convert_list_object_versions_output)
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType)
-from .exceptions import IllegalObjectKey, TosClientError, TosServerError
+from .exceptions import TosClientError, TosServerError
 from .http import Request, Response
 from .json_utils import (to_complete_multipart_upload_request,
-                         to_put_object_acl_request)
+                         to_put_object_acl_request, to_delete_multi_objects_request)
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       CompleteMultipartUploadOutput, CopyObjectOutput,
                       CreateBucketOutput, CreateMultipartUploadOutput,
                       DeleteBucketOutput, DeleteObjectOutput,
-                      DeleteObjectsOutput, GetObjectACLOutput, GetObjectOutput,
-                      HeadBucketOutput, HeadObjectOutput, ListBucketsOutput,
+                      DeleteObjectsOutput, DownloadPartInfo,
+                      GetObjectACLOutput, GetObjectOutput, HeadBucketOutput,
+                      HeadObjectOutput, ListBucketsOutput,
                       ListMultipartUploadsOutput, ListObjectsOutput,
                       ListPartsOutput, Owner, PartInfo, PreSignedURLOutput,
                       PutObjectACLOutput, PutObjectOutput, SetObjectMetaOutput,
                       UploadFileOutput, UploadPartCopyOutput, UploadPartOutput,
                       _PartToDo)
-from .utils import (_cal_upload_callback, _make_copy_source,
+from .utils import (SizeAdapter, _cal_upload_callback, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
-                    generate_http_proxies, get_content_type,
-                    get_parent_directory_from_File, get_value,
+                    _ReaderAdapter, generate_http_proxies, get_content_type,
+                    get_parent_directory_from_File, get_value, init_content,
                     is_utf8_with_trigger, meta_header_encode, to_bytes, to_str,
-                    to_unicode)
+                    to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
+                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo)
 
 logger = logging.getLogger(__name__)
-
+_dns_cache = DnsCacheService()
 USER_AGENT = 'tos-python-sdk/{0}({1}/{2};{3})'.format(__version__, sys.platform, platform.machine(),
                                                       platform.python_version())
 
@@ -493,23 +502,21 @@ def _get_upload_part_headers(content_length, content_md5, server_side_encryption
     return headers
 
 
-def _valid_upload_checkpoint(bucket, store: CheckPointStore, key: str, modify_time) -> bool:
+def _valid_upload_checkpoint(bucket, store: CheckPointStore, key: str, modify_time, part_size) -> bool:
     if os.path.exists(store.path(bucket, key)):
         content = store.get(key=key, bucket=bucket)
-        if content and content["file_info"]['last_modified'] == modify_time:
+        if content and content["file_info"]['last_modified'] == modify_time and content['part_size'] == part_size:
             return True
 
     return False
 
 
-def _valid_download_checkpoint(bucket, store: CheckPointStore, key: str, etag: str) -> bool:
+def _valid_download_checkpoint(bucket, store: CheckPointStore, key: str, etag: str, part_size) -> bool:
     if os.path.exists(store.path(bucket, key)):
         content = store.get(key=key, bucket=bucket)
-
         if content:
             object_info = content['object_info']
-            save_etag = object_info['etag']
-            if save_etag and etag == save_etag:
+            if etag == object_info['etag'] and content['part_size'] == part_size:
                 return True
 
     return False
@@ -543,51 +550,17 @@ def _get_parts_to_download(size, part_size, parts_downloaded):
     return all_parts_map.values()
 
 
-def _log_execution_time(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            start = time.perf_counter()
-            res = func(*args, **kwargs)
-            end = time.perf_counter()
-            logger.info(
-                '{} exec httpCode: {}, requestId: {}, usedTime: {} s'.format(func.__name__, res.status_code,
-                                                                             res.request_id, end - start))
-            return res
-        except (TosServerError, TosClientError) as e:
-            logger.info(e)
-            raise e
-
-    return wrapper
-
-
-# TODO not finished
-def _retry_policy(func):
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        retry_count = 0
-        while True:
-            try:
-                func(*args, **kwargs)
-            except TosClientError as e:
-                continue
-            except TosServerError as e:
-                pass
-
-    return wrapper
-
-
 class TosClientV2(TosClient):
     def __init__(self, ak, sk, endpoint, region,
                  security_token=None,
                  auto_recognize_content_type=True,
                  max_retry_count=3,
-                 request_timeout: int = 60000,
+                 request_timeout: int = 60,
                  max_connections=1024,
                  enable_crc=True,
-                 connection_time=10000,
+                 connection_time=10,
                  enable_verify_ssl=False,
-                 dns_cache_time=0,
+                 dns_cache_time=1,
                  proxy_host: str = None,
                  proxy_port: int = None,
                  proxy_username: str = None,
@@ -638,14 +611,48 @@ class TosClientV2(TosClient):
         self.proxy_port = proxy_port
         self.proxy_username = proxy_username
         self.proxy_password = proxy_password
-        self.enable_crc = False
+        self.enable_crc = enable_crc
         self.proxies = generate_http_proxies(proxy_host, proxy_port, proxy_username, proxy_password)
+
+        # 控制动态调整初始参数
+        self.lock = threading.RLock()
+        # 通过 hook 机制实现in-request log
+        self.session.hooks['response'].append(hook_request_log)
+
+        # 开启DNS缓存
+        if self.dns_cache_time is not None and self.dns_cache_time > 0:
+            self._open_dns_cache()
+
+    # def set_keys(self, new_ak=None, new_sk=None, new_security_token=None):
+    #     """ 动态调整Access Key、Secret Access Key、 security_token。若相关参数未设置，则默认使用对应初始 Clinet2 值
+    #
+    #     :param new_ak: Access Key ID: 访问密钥ID，用于标识用户
+    #     :param new_sk: Secret Access Key: 与访问密钥ID结合使用的密钥，用于加密签名
+    #     :param new_security_token: 临时鉴权 Token
+    #     """
+    #     with self.lock:
+    #         ak, sk, sts, region = self.auth.copy()
+    #         auth = Auth(new_ak or ak, new_sk or sk, new_security_token or sts)
+    #         self.auth = auth
+    #
+    # def set_endpoint_region(self, new_endpoint, new_region):
+    #     """ 动态调整 new_endpoint new_region
+    #     :param new_endpoint: TOS 服务端域名，完整格式：https://{host}:{port}
+    #     :param new_region: TOS 服务端所在区域
+    #     """
+    #     with self.lock:
+    #         if new_region:
+    #             ak, sk, sts, region = self.auth.copy()
+    #             auth = Auth(ak, sk, new_region or region, sts)
+    #             self.auth = auth
+    #         self.endpoint = new_endpoint or self.endpoint
 
     def pre_signed_url(self, http_method: HttpMethodType, bucket: str,
                        key: str = None,
                        expires: int = 3600,
                        header: Dict = None,
-                       query: Dict = None):
+                       query: Dict = None,
+                       alternative_endpoint: str = None):
         """生成签名url
 
         :param http_method: http方法
@@ -654,25 +661,29 @@ class TosClientV2(TosClient):
         :param expires: 过期时间（单位：秒），链接在当前时间再过expires秒后过期
         :param header: 需要签名的头部信息
         :param query: 需要签名的http查询参数
-        :return 签名url
+        :param alternative_endpoint:
+        :return 签名url:如果该参数不为空，则声称的 signed url 使用该参数作为域名，而不是使用 TOS Client 初始化参数中的 endpoint
         """
         if not _is_valid_expires(expires):
-            raise TosClientError('tos: expires invalid')
+            raise TosClientError('expires invalid')
         key = to_str(key)
         params = query or {}
+        header = header or {}
+        endpoint = alternative_endpoint or self.endpoint
         req = Request(
             http_method.value,
-            self._make_virtual_host_url(bucket, key),
-            self._make_virtual_host_uri(key),
-            self._get_virtual_host(bucket, self.endpoint),
+            _make_virtual_host_url(_get_host(endpoint), _get_scheme(endpoint), bucket, key),
+            _make_virtual_host_uri(key),
+            _get_virtual_host(bucket, endpoint),
             params=params,
             headers=header
         )
-        signed_url = self.auth._sign_url(req, expires)
-        signed_header = header
+        signed_url = self.auth.sign_url(req, expires)
+        signed_header = req.headers.copy()
+        signed_header['host'] = signed_header['Host']
+        signed_header.pop('Host')
         return PreSignedURLOutput(signed_url, signed_header)
 
-    # @_log_execution_time
     def create_bucket(self, bucket: str,
                       acl: ACLType = None,
                       grant_full_control: str = None,
@@ -701,8 +712,10 @@ class TosClientV2(TosClient):
         :param az_redundancy: 支持设置桶的 AZ 属性
         :return: CreateBucketOutput
         """
-        if _is_valid_bucket_name(bucket) is not True:
-            raise TosClientError('bucket name is invalid, please check it.')
+
+        _is_valid_bucket_name(bucket)
+
+        check_enum_type(acl=acl, storage_class=storage_class, az_redundancy=az_redundancy)
 
         headers = _get_create_bucket_headers(acl, az_redundancy,
                                              grant_full_control,
@@ -713,7 +726,6 @@ class TosClientV2(TosClient):
 
         return CreateBucketOutput(resp)
 
-    # @_log_execution_time
     def head_bucket(self, bucket: str) -> HeadBucketOutput:
         """查询桶元数据
 
@@ -727,7 +739,6 @@ class TosClientV2(TosClient):
 
         return HeadBucketOutput(resp)
 
-    # @_log_execution_time
     def delete_bucket(self, bucket: str):
         """删除桶.
 
@@ -740,7 +751,6 @@ class TosClientV2(TosClient):
 
         return DeleteBucketOutput(resp)
 
-    # @_log_execution_time
     def list_buckets(self) -> ListBucketsOutput:
         """ 列举桶
 
@@ -750,7 +760,6 @@ class TosClientV2(TosClient):
         result = convert_list_buckets_output(resp)
         return result
 
-    # @_log_execution_time
     def copy_object(self, bucket: str, key: str, src_bucket: str, src_key: str,
                     src_version_id: str = None,
                     cache_control: str = None,
@@ -762,7 +771,7 @@ class TosClientV2(TosClient):
                     copy_source_if_match: str = None,
                     copy_source_if_modified_since: datetime = None,
                     copy_source_if_none_match: str = None,
-                    copy_source_if_unmodified_since: str = None,
+                    copy_source_if_unmodified_since: datetime = None,
                     copy_source_ssec_algorithm: str = None,
                     copy_source_ssec_key: str = None,
                     copy_source_ssec_key_md5: str = None,
@@ -812,6 +821,11 @@ class TosClientV2(TosClient):
         :param storage_class: 对象存储类型
         :return: CopyObjectOutput
         """
+        check_enum_type(acl=acl, metadata_directive=metadata_directive, storage_class=storage_class)
+
+        check_client_encryption_algorithm(copy_source_ssec_algorithm)
+
+        check_server_encryption_algorithm(server_side_encryption)
 
         copy_source = _make_copy_source(src_bucket, src_key, src_version_id)
 
@@ -828,7 +842,6 @@ class TosClientV2(TosClient):
 
         return CopyObjectOutput(resp)
 
-    # @_log_execution_time
     def delete_object(self, bucket: str, key: str, version_id: str = None):
         """删除对象
 
@@ -844,7 +857,6 @@ class TosClientV2(TosClient):
 
         return DeleteObjectOutput(resp)
 
-    # @_log_execution_time
     def delete_multi_objects(self, bucket: str, objects: [], quiet: bool = False):
         """批量删除对象
 
@@ -861,16 +873,7 @@ class TosClientV2(TosClient):
         :return: DeleteObjectsOutput
         """
 
-        data = {}
-
-        if objects:
-            obs = []
-            for o in objects:
-                obs.append({'Key': o.key, 'VersionId': o.version_id})
-            data['Objects'] = obs
-
-        data['Quiet'] = quiet
-
+        data = to_delete_multi_objects_request(objects, quiet)
         data = json.dumps(data)
 
         headers = {'Content-MD5': to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
@@ -880,7 +883,6 @@ class TosClientV2(TosClient):
 
         return DeleteObjectsOutput(resp)
 
-    # @_log_execution_time
     def get_object_acl(self, bucket: str, key: str,
                        version_id: str = None) -> GetObjectACLOutput:
         """获取对象的acl
@@ -898,7 +900,6 @@ class TosClientV2(TosClient):
 
         return GetObjectACLOutput(resp)
 
-    # @_log_execution_time
     def head_object(self, bucket: str, key: str,
                     version_id: str = None,
                     if_match: str = None,
@@ -924,6 +925,7 @@ class TosClientV2(TosClient):
 
         :return: HeadObjectOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
 
         headers = _get_object_headers(if_match, if_modified_since, if_none_match, if_unmodified_since, None,
                                       ssec_algorithm, ssec_key, ssec_key_md5)
@@ -937,7 +939,6 @@ class TosClientV2(TosClient):
 
         return HeadObjectOutput(resp)
 
-    # @_log_execution_time
     def list_objects(self, bucket: str,
                      prefix: str = None,
                      delimiter: str = None,
@@ -962,7 +963,6 @@ class TosClientV2(TosClient):
 
         return ListObjectsOutput(resp)
 
-    # @_log_execution_time
     def list_object_versions(self, bucket: str,
                              prefix: str = None,
                              delimiter: str = None,
@@ -988,7 +988,6 @@ class TosClientV2(TosClient):
 
         return convert_list_object_versions_output(resp)
 
-    # @_log_execution_time
     def put_object_acl(self, bucket: str, key: str,
                        version: str = None,
                        acl: ACLType = None,
@@ -1019,6 +1018,8 @@ class TosClientV2(TosClient):
 
         return: PutObjectACLOutput
         """
+
+        check_enum_type(acl=acl)
         params = {'acl': ''}
         if version:
             params['versionId'] = version
@@ -1037,7 +1038,6 @@ class TosClientV2(TosClient):
 
         return PutObjectACLOutput(resp)
 
-    # @_log_execution_time
     def put_object(self, bucket: str, key: str,
                    content_length: int = None,
                    content_md5: str = None,
@@ -1094,8 +1094,13 @@ class TosClientV2(TosClient):
         :param content: 数据
         :return: PutObjectOutput
         """
-        if not _is_valid_object_name(key):
-            raise TosClientError('tos: object name invalid')
+        check_client_encryption_algorithm(ssec_algorithm)
+
+        check_server_encryption_algorithm(server_side_encryption)
+
+        check_enum_type(acl=acl, storage_class=storage_class)
+
+        _is_valid_object_name(key)
 
         headers = _get_put_object_headers(self.recognize_content_type, acl, cache_control, content_disposition,
                                           content_encoding, content_language,
@@ -1104,14 +1109,16 @@ class TosClientV2(TosClient):
                                           ssec_algorithm, ssec_key, ssec_key_md5,
                                           server_side_encryption, storage_class, website_redirect_location)
 
-        if data_transfer_listener:
-            content = utils.add_progress_listener_func(content, data_transfer_listener)
+        if content:
+            content = init_content(content)
 
-        if rate_limiter:
-            content = utils.add_rate_limiter_func(content, rate_limiter)
+            if data_transfer_listener:
+                content = utils.add_progress_listener_func(content, data_transfer_listener)
 
-        if self.enable_crc:
-            if content != b'':
+            if rate_limiter:
+                content = utils.add_rate_limiter_func(content, rate_limiter)
+
+            if self.enable_crc:
                 content = utils.add_crc_func(content)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, data=content,
@@ -1123,7 +1130,7 @@ class TosClientV2(TosClient):
             if data_transfer_listener:
                 data_transfer_listener(content.len, content.len, 0, DataTransferType.Data_Transfer_Succeed)
             if self.enable_crc:
-                if content != b'':
+                if content:
                     utils.check_crc('put_object', content.crc, result.hash_crc64_ecma, result.request_id)
             return result
 
@@ -1133,7 +1140,6 @@ class TosClientV2(TosClient):
                 data_transfer_listener(0, 0, 0, DataTransferType.Data_Transfer_Failed)
             raise e
 
-    # @_log_execution_time
     def put_object_from_file(self, bucket: str, key: str, file_path: str,
                              content_length: int = None,
                              content_md5: str = None,
@@ -1190,7 +1196,15 @@ class TosClientV2(TosClient):
         :param file_path: 文件路径
         :return: PutObjectOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
+
+        check_server_encryption_algorithm(server_side_encryption)
+
+        if not os.path.exists(file_path) or (os.path.isdir(file_path)):
+            raise TosClientError('invalid file path, the file does not exist')
+
         with open(to_unicode(file_path), 'rb') as f:
+            f = init_content(f, can_reset=True, init_offset=0)
             return self.put_object(bucket, key, content_length, content_md5, content_sha256, cache_control,
                                    content_disposition, content_encoding, content_language,
                                    content_type, expires, acl, grant_full_control, grant_read, grant_read_acp,
@@ -1198,7 +1212,6 @@ class TosClientV2(TosClient):
                                    ssec_key_md5, server_side_encryption, meta, website_redirect_location, storage_class,
                                    data_transfer_listener, rate_limiter, f)
 
-    # @_log_execution_time
     def append_object(self, bucket: str, key: str, offset: int,
                       content=None,
                       content_length: int = None,
@@ -1245,8 +1258,10 @@ class TosClientV2(TosClient):
         :param rate_limiter: 客户端限速
         :param pre_hash_crc64_ecma: 上一次crc值，第一次上传设置为0
         """
-        if not _is_valid_object_name(key):
-            raise TosClientError("tos: bucket name invalid")
+
+        check_enum_type(acl=acl, storage_class=storage_class)
+
+        _is_valid_object_name(key)
 
         params = {'append': '', 'offset': offset}
 
@@ -1258,14 +1273,17 @@ class TosClientV2(TosClient):
                                                     grant_write_acp, key, meta, storage_class,
                                                     website_redirect_location)
 
-        if data_transfer_listener:
-            content = utils.add_progress_listener_func(content, data_transfer_listener)
+        if content:
+            content = init_content(content)
 
-        if rate_limiter:
-            content = utils.add_rate_limiter_func(content, rate_limiter)
+            if data_transfer_listener:
+                content = utils.add_progress_listener_func(content, data_transfer_listener)
 
-        if self.enable_crc and pre_hash_crc64_ecma is not None:
-            content = utils.add_crc_func(content, init_crc=pre_hash_crc64_ecma)
+            if rate_limiter:
+                content = utils.add_rate_limiter_func(content, rate_limiter)
+
+            if content and self.enable_crc and pre_hash_crc64_ecma is not None:
+                content = utils.add_crc_func(content, init_crc=pre_hash_crc64_ecma)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Post.value, data=content,
                          headers=headers, params=params)
@@ -1277,7 +1295,6 @@ class TosClientV2(TosClient):
 
         return result
 
-    # @_log_execution_time
     def set_object_meta(self, bucket: str, key: str,
                         version_id: str = None,
                         cache_control: str = None,
@@ -1301,6 +1318,7 @@ class TosClientV2(TosClient):
         :param meta: 要修改的元数据
         :return: SetObjectMetaOutput
         """
+
         headers = _get_set_object_meta_headers(self.recognize_content_type, cache_control, content_disposition,
                                                content_encoding,
                                                content_language, content_type, expires, key, meta)
@@ -1315,7 +1333,6 @@ class TosClientV2(TosClient):
 
         return SetObjectMetaOutput(resp)
 
-    # @_log_execution_time
     def get_object(self, bucket: str, key: str,
                    version_id: str = None,
                    if_match: str = None,
@@ -1359,6 +1376,8 @@ class TosClientV2(TosClient):
         :param range_end: 指定对象获取的上边界
         :return: GetObjectOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
+
         r = _make_range_string(range_start, range_end)
 
         headers = _get_object_headers(if_match, if_modified_since, if_none_match, if_unmodified_since, r,
@@ -1373,7 +1392,6 @@ class TosClientV2(TosClient):
         return GetObjectOutput(resp, progress_callback=data_transfer_listener, rate_limiter=rate_limiter,
                                enable_crc=self.enable_crc)
 
-    # @_log_execution_time
     def get_object_to_file(self, bucket: str, key: str, file_path: str,
                            version_id: str = None,
                            if_match: str = None,
@@ -1418,6 +1436,9 @@ class TosClientV2(TosClient):
         :param file_path: 文件路径
         :return: GetObjectOutput
         """
+
+        check_client_encryption_algorithm(ssec_algorithm)
+
         with open(file_path, 'wb') as f:
             result = self.get_object(bucket=bucket,
                                      key=key,
@@ -1444,7 +1465,6 @@ class TosClientV2(TosClient):
 
             return result
 
-    # @_log_execution_time
     def create_multipart_upload(self, bucket, key,
                                 encoding_type: str = None,
                                 cache_control: str = None,
@@ -1490,9 +1510,13 @@ class TosClientV2(TosClient):
         :param storage_class: 存储类型
         return: CreateMultipartUploadOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
 
-        if not _is_valid_object_name(key):
-            raise TosClientError("tos: invalid bucket name")
+        check_server_encryption_algorithm(server_side_encryption)
+
+        check_enum_type(acl=acl, storage_class=storage_class)
+
+        _is_valid_object_name(key)
 
         headers = _get_create_multipart_upload_headers(self.recognize_content_type, acl, cache_control,
                                                        content_disposition, content_encoding,
@@ -1507,7 +1531,6 @@ class TosClientV2(TosClient):
 
         return CreateMultipartUploadOutput(resp)
 
-    # @_log_execution_time
     def upload_file(self, bucket, key, file_path: str,
                     encoding_type: str = None,
                     cache_control: str = None,
@@ -1571,12 +1594,22 @@ class TosClientV2(TosClient):
         :param cancel_hook: 支持取消断点任务
         :return: CreateMultipartUploadOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
+
+        check_server_encryption_algorithm(server_side_encryption)
+
+        check_enum_type(acl=acl, storage_class=storage_class)
+
+        check_part_size(part_size)
 
         # 检查上传文件的有效性
         if not os.path.exists(file_path) or (os.path.isdir(file_path)):
-            raise TosClientError('tos: file_path = {0} is invalid'.format(file_path))
+            raise TosClientError('invalid file path, the file does not exist')
 
         size = os.path.getsize(file_path)
+
+        check_part_number(size, part_size)
+
         last_modify = os.path.getmtime(file_path)
 
         dir = ""
@@ -1592,7 +1625,7 @@ class TosClientV2(TosClient):
         upload_id = None
 
         if enable_checkpoint and _valid_upload_checkpoint(bucket=bucket, store=store, key=key,
-                                                          modify_time=last_modify):
+                                                          modify_time=last_modify, part_size=part_size):
             # upload_id 存在
             record = store.get(bucket=bucket, key=key)
 
@@ -1668,113 +1701,130 @@ class TosClientV2(TosClient):
 
         return UploadFileOutput(result, ssec_algorithm, ssec_key_md5, upload_id, record['encoding_type'])
 
-    # @_log_execution_time
-    # def _download_file(self, bucket: str, key: str, file_path: str,
-    #                    version_id: str = None,
-    #                    if_match: str = None,
-    #                    if_modified_since: datetime = None,
-    #                    if_none_match: str = None,
-    #                    if_unmodified_since: datetime = None,
-    #                    ssec_algorithm: str = None,
-    #                    ssec_key: str = None,
-    #                    ssec_key_md5: str = None,
-    #                    part_size: int = 20 * 1024 * 1024,
-    #                    task_num: int = 1,
-    #                    enable_checkpoint: bool = True,
-    #                    checkpoint_file: str = None,
-    #                    data_transfer_listener=None,
-    #                    download_event_listener=None,
-    #                    rate_limiter=None,
-    #                    cancelHook=None):
-    #     """断点传输下载
-    #
-    #     :param bucket: 桶名
-    #     :param key: 对象名
-    #     :param file_path: 下载存储路径
-    #     :param if_match: 只有在匹配时，才返回对象
-    #     :param if_modified_since: datetime(2021, 1, 1)
-    #     :param if_none_match: 只有在不匹配时，才返回对象
-    #     :param if_unmodified_since: datetime(2021, 1, 1)
-    #     :param version_id: 版本号
-    #     :param ssec_algorithm: 'AES256'
-    #     :param ssec_key: 加密密钥
-    #     :param ssec_key_md5: 密钥md5值
-    #     :param part_size: 单个分片大小
-    #     :param task_num: 并发数
-    #     :param enable_checkpoint: 是否开启断点传输
-    #     :param checkpoint_file: checkpoint 文件
-    #     :param data_transfer_listener: 进度条特性
-    #     :param download_event_listener: 下载事件回调
-    #     :param rate_limiter: 客户端限速
-    #     :param cancelHook: 取消断点下载任务
-    #     :return: HeadObjectOutput
-    #     """
-    #     # 下载对象有效性
-    #     result = self.head_object(bucket, key, version_id=version_id, if_match=if_match,
-    #                               if_modified_since=if_modified_since,
-    #                               if_none_match=if_none_match, if_unmodified_since=if_unmodified_since,
-    #                               ssec_algorithm=ssec_algorithm, ssec_key=ssec_key, ssec_key_md5=ssec_key_md5)
-    #
-    #     dir = ""
-    #     record = {}
-    #     parts = []
-    #     store = None
-    #
-    #     if checkpoint_file and os.path.exists(checkpoint_file) and os.path.isdir(checkpoint_file):
-    #         dir = checkpoint_file
-    #     else:
-    #         dir = get_parent_directory_from_File(os.path.abspath(file_path))
-    #
-    #     if file_path and os.path.isfile(file_path):
-    #         store = CheckPointStore(dir, file_path)
-    #     else:
-    #         store = CheckPointStore(dir, key)
-    #         file_path = file_path + '/' + key
-    #
-    #     if enable_checkpoint and _valid_download_checkpoint(bucket=bucket, store=store, key=key,
-    #                                                         etag=result.etag):
-    #         record = store.get(bucket=bucket, key=key)
-    #         part_downloaded = []
-    #         for p in record["parts_info"]:
-    #             if p["is_completed"]:
-    #                 part_downloaded.append(
-    #                     DownloadPartInfo(p["part_number"], p["range_start"], p["range_end"], p["hash_crc64ecma"],
-    #                                      p["is_completed"]))
-    #
-    #         parts = _get_parts_to_download(size=result.content_length, part_size=part_size,
-    #                                        parts_downloaded=part_downloaded)
-    #
-    #     else:
-    #         record = {
-    #             "bucket": bucket,
-    #             "key": key,
-    #             "version_id": result.version_id,
-    #             "part_size": part_size,
-    #             "object_info": {
-    #                 "etag": result.etag,
-    #                 "hash_crc64ecma": result.hash_crc64_ecma,
-    #                 "object_size": result.content_length,
-    #             },
-    #             "file_info": {
-    #                 "file_path": file_path,
-    #                 "temp_file_path": "zzz",
-    #             },
-    #             "parts_info": []
-    #         }
-    #
-    #         parts = _get_parts_to_download(size=result.content_length, part_size=part_size, parts_downloaded=[])
-    #
-    #     downloader = _BreakpointDownloader(client=self, bucket=bucket, key=key, file_path=file_path, store=store,
-    #                                        task_num=task_num, parts_to_download=parts, record=record, etag=result.etag,
-    #                                        datatransfer_listener=data_transfer_listener,
-    #                                        download_event_listener=download_event_listener, rate_limiter=rate_limiter,
-    #                                        cancel_hook=cancelHook)
-    #
-    #     downloader.download(result.hash_crc64_ecma)
-    #
-    #     return result
+    def download_file(self, bucket: str, key: str, file_path: str,
+                      version_id: str = None,
+                      if_match: str = None,
+                      if_modified_since: datetime = None,
+                      if_none_match: str = None,
+                      if_unmodified_since: datetime = None,
+                      ssec_algorithm: str = None,
+                      ssec_key: str = None,
+                      ssec_key_md5: str = None,
+                      part_size: int = 20 * 1024 * 1024,
+                      task_num: int = 1,
+                      enable_checkpoint: bool = True,
+                      checkpoint_file: str = None,
+                      data_transfer_listener=None,
+                      download_event_listener=None,
+                      rate_limiter=None,
+                      cancel_hook=None):
+        """断点传输下载
 
-    # @_log_execution_time
+        :param bucket: 桶名
+        :param key: 对象名
+        :param file_path: 下载存储路径
+        :param if_match: 只有在匹配时，才返回对象
+        :param if_modified_since: datetime(2021, 1, 1)
+        :param if_none_match: 只有在不匹配时，才返回对象
+        :param if_unmodified_since: datetime(2021, 1, 1)
+        :param version_id: 版本号
+        :param ssec_algorithm: 'AES256'
+        :param ssec_key: 加密密钥
+        :param ssec_key_md5: 密钥md5值
+        :param part_size: 单个分片大小
+        :param task_num: 并发数
+        :param enable_checkpoint: 是否开启断点传输
+        :param checkpoint_file: checkpoint 文件
+        :param data_transfer_listener: 进度条特性
+        :param download_event_listener: 下载事件回调
+        :param rate_limiter: 客户端限速
+        :param cancel_hook: 取消断点下载任务
+        :return: HeadObjectOutput
+        """
+        check_client_encryption_algorithm(ssec_algorithm)
+
+        # 校验待下载的本地文件路径有效性
+        if not file_path:
+            raise TosClientError('tos: file_path = {0} is invalid'.format(file_path))
+
+        init_path(file_path)
+
+        # 下载对象有效性
+        result = self.head_object(bucket, key, version_id=version_id, if_match=if_match,
+                                  if_modified_since=if_modified_since,
+                                  if_none_match=if_none_match, if_unmodified_since=if_unmodified_since,
+                                  ssec_algorithm=ssec_algorithm, ssec_key=ssec_key, ssec_key_md5=ssec_key_md5)
+
+        dir = ""
+        record = {}
+        parts = []
+        store = None
+
+        if checkpoint_file and os.path.isdir(checkpoint_file):
+            dir = checkpoint_file
+        else:
+            dir = get_parent_directory_from_File(os.path.abspath(file_path))
+
+        if os.path.isfile(file_path):
+            store = CheckPointStore(dir, file_path)
+        else:
+            store = CheckPointStore(dir, key)
+            file_path = file_path + '/' + key
+
+        if enable_checkpoint and _valid_download_checkpoint(bucket=bucket, store=store, key=key,
+                                                            etag=result.etag, part_size=part_size):
+            record = store.get(bucket=bucket, key=key)
+            part_downloaded = []
+            for p in record["parts_info"]:
+                if p["is_completed"]:
+                    part_downloaded.append(
+                        DownloadPartInfo(p["part_number"], p["range_start"], p["range_end"], p["hash_crc64ecma"],
+                                         p["is_completed"]))
+
+            parts = _get_parts_to_download(size=result.content_length, part_size=part_size,
+                                           parts_downloaded=part_downloaded)
+
+        else:
+            record = {
+                "bucket": bucket,
+                "key": key,
+                "version_id": result.version_id,
+                "part_size": part_size,
+                "object_info": {
+                    "etag": result.etag,
+                    "hash_crc64ecma": result.hash_crc64_ecma,
+                    'last_modify': result.last_modified.timestamp(),
+                    "object_size": result.content_length,
+                },
+                "file_info": {
+                    "file_path": file_path,
+                    "temp_file_path": file_path + '.temp',
+                },
+                "parts_info": []
+            }
+            if if_match:
+                record['if_match'] = if_match
+
+            if if_modified_since:
+                record['if_modified_since'] = int(if_modified_since.timestamp())
+
+            if if_none_match:
+                record['if_none_match'] = if_none_match
+
+            if if_unmodified_since:
+                record['if_unmodified_since'] = if_unmodified_since.timestamp()
+            parts = _get_parts_to_download(size=result.content_length, part_size=part_size, parts_downloaded=[])
+
+        downloader = _BreakpointDownloader(client=self, bucket=bucket, key=key, file_path=file_path, store=store,
+                                           task_num=task_num, parts_to_download=parts, record=record, etag=result.etag,
+                                           datatransfer_listener=data_transfer_listener,
+                                           download_event_listener=download_event_listener, rate_limiter=rate_limiter,
+                                           cancel_hook=cancel_hook)
+
+        downloader.download(result.hash_crc64_ecma)
+
+        return result
+
     def upload_part(self, bucket: str, key: str, upload_id: str, part_number: int,
                     content_md5: str = None,
                     ssec_algorithm: str = None,
@@ -1801,20 +1851,27 @@ class TosClientV2(TosClient):
         :param content: 内容
         :param data_transfer_listener: 进度条
         :param rate_limiter: 限速度
+        以此实现io like 数据的超时重试
         :return: UploadPartOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
+
+        check_server_encryption_algorithm(server_side_encryption)
 
         headers = _get_upload_part_headers(content_length, content_md5, server_side_encryption, ssec_algorithm,
                                            ssec_key, ssec_key_md5)
 
-        if data_transfer_listener:
-            content = utils.add_progress_listener_func(content, data_transfer_listener)
+        if content:
+            content = init_content(content)
 
-        if rate_limiter:
-            content = utils.add_rate_limiter_func(content, rate_limiter)
+            if data_transfer_listener:
+                content = utils.add_progress_listener_func(content, data_transfer_listener)
 
-        if self.enable_crc:
-            content = utils.add_crc_func(content)
+            if rate_limiter:
+                content = utils.add_rate_limiter_func(content, rate_limiter)
+
+            if self.enable_crc:
+                content = utils.add_crc_func(content)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value,
                          params={'uploadId': upload_id, 'partNumber': part_number},
@@ -1822,13 +1879,12 @@ class TosClientV2(TosClient):
 
         upload_part_output = UploadPartOutput(resp, part_number)
 
-        if self.enable_crc and upload_part_output.hash_crc64_ecma:
+        if content and self.enable_crc and upload_part_output.hash_crc64_ecma:
             utils.check_crc('upload part', client_crc=content.crc, tos_crc=upload_part_output.hash_crc64_ecma,
                             request_id=upload_part_output.request_id)
 
         return upload_part_output
 
-    # @_log_execution_time
     def upload_part_from_file(self, bucket: str, key: str, upload_id: str, part_number: int,
                               content_md5: str = None,
                               ssec_algorithm: str = None,
@@ -1858,6 +1914,10 @@ class TosClientV2(TosClient):
         :param offset: 当前分段在文件中的起始位置
         :return: UploadPartOutput
         """
+        check_client_encryption_algorithm(ssec_algorithm)
+
+        check_server_encryption_algorithm(server_side_encryption)
+
         with open(file_path, 'rb') as f:
             size = os.path.getsize(file_path)
             content = _make_upload_part_file_content(f, offset=offset, part_size=part_size, size=size)
@@ -1879,7 +1939,6 @@ class TosClientV2(TosClient):
                                     rate_limiter=rate_limiter
                                     )
 
-    # @_log_execution_time
     def complete_multipart_upload(self, bucket: str, key: str, upload_id: str, parts) -> CompleteMultipartUploadOutput:
         """ 合并段
 
@@ -1897,7 +1956,6 @@ class TosClientV2(TosClient):
 
         return CompleteMultipartUploadOutput(resp)
 
-    # @_log_execution_time
     def abort_multipart_upload(self, bucket: str, key: str, upload_id: str) -> AbortMultipartUpload:
         """取消分片上传
 
@@ -1912,7 +1970,6 @@ class TosClientV2(TosClient):
 
         return AbortMultipartUpload(resp)
 
-    # @_log_execution_time
     def upload_part_copy(self, bucket: str, key: str, upload_id: str, part_number: int, src_bucket: str, src_key: str,
                          src_version_id: str = None,
                          copy_source_range_start: int = None,
@@ -1945,6 +2002,8 @@ class TosClientV2(TosClient):
 
         return: UploadPartCopyOutput
         """
+        check_client_encryption_algorithm(copy_source_ssec_algorithm)
+
         copy_source = _make_copy_source(src_bucket=src_bucket, src_key=src_key, src_version_id=src_version_id)
 
         copy_source_range = _make_range_string(copy_source_range_start, copy_source_range_end)
@@ -1960,7 +2019,6 @@ class TosClientV2(TosClient):
 
         return UploadPartCopyOutput(resp, part_number)
 
-    # @_log_execution_time
     def list_multipart_uploads(self, bucket: str,
                                prefix: str = None,
                                delimiter: str = None,
@@ -1988,7 +2046,6 @@ class TosClientV2(TosClient):
 
         return ListMultipartUploadsOutput(resp)
 
-    # @_log_execution_time
     def list_parts(self, bucket: str, key: str, upload_id: str,
                    part_number_marker: int = None,
                    max_parts: int = 1000,
@@ -2009,9 +2066,16 @@ class TosClientV2(TosClient):
 
         return ListPartsOutput(resp)
 
-    def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None):
-        if key and (not _is_valid_object_name(key)):
-            raise TosClientError('invalid object key', IllegalObjectKey())
+    def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None):
+        # 获取调用方法的名称
+        func_name = func or traceback.extract_stack()[-2][2]
+        exp = None
+        info = LogInfo()
+        if key:
+            try:
+                _is_valid_object_name(key)
+            except TosClientError as e:
+                info.fail(func_name, e)
 
         key = to_str(key)
 
@@ -2020,46 +2084,168 @@ class TosClientV2(TosClient):
         if headers.get('x-tos-content-sha256') is None:
             headers['x-tos-content-sha256'] = UNSIGNED_PAYLOAD
 
+        # 通过变量赋值,防止动态调整 auth endpoint 出现并发问题
+        auth = self.auth
+        endpoint = self.endpoint
         req = Request(method, self._make_virtual_host_url(bucket, key),
-                      self._make_virtual_host_uri(key),
-                      self._get_virtual_host(bucket, self.endpoint),
+                      _make_virtual_host_uri(key),
+                      _get_virtual_host(bucket, endpoint),
                       data=data,
                       params=params,
                       headers=headers)
-
-        self.auth._sign_request(req)
+        auth.sign_request(req)
 
         if 'User-Agent' not in req.headers:
             req.headers['User-Agent'] = USER_AGENT
 
-        try:
-            # 由于TOS的重定向场景尚未明确, 目前关闭重定向功能
-            res = self.session.request(method,
-                                       req.url,
-                                       data=req.data,
-                                       headers=req.headers,
-                                       params=req.params,
-                                       stream=True,
-                                       timeout=(self.connection_time, self.request_timeout),
-                                       verify=self.enable_verify_ssl,
-                                       proxies=self.proxies,
-                                       allow_redirects=False)
+        # 通过变量赋值，防止动态调整 max_retry_count 出现并发问题
+        retry_count = self.max_retry_count
+        for i in range(0, retry_count + 1):
+            # 采用指数避让策略
+            if i != 0:
+                sleep_time = SLEEP_BASE_TIME * math.pow(2, i - 1)
+                logger.info('in-request: sleep {}s'.format(sleep_time))
+                time.sleep(sleep_time)
+            try:
+                # 由于TOS的重定向场景尚未明确, 目前关闭重定向功能
+                res = self.session.request(method,
+                                           req.url,
+                                           data=req.data,
+                                           headers=req.headers,
+                                           params=req.params,
+                                           stream=True,
+                                           timeout=(self.connection_time, self.request_timeout),
+                                           verify=self.enable_verify_ssl,
+                                           proxies=self.proxies,
+                                           allow_redirects=False)
+                rsp = Response(res)
+                if rsp.status >= 300:
+                    raise exceptions.make_server_error(rsp)
 
-        except requests.RequestException as e:
-            logger.info('Exception: %s', e)
-            raise TosClientError(msg='RequestError: {0}'.format(str(e)), cause=e)
+                content_length = get_value(rsp.headers, 'content-length', int)
+                if content_length is not None and content_length == 0:
+                    rsp.read()
+                info.success(func_name, rsp)
+                return rsp
 
-        rsp = Response(res)
-        if rsp.status >= 300:
-            e = exceptions.make_server_error(rsp)
-            logger.info('Exception: %s' % e)
-            raise e
+            except (requests.RequestException, TosServerError) as e:
+                can_retry = False
+                logger.info('Exception: %s', e)
+                if isinstance(e, TosServerError):
+                    can_retry = _handler_retry_policy(req.data, method, func_name, server_exp=e)
+                    exp = e
+                else:
+                    # 客户端异常重试 交给requests 底层库实现
+                    can_retry = _handler_retry_policy(req.data, method, func_name, client_exp=e)
+                    exp = TosClientError('http request timeout', e)
+                if can_retry:
+                    logger.info(
+                        'in-request: retry success data:{} method:{} func_name:{}, exp:{}'.format(req.data,
+                                                                                                  method,
+                                                                                                  func_name, exp))
+                    continue
+                else:
+                    logger.info(
+                        'in-request: retry fail data:{} method:{} func_name:{}, exp:{}'.format(req.data,
+                                                                                               method,
+                                                                                               func_name, e))
+                    info.fail(func_name, exp)
+                    raise exp
+        info.fail(func_name, exp)
+        raise exp
 
-        content_length = get_value(rsp.headers, 'content-length', int)
-        if content_length is not None and content_length == 0:
-            rsp.read()
+    def _open_dns_cache(self):
+        def dns_resolver(host):
+            try:
+                ip_list = []
+                adds = socket.getaddrinfo(host, 'http')
+                for item in adds:
+                    if item[4] not in ip_list:
+                        ip_list.append(item[4])
 
-        return rsp
+                return ip_list
+            except Exception:
+                return None
+
+        _orig_create_connection = connection.create_connection
+
+        def create_connect(host, cache_entry, https_port, *args, **kwargs):
+            for addr in cache_entry.copy_ip_list():
+                try:
+                    logger.info('in-request: cache success host:{} ip:{} port:{}'.format(host, addr.ip, addr.port))
+                    if https_port:
+                        conn = _orig_create_connection((addr.ip, https_port), *args, **kwargs)
+                    else:
+                        conn = _orig_create_connection((addr.ip, addr.port), *args, **kwargs)
+                except (SocketTimeout, SocketError):
+                    cache_entry.remove(addr)
+                    logger.info('in-request: remove cache host:{} ip:{} port:{}'.format(host, addr.ip, addr.port))
+                    continue
+                return conn
+            _dns_cache.remove(host)
+            return None
+
+        def get_connect(host, cache_entry, https_port, *args, **kwargs):
+            if cache_entry is None:
+                ip_list = dns_resolver(host)
+                if ip_list and len(ip_list) > 0:
+                    expire = self.dns_cache_time
+                    _dns_cache.add(host, ip_list, int(time.time()) + expire)
+                    hostname, port = random.choice(ip_list)
+                    if not https_port:
+                        conn = _orig_create_connection((hostname, port), *args, **kwargs)
+                    else:
+                        conn = _orig_create_connection((hostname, https_port), *args, **kwargs)
+                    return conn
+            else:
+                conn = create_connect(host, cache_entry, https_port, *args, **kwargs)
+                if conn:
+                    return conn
+
+            return None
+
+        def patched_create_connection(address, *args, **kwargs):
+            """Wrap urllib3's create_connection to resolve the name elsewhere"""
+            # resolve hostname to an ip address; use your own
+            # resolver here, as otherwise the system resolver will be used.
+            global _dns_cache
+            host, port = address
+            https_port = None
+            if port == 443:
+                https_port = 443
+            if utils.is_ip(host):
+                logger.info('in-request: ip request {} port {}'.format(host, port))
+                return _orig_create_connection(address, *args, **kwargs)
+            virtual_host = host
+            cache_entry_virtual = _dns_cache.get_ip_list(virtual_host)
+
+            real_host = get_real_host(virtual_host)
+            cache_entry_real = _dns_cache.get_ip_list(real_host)
+            real_conn = get_connect(real_host, cache_entry_real, https_port, *args, **kwargs)
+            if real_conn:
+                return real_conn
+            # cache_entry_real 和 cache_entry_real 都为空 查询 DNS
+            virtual_conn = get_connect(host, cache_entry_virtual, https_port, *args, **kwargs)
+            if virtual_conn:
+                return virtual_conn
+
+            return _orig_create_connection(address, *args, **kwargs)
+
+        connection.create_connection = patched_create_connection
+
+
+def get_real_host(host):
+    arr = host.split('.')
+    arr.pop(0)
+    real_host = '.'.join(arr)
+    return real_host
+
+
+def hook_request_log(r, *args, **kwargs):
+    logger.debug('in-request: method:{} host:{} requestURI:{} used time: {}'.format(r.request.method, r.request.url,
+                                                                                    r.request.path_url,
+                                                                                    r.elapsed.total_seconds()))
+
 
 def _is_valid_expires(expires):
     """
@@ -2074,26 +2260,23 @@ def _is_valid_expires(expires):
 def _is_valid_object_name(object_name):
     """
     - 对象名命名规范
-    - 对象名字符长度为 1~1000 个字符；
+    - 对象名字符长度为 1~696 个字符；
     - 对象名字符集允许所有 UTF-8 编码的字符，但 <32 以及 =127 的 ASCII 码字符除外（这类字符都是不可见字符，空格 =32 是允许的）；
     - 对象名不能以正斜杠 '/' 或反斜杠 '\' 开头；
     - 对象名不允许为 . 由于 requests 库中 _remove_path_dot_segments 方法会将 虚拟主机请求 {bucket}.{host}/. 强制转化为 {bucket}.{host}/ 导致最后签名报错
     SDK 会对依照该规范做校验，如果用户指定的对象名与规范不匹配则报错客户端校验失败。
     """
-    if len(object_name) < 1 or len(object_name) > 1000:
-        return False
+    if len(object_name) < 1 or len(object_name) > 696:
+        raise exceptions.TosClientError('invalid object name, the length must be [1, 696]')
 
     if object_name == '.':
-        return False
+        raise exceptions.TosClientError("invalid object name, the object name can not use '.'")
 
-    ok = is_utf8_with_trigger(object_name.encode("utf-8"))
-    if not ok:
-        return False
+    if not is_utf8_with_trigger(object_name.encode("utf-8")):
+        raise exceptions.TosClientError('invalid object name, the character set is illegal')
 
     if object_name[0] == '/' or object_name[0] == '\\':
-        return False
-
-    return True
+        raise exceptions.TosClientError("invalid object name, the object name can not start with '/' or '\\'")
 
 
 def _is_valid_bucket_name(bucket_name):
@@ -2104,11 +2287,16 @@ def _is_valid_bucket_name(bucket_name):
     - 桶名不能以连字符 '-' 作为开头或结尾；
     SDK 会对依照该规范做校验，如果用户指定的桶名与规范不匹配则报错客户端校验失败
     """
-    m = re.match('^[0-9a-z][a-z0-9-]{1,61}[0-9a-z]$', bucket_name)
-    if not m:
-        return False
-    else:
-        return True
+    if len(bucket_name) < 3 or len(bucket_name) > 63:
+        raise exceptions.TosClientError('invalid bucket name, the length must be [3, 63]')
+
+    if bucket_name[0] == '-' or bucket_name[len(bucket_name) - 1] == '-':
+        raise exceptions.TosClientError(
+            "invalid bucket name, the bucket name can be neither starting with ' - ' nor ending with ' - '")
+
+    for i in range(0, len(bucket_name)):
+        if not ('a' <= bucket_name[i] <= 'z' or '0' <= bucket_name[i] <= '9' or bucket_name[i] == '-'):
+            raise exceptions.TosClientError('invalid bucket name, the character set is illegal')
 
 
 def _get_parts_of_task(total_size, part_size):
@@ -2128,18 +2316,40 @@ def _get_parts_of_task(total_size, part_size):
     return parts
 
 
-def _handler_retry_policy(e: TosServerError, method: HttpMethodType, fun_name):
-    # 上层逻辑2xx 正常返回 >=300 才执行判定
-    # 重试前提为 429 或 >= 500
-    if e.status_code != 429 or e.status_code < 500:
-        return False
-
-    if method == HttpMethodType.Http_Method_Post and fun_name != 'set_object_meta':
-        return False
-
-    # http method 为 Get Head 全部可重试
-    if method in [HttpMethodType.Http_Method_Get, HttpMethodType.Http_Method_Head]:
+def _handler_retry_policy(body, method, fun_name, client_exp: requests.RequestException = None,
+                          server_exp: TosServerError = None, skip=False) -> bool:
+    logger.info(
+        'in-request do retry with, body:{}, method:{}, func:{} server_exp:{}, client_exp'.format(body, method,
+                                                                                                 fun_name,
+                                                                                                 server_exp,
+                                                                                                 client_exp))
+    if skip or _is_func_can_retry(method, fun_name, client_exp, server_exp):
+        if _is_wrapper_data(body):
+            if body.can_reset:
+                body.reset()
+                return True
+            return False
         return True
+    return False
 
-    # TODO not finish
-    return True
+
+def _is_func_can_retry(method, fun_name,
+                       client_exp: requests.RequestException = None,
+                       server_exp: TosServerError = None) -> bool:
+    if client_exp and (not isinstance(client_exp, requests.ReadTimeout)):
+        return True
+    if server_exp and (server_exp.status_code >= 500 or server_exp.status_code == 429):
+        # 对GET、HEAD直接返回
+        if method in ["GET", "HEAD"]:
+            return True
+
+        # 对于PUT、DELETE、POST 请求方法的白名单
+        if fun_name in WHITE_LIST_FUNCTION:
+            return True
+    return False
+
+
+def _is_wrapper_data(data):
+    if data is None:
+        return False
+    return isinstance(data, _ReaderAdapter) or isinstance(data, SizeAdapter)

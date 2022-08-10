@@ -1,5 +1,6 @@
 import concurrent.futures
 import json
+import logging
 import os
 import threading
 from concurrent.futures import as_completed
@@ -12,6 +13,8 @@ from tos.exceptions import (CancelNotWithAbortError, CancelWithAbortError,
 from tos.models2 import PartInfo, UploadedPart, _PartToDo
 from tos.utils import (SizeAdapter, _cal_download_callback,
                        _cal_upload_callback, to_unicode)
+
+logger = logging.getLogger(__name__)
 
 
 class CheckPointStore(object):
@@ -63,7 +66,7 @@ class CheckPointStore(object):
         return os.path.join(self.dir, name)
 
 
-def _conver_to_uploaded_parts(parts: []) -> list:
+def _cover_to_uploaded_parts(parts: []) -> list:
     """
     将_PartToProcess 转化为 UploadedPart
     """
@@ -106,8 +109,7 @@ class _BreakpointUploader(object):
     def __init__(self, client, bucket, key, file_path: str, store: CheckPointStore, task_num: int,
                  parts_to_update, upload_id, record: Dict,
                  datatransfer_listener=None, upload_event_listener=None,
-                 rate_limiter=None, cancel_hook=None,
-                 ):
+                 rate_limiter=None, cancel_hook=None):
 
         self.client = client
         self.bucket = bucket
@@ -146,7 +148,7 @@ class _BreakpointUploader(object):
             q.run()
 
             # 执行任务
-            parts = _conver_to_uploaded_parts(self.finished_parts)
+            parts = _cover_to_uploaded_parts(self.finished_parts)
 
             result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts)
 
@@ -162,7 +164,8 @@ class _BreakpointUploader(object):
         except (TosClientError, TosServerError) as e:
 
             _cal_upload_callback(self.upload_event_listener,
-                                 UploadEventType.Upload_Event_Complete_Multipart_Upload_Failed, e, self.bucket, self.key,
+                                 UploadEventType.Upload_Event_Complete_Multipart_Upload_Failed, e, self.bucket,
+                                 self.key,
                                  self.upload_id, self.store.path(self.bucket, self.key), None)
 
             raise e
@@ -177,9 +180,12 @@ class _BreakpointUploader(object):
             with self.lock:
                 self.store.delete(self.bucket, self.key)
 
-            raise TosClientError('upload file failed', e)
+            raise TosClientError('the task is canceled')
         except CancelNotWithAbortError as e:
-            raise TosClientError('upload file failed', e)
+            _cal_upload_callback(self.upload_event_listener,
+                                 UploadEventType.Upload_Event_UploadPart_Aborted, e, self.bucket, self.key,
+                                 self.upload_id, self.store.path(self.bucket, self.key), '')
+            raise TosClientError('the task is canceled')
 
         except Exception as e:
             raise e
@@ -187,12 +193,11 @@ class _BreakpointUploader(object):
     def _upload_part(self, part):
         with open(to_unicode(self.filename), 'rb') as f:
             f.seek(part.start, os.SEEK_SET)
-            result = None
-
             try:
-
                 result = self.client.upload_part(bucket=self.bucket, key=self.key, upload_id=self.upload_id,
-                                                 part_number=part.part_number, content=SizeAdapter(f, part.size),
+                                                 part_number=part.part_number,
+                                                 content=SizeAdapter(f, part.size, init_offset=part.start,
+                                                                     can_reset=True),
                                                  data_transfer_listener=self.datatransfer_listener,
                                                  rate_limiter=self.rate_limiter)
 
@@ -202,6 +207,9 @@ class _BreakpointUploader(object):
                                      UploadEventType.Upload_Event_Upload_Part_Failed, e, self.bucket,
                                      self.key, self.upload_id, self.store.path(self.bucket, self.key),
                                      PartInfo(part.part_number, part.size, part.start, None, None, False))
+                raise e
+
+            except Exception as e:
                 raise e
 
             self._finish_part(
@@ -262,7 +270,7 @@ class _BreakpointDownloader(object):
                                self.version_id,
                                self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
 
-        q = TaskExecutor(self.task_num, self._download_part)
+        q = TaskExecutor(self.task_num, self._download_part, self.cancel_hook)
 
         for part in self.parts_to_download:
             q.submit(part)
@@ -284,16 +292,37 @@ class _BreakpointDownloader(object):
                                    None, self.bucket, self.key, self.version_id,
                                    self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
 
-        except (TosClientError, TosServerError) as e:
-
-            _cal_download_callback(self.download_event_listener, DownloadEventType.Download_Event_Rename_Temp_File_Failed,
+        except CancelWithAbortError as e:
+            _cal_download_callback(self.download_event_listener,
+                                   DownloadEventType.Download_Event_Download_Part_Aborted,
                                    e, self.bucket, self.key, self.version_id,
                                    self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+
+            # 删除临时文件
+            os.remove(self.file_path)
+
+            # 删除checkpoint 文件
+            self.store.delete(self.bucket, self.key)
+
+            raise TosClientError('the task is canceled', e)
+        except CancelNotWithAbortError as e:
+            _cal_download_callback(self.download_event_listener,
+                                   DownloadEventType.Download_Event_Download_Part_Aborted,
+                                   e, self.bucket, self.key, self.version_id,
+                                   self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+            raise TosClientError('the task is canceled', e)
+
+        except OSError as e:
+            _cal_download_callback(self.download_event_listener,
+                                   DownloadEventType.Download_Event_Rename_Temp_File_Failed,
+                                   e, self.bucket, self.key, self.version_id,
+                                   self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+        except Exception as e:
             raise e
 
     def _download_part(self, part):
 
-        with open(self._temp, 'rb+') as f:
+        with open(self._temp, 'wb') as f:
             try:
 
                 f.seek(part.start, os.SEEK_SET)
@@ -306,7 +335,6 @@ class _BreakpointDownloader(object):
                     part.part_crc = content.content.crc
 
             except (TosClientError, TosServerError) as e:
-
                 _cal_download_callback(self.download_event_listener,
                                        DownloadEventType.Download_Event_Download_Part_Failed,
                                        e, self.bucket, self.key, self.version_id,
@@ -355,6 +383,9 @@ class TaskExecutor(object):
                     self._exc = e
                     if _need_shutdown(e.status_code):
                         break
+                if e:
+                    self._exc = e
+                    break
 
             for future in self._futures:
                 future.cancel()

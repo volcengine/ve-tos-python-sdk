@@ -1,12 +1,9 @@
-import json
 import urllib.parse
 from datetime import datetime
 
 from requests.structures import CaseInsensitiveDict
 
 from tos.enum import CannedType, GranteeType, PermissionType, StorageClassType
-from tos.http import Response
-
 from . import utils
 from .models import CommonPrefixInfo
 from .utils import (get_etag, get_value, meta_header_decode,
@@ -15,7 +12,7 @@ from .utils import (get_etag, get_value, meta_header_decode,
 
 
 class ResponseInfo(object):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         self.request_id = resp.request_id
         self.id2 = get_value(resp.headers, "x-tos-id-2")
         self.status_code = resp.status
@@ -23,20 +20,20 @@ class ResponseInfo(object):
 
 
 class CreateBucketOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(CreateBucketOutput, self).__init__(resp)
         self.location = get_value(self.header, "Location")
 
 
 class HeadBucketOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(HeadBucketOutput, self).__init__(resp)
         self.region = get_value(self.header, "x-tos-bucket-region")
         self.storage_class = StorageClassType(get_value(self.header, "x-tos-storage-class"))
 
 
 class DeleteBucketOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(DeleteBucketOutput, self).__init__(resp)
 
 
@@ -66,14 +63,14 @@ class Owner(object):
 
 
 class ListBucketsOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(ListBucketsOutput, self).__init__(resp)
         self.buckets = []
         self.owner = None
 
 
 class PutObjectOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(PutObjectOutput, self).__init__(resp)
         self.etag = get_etag(resp.headers)
         self.ssec_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
@@ -83,26 +80,38 @@ class PutObjectOutput(ResponseInfo):
 
 
 class CopyObjectOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(CopyObjectOutput, self).__init__(resp)
         self.copy_source_version_id = get_value(resp.headers, "x-tos-copy-source-version-id")
         self.version_id = get_value(resp.headers, "x-tos-version-id")
 
+        data = resp.json_read()
+        self.etag = get_etag(data)
+        self.last_modified = get_value(data, 'LastModified')
+        if self.last_modified:
+            self.last_modified = parse_modify_time_to_utc_datetime(self.last_modified)
+
 
 class DeleteObjectOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(DeleteObjectOutput, self).__init__(resp)
         self.version_id = get_value(resp.headers, 'x-tos-version-id')
         self.delete_marker = get_value(resp.headers, 'x-tos-delete-marker', bool)
 
 
-class Delete(object):
+class Deleted(object):
     def __init__(self, key: str, version_id: str = None, delete_marker=None,
                  delete_marker_version_id: str = None):
         self.key = key
         self.version_id = version_id
         self.delete_marker = delete_marker
         self.delete_marker_version_id = delete_marker_version_id
+
+
+class ObjectTobeDeleted(object):
+    def __init__(self, key: str, version_id: str = None):
+        self.key = key
+        self.version_id = version_id
 
 
 class DeleteError(object):
@@ -114,16 +123,16 @@ class DeleteError(object):
 
 
 class DeleteObjectsOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(DeleteObjectsOutput, self).__init__(resp)
         self.deleted = []
         self.error = []
 
-        data = json.loads(resp.read())
+        data = resp.json_read()
 
         delete_list = get_value(data, 'Deleted') or []
         for delete in delete_list:
-            self.deleted.append(Delete(
+            self.deleted.append(Deleted(
                 get_value(delete, "Key"),
                 get_value(delete, "VersionId"),
                 get_value(delete, "DeleteMarker"),
@@ -139,14 +148,8 @@ class DeleteObjectsOutput(ResponseInfo):
             ))
 
 
-class GetObjectACLOutput(ResponseInfo):
-    def __init__(self, resp: Response):
-        super(GetObjectACLOutput, self).__init__(resp)
-        pass
-
-
 class Grantee(object):
-    def __init__(self, id: str, display_name: str, type: GranteeType, canned: CannedType):
+    def __init__(self, type: GranteeType, id: str=None, display_name: str=None, canned: CannedType=None):
         self.type = type
         self.display_name = display_name
         self.id = id
@@ -158,13 +161,13 @@ class Grantee(object):
 
 
 class Grant(object):
-    def __init__(self, grantee: str, permission: PermissionType):
+    def __init__(self, grantee: Grantee, permission: PermissionType):
         self.grantee = grantee
         self.permission = permission
 
 
 class HeadObjectOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(HeadObjectOutput, self).__init__(resp)
         self.etag = get_etag(resp.headers)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
@@ -209,9 +212,9 @@ class HeadObjectOutput(ResponseInfo):
 
 
 class ListObjectsOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(ListObjectsOutput, self).__init__(resp)
-        data = json.loads(resp.read())
+        data = resp.json_read()
 
         self.name = get_value(data, 'Name')
         self.prefix = get_value(data, 'Prefix')
@@ -227,7 +230,7 @@ class ListObjectsOutput(ResponseInfo):
             self.encoding_type = 'url'
 
         if get_value(data, 'IsTruncated'):
-            self.is_truncated = get_value(data, 'IsTruncated')
+            self.is_truncated = get_value(data, 'IsTruncated', lambda x: bool(x))
         else:
             self.is_truncated = False
 
@@ -288,7 +291,7 @@ class ListedObjectVersion(ListedObject):
 
 
 class ListObjectVersionsOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(ListObjectVersionsOutput, self).__init__(resp)
         self.name = ''
         self.prefix = ''
@@ -314,17 +317,17 @@ class Grants(object):
 
 
 class PutObjectACLOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(PutObjectACLOutput, self).__init__(resp)
 
 
 class GetObjectACLOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(GetObjectACLOutput, self).__init__(resp)
         self.version_id = None
         self.owner = None
         self.grants = []
-        data = json.loads(resp.read())
+        data = resp.json_read()
 
         self.owner = Owner(
             get_value(data['Owner'], 'ID'),
@@ -334,22 +337,22 @@ class GetObjectACLOutput(ResponseInfo):
         grant_list = data['Grants'] or []
         for grant in grant_list:
             g = Grantee(
-                get_value(grant['Grantee'], 'ID'),
-                get_value(grant['Grantee'], 'DisplayName'),
-                get_value(grant['Grantee'], 'Type'),
-                get_value(grant['Grantee'], 'Canned'),
+                id=get_value(grant['Grantee'], 'ID'),
+                display_name=get_value(grant['Grantee'], 'DisplayName'),
+                type=get_value(grant['Grantee'], 'Type'),
+                canned=get_value(grant['Grantee'], 'Canned'),
             )
             permission = PermissionType(get_value(grant, 'Permission'))
             self.grants.append(Grant(g, permission))
 
 
 class SetObjectMetaOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(SetObjectMetaOutput, self).__init__(resp)
 
 
 class GetObjectOutput(HeadObjectOutput):
-    def __init__(self, resp: Response, progress_callback=None, rate_limiter=None, enable_crc=False):
+    def __init__(self, resp, progress_callback=None, rate_limiter=None, enable_crc=False):
         super(GetObjectOutput, self).__init__(resp)
         self.content_range = get_value(resp.headers, "content-range")
         self.content = resp
@@ -360,7 +363,7 @@ class GetObjectOutput(HeadObjectOutput):
             self.content = utils.add_rate_limiter_func(self.content, rate_limiter)
 
         if enable_crc:
-            self.content = utils.add_crc_func(data=resp, size=self.content_length)
+            self.content = utils.add_crc_func(data=self.content, size=self.content_length)
 
     def read(self, amt=None):
         return self.content.read(amt)
@@ -368,13 +371,13 @@ class GetObjectOutput(HeadObjectOutput):
     def __iter__(self):
         return iter(self.content)
 
-    # @property
-    # def client_crc(self):
-    #     return self.content.crc
+    @property
+    def client_crc(self):
+        return self.content.crc
 
 
 class AppendObjectOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(AppendObjectOutput, self).__init__(resp)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
         self.next_append_offset = get_value(resp.headers, "x-tos-next-append-offset", lambda x: int(x))
@@ -382,9 +385,9 @@ class AppendObjectOutput(ResponseInfo):
 
 
 class CreateMultipartUploadOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(CreateMultipartUploadOutput, self).__init__(resp)
-        data = json.loads(resp.read())
+        data = resp.json_read()
         self.bucket = get_value(data, "Bucket")
         self.key = get_value(data, "Key")
         self.upload_id = get_value(data, "UploadId")
@@ -397,7 +400,7 @@ class CreateMultipartUploadOutput(ResponseInfo):
 
 
 class UploadPartOutput(ResponseInfo):
-    def __init__(self, resp: Response, number: int):
+    def __init__(self, resp, number: int):
         super(UploadPartOutput, self).__init__(resp)
         self.part_number = number
         self.etag = get_etag(resp.headers)
@@ -407,9 +410,9 @@ class UploadPartOutput(ResponseInfo):
 
 
 class CompleteMultipartUploadOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(CompleteMultipartUploadOutput, self).__init__(resp)
-        data = json.loads(resp.read())
+        data = resp.json_read()
         self.bucket = get_value(data, 'Bucket')
         self.key = get_value(data, 'Key')
         self.etag = get_etag(data)
@@ -419,14 +422,14 @@ class CompleteMultipartUploadOutput(ResponseInfo):
 
 
 class AbortMultipartUpload(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(AbortMultipartUpload, self).__init__(resp)
 
 
 class UploadPartCopyOutput(ResponseInfo):
-    def __init__(self, resp: Response, part_number):
+    def __init__(self, resp, part_number):
         super(UploadPartCopyOutput, self).__init__(resp)
-        data = json.loads(resp.read())
+        data = resp.json_read()
         self.part_number = part_number
         self.etag = get_etag(data)
         self.last_modified = get_value(data, "LastModified")
@@ -444,9 +447,9 @@ class ListedUpload(object):
 
 
 class ListMultipartUploadsOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(ListMultipartUploadsOutput, self).__init__(resp)
-        data = json.loads(resp.read())
+        data = resp.json_read()
 
         self.bucket = get_value(data, 'Bucket')
         self.upload_id_marker = get_value(data, 'UploadIdMarker')
@@ -463,7 +466,7 @@ class ListMultipartUploadsOutput(ResponseInfo):
             self.encoding_type = 'url'
 
         if get_value(data, 'IsTruncated'):
-            self.is_truncated = get_value(data, 'IsTruncated')
+            self.is_truncated = get_value(data, 'IsTruncated', lambda x: bool(x))
         else:
             self.is_truncated = False
 
@@ -493,10 +496,10 @@ class ListMultipartUploadsOutput(ResponseInfo):
 
 
 class ListPartsOutput(ResponseInfo):
-    def __init__(self, resp: Response):
+    def __init__(self, resp):
         super(ListPartsOutput, self).__init__(resp)
 
-        data = json.loads(resp.read())
+        data = resp.json_read()
 
         self.bucket = get_value(data, 'Bucket')
         self.key = get_value(data, 'Key')
@@ -512,7 +515,7 @@ class ListPartsOutput(ResponseInfo):
             self.encoding_type = 'url'
 
         if get_value(data, 'IsTruncated'):
-            self.is_truncated = get_value(data, 'IsTruncated')
+            self.is_truncated = get_value(data, 'IsTruncated', lambda x: bool(x))
         else:
             self.is_truncated = False
 
@@ -551,7 +554,7 @@ class PreSignedURLOutput(object):
         self.signed_header = signed_header
 
 
-class UploadFileOutput(ResponseInfo):
+class UploadFileOutput(object):
     def __init__(self, resp: CompleteMultipartUploadOutput, ssec_algorithm, ssec_key_md5, upload_id, encoding_type):
         self.request_id = resp.request_id
         self.id2 = resp.id2

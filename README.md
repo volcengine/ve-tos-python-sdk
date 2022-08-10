@@ -9,13 +9,17 @@ This document will show developers some basic examples about TOS bucket and obje
 
 The SDK provides user-friendly examples about bucket and object operation.
 
-| **Code**         | **Introduction**                                              |
-| -------------------- |---------------------------------------------------------------|
-| bucket_v2.py      | create/list/head/delete a bucket                              |
-| object_v2.py      | put/get/head/list/delete an object                            |
+| **Code**             | **Introduction**                                              |
+|----------------------|---------------------------------------------------------------|
+| bucket_v2.py         | create/list/head/delete a bucket                              |
+| object_v2.py         | put/get/head/list/delete an object                            |
 | object_v2_extra.py   | set_meta/get_meta/copy_object/append_object                   |
-| multipart_v2.py   | upload part object, including init/upload/complete/abort/list |
-| upload.py   | upload object with checkpoint                                 |
+| multipart_v2.py      | upload part object, including init/upload/complete/abort/list |
+| upload.py            | upload object with checkpoint                                 |
+| download.py          | download object with checkpoint                               |
+| limiter.py           | upload object/download object with rate limiter               |
+| progress_callback.py | upload object/download object with progress callback          |
+| log.py               | using log                                                     |
 
 
 # Quick Start
