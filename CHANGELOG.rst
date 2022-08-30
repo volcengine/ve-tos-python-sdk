@@ -1,7 +1,12 @@
 TOS SDK for Python 版本记录
 ===========================
 
-Version 2.2.0
+Version 2.3.1
+-------------
+- 修复：put_object_from_file 参数类型注解错误问题
+- 修复：upload_part_copy 参数类型注解错误问题
+
+Version 2.3.0
 -------------
 - 增加：断点续传下载功能
 - 增加：客户端 CRC 校验功能
