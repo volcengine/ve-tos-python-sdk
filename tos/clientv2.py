@@ -1162,8 +1162,8 @@ class TosClientV2(TosClient):
                              meta: Dict = None,
                              website_redirect_location: str = None,
                              storage_class: StorageClassType = None,
-                             data_transfer_listener: str = None,
-                             rate_limiter: str = None,
+                             data_transfer_listener=None,
+                             rate_limiter=None,
                              ) -> PutObjectOutput:
         """上传对象
 
@@ -1975,9 +1975,9 @@ class TosClientV2(TosClient):
                          copy_source_range_start: int = None,
                          copy_source_range_end: int = None,
                          copy_source_if_match: str = None,
-                         copy_source_if_modified_since: str = None,
+                         copy_source_if_modified_since: datetime = None,
                          copy_source_if_none_match: str = None,
-                         copy_source_if_unmodified_since: str = None,
+                         copy_source_if_unmodified_since: datetime = None,
                          copy_source_ssec_algorithm: str = None,
                          copy_source_ssec_key: str = None,
                          copy_source_ssec_key_md5: str = None) -> UploadPartCopyOutput:
@@ -2269,7 +2269,7 @@ def _is_valid_object_name(object_name):
     if len(object_name) < 1 or len(object_name) > 696:
         raise exceptions.TosClientError('invalid object name, the length must be [1, 696]')
 
-    if object_name == '.':
+    if object_name == '.' or object_name == '..':
         raise exceptions.TosClientError("invalid object name, the object name can not use '.'")
 
     if not is_utf8_with_trigger(object_name.encode("utf-8")):
