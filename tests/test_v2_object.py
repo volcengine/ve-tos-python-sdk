@@ -80,7 +80,7 @@ class TestObject(unittest.TestCase):
         read_content = range_out.read()
         self.assertEqual(read_content, content[1:101])
 
-        self.client.delete_object(bucket_name, key=key)
+        out = self.client.delete_object(bucket_name, key=key)
 
         self.client.delete_bucket(bucket_name)
 
@@ -400,7 +400,7 @@ class TestObject(unittest.TestCase):
         object = []
         object.append(ObjectTobeDeleted(key_1))
         object.append(ObjectTobeDeleted(key_1))
-        self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
+        out = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
 
         self.client.delete_object(bucket_name, key_1)
         self.client.delete_object(bucket_name, key_2)
@@ -817,11 +817,11 @@ class TestObject(unittest.TestCase):
         grantee = Grantee(id="123", display_name="123", type=GranteeType.Grantee_User)
         grant = Grant(grantee, permission=PermissionType.Permission_Full_Control)
         grants.append(grant)
-        self.client.put_object_acl(bucket_name, key, acl=ACLType.ACL_Bucket_Owner_Full_Control)
-        self.client.get_object_acl(bucket_name, key)
+        # self.client.put_object_acl(bucket_name, key, acl=ACLType.ACL_Bucket_Owner_Full_Control)
+        # self.client.get_object_acl(bucket_name, key)
         self.client.put_object_acl(bucket_name, key, owner=Owner("123", "test"), grants=grants)
 
-        self.client.get_object_acl(bucket_name, key)
+        out = self.client.get_object_acl(bucket_name, key)
 
         self.client.delete_object(bucket_name, key)
         self.client.delete_bucket(bucket_name)
