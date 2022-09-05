@@ -757,13 +757,15 @@ def _verifyParams(poly, initCrc, xorOut):
     return (sizeBits, initCrc, xorOut)
 
 
+def gen_key(host, port):
+    return '{}:{}'.format(host, port)
+
+
 class CacheEntry(object):
-    def __init__(self, host, ip_list, expire):
+    def __init__(self, host, port, ip_list, expire):
         self.host = host
-        infos = []
-        for ip in ip_list:
-            infos.append(AddrInfo(ip[0], ip[1]))
-        self.ip_list = infos
+        self.ip_list = ip_list
+        self.port = port
         self.expire = expire
         self.lock = threading.Lock()
 
@@ -775,11 +777,8 @@ class CacheEntry(object):
     def copy_ip_list(self):
         return self.ip_list.copy()
 
-
-class AddrInfo(object):
-    def __init__(self, ip, port):
-        self.ip = ip
-        self.port = port
+    def get_key(self):
+        return gen_key(self.host, self.port)
 
 
 class DnsCacheService(object):
@@ -787,27 +786,29 @@ class DnsCacheService(object):
         self.lock = threading.Lock()
         self.cache = {}
 
-    def get_ip_list(self, host: str) -> CacheEntry:
+    def get_ip_list(self, host: str, port: int) -> CacheEntry:
         now = int(time.time())
+        key = gen_key(host, port)
         with self.lock:
-            if host in self.cache:
-                info = self.cache[host]
+            if key in self.cache:
+                info = self.cache[key]
                 if info.expire >= now:
                     return info
-                self.cache.pop(host)
+                self.cache.pop(key)
 
-    def add(self, host, ip_list, expire):
-        entry = CacheEntry(host, ip_list, expire)
+    def add(self, host, port, ip_list, expire):
+        entry = CacheEntry(host, port, ip_list, expire)
+        key = gen_key(host, port)
         with self.lock:
-            if host in self.cache:
+            if key in self.cache:
                 return
-            self.cache[host] = entry
-            logger.info('in-request: add cache host:{}'.format(host))
+            self.cache[key] = entry
+            logger.info('in-request: add cache address:{}'.format(key))
 
-    def remove(self, host):
+    def remove(self, key):
         with self.lock:
-            if host in self.cache:
-                self.cache.pop(host)
+            if key in self.cache:
+                self.cache.pop(key)
 
 
 def check_enum_type(acl=None, storage_class=None, metadata_directive=None, az_redundancy=None,

@@ -20,6 +20,8 @@ class StorageClassType(Enum):
     # 低频访问存储
     Storage_Class_Ia = "IA"
 
+    Storage_Class_Archive_Fr = 'ARCHIVE_FR'
+
 
 class MetadataDirectiveType(Enum):
     Metadata_Directive_Copy = "COPY"
