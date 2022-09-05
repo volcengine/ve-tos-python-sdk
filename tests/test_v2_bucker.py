@@ -32,6 +32,8 @@ class TestBucket(unittest.TestCase):
         # self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, proxy_host='127.0.0.1', proxy_port=7428,
         #                           enable_crc=False)
 
+        self.client2 = TosClientV2(self.ak, self.sk, self.endpoint, self.region, dns_cache_time=60 * 60,
+                                   request_timeout=10)
         self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, dns_cache_time=60 * 60,
                                   request_timeout=10)
 
@@ -41,6 +43,9 @@ class TestBucket(unittest.TestCase):
         self.client.create_bucket(bucket_name)
         self.retry_assert(lambda: self.bucket_name + "basic" in (b.name for b in self.client.list_buckets().buckets))
 
+        head_out = self.client.head_bucket(bucket=bucket_name)
+        self.assertIsNotNone(head_out.region)
+        self.assertEqual(head_out.storage_class, StorageClassType.Storage_Class_Standard)
         key = 'a.txt'
         self.client.put_object(bucket_name, key=key, content="contenet")
 
@@ -100,6 +105,15 @@ class TestBucket(unittest.TestCase):
         with self.assertRaises(TosClientError):
             self.client.create_bucket("123_")
 
+    def test_list_bucket(self):
+        bucket_name = self.bucket_name + "listbucket"
+        self.client.create_bucket(bucket=bucket_name)
+        list_out = self.client.list_buckets()
+        self.assertTrue(len(list_out.buckets) > 1)
+        self.assertTrue(bucket_name in (b.name for b in self.client.list_buckets().buckets))
+        self.assertIsNotNone(list_out.owner)
+        self.client.delete_bucket(bucket=bucket_name)
+
     def test_bucket_info(self):
         bucket_name = self.bucket_name + "-info"
         with self.assertRaises(TosServerError):
@@ -130,27 +144,27 @@ class TestBucket(unittest.TestCase):
             self.client.create_bucket(bucket_name + acl.value, acl=acl)
             self.client.delete_bucket(bucket_name + acl.value)
 
-    def test_delete_all(self):
-        list_out = self.client.list_buckets()
-        for bkc in list_out.buckets:
-            bkc_name = bkc.name
-            n = re.match('^sun-', bkc_name)
-            n = True
-            if not n:
-                continue
-            else:
-                try:
-                    objects = self.client.list_objects(bkc.name)
-                    for obj in objects.contents:
-                        self.client.delete_object(bkc.name, obj.key)
-
-                    l = self.client.list_multipart_uploads(bkc.name)
-                    for i in l.uploads:
-                        self.client.abort_multipart_upload(bkc.name, i.key, upload_id=i.upload_id)
-
-                    self.client.delete_bucket(bkc_name)
-                except Exception as e:
-                    pass
+    # def test_delete_all(self):
+    #     list_out = self.client.list_buckets()
+    #     for bkc in list_out.buckets:
+    #         bkc_name = bkc.name
+    #         n = re.match('^sun-', bkc_name)
+    #         n = True
+    #         if not n:
+    #             continue
+    #         else:
+    #             try:
+    #                 objects = self.client.list_objects(bkc.name)
+    #                 for obj in objects.contents:
+    #                     self.client.delete_object(bkc.name, obj.key)
+    #
+    #                 l = self.client.list_multipart_uploads(bkc.name)
+    #                 for i in l.uploads:
+    #                     self.client.abort_multipart_upload(bkc.name, i.key, upload_id=i.upload_id)
+    #
+    #                 self.client.delete_bucket(bkc_name)
+    #             except Exception as e:
+    #                 pass
 
     def retry_assert(self, func):
         for i in range(5):

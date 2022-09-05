@@ -29,16 +29,17 @@ class BaseFuncTestCase(unittest.TestCase):
     def test_cache(self):
         expire = 2
         cache = DnsCacheService()
+        port = 8080
         list_ip = [['1', 1], ['2', 2]]
 
-        cache.add('baidu.com', list_ip, expire=int(time.time()) + expire)
-        cache.add('baidu.com2', list_ip, expire=int(time.time()) + expire)
-        entry = cache.get_ip_list('baidu.com')
+        cache.add('baidu.com', port, list_ip, expire=int(time.time()) + expire)
+        cache.add('baidu.com2', port, list_ip, expire=int(time.time()) + expire)
+        entry = cache.get_ip_list('baidu.com', port)
         self.assertIsNotNone(entry)
         time.sleep(1)
-        self.assertIsNotNone(cache.get_ip_list('baidu.com'))
+        self.assertIsNotNone(cache.get_ip_list('baidu.com', port))
         time.sleep(2)
-        self.assertIsNone(cache.get_ip_list('baidu.com'))
+        self.assertIsNone(cache.get_ip_list('baidu.com', port))
 
     def test_retry(self):
         with open('out.txt', 'wb') as f:

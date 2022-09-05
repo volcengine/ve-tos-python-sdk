@@ -6,7 +6,6 @@ import logging
 import math
 import os
 import platform
-import random
 import shutil
 import socket
 import sys
@@ -15,12 +14,12 @@ import time
 import traceback
 import urllib.parse
 from datetime import datetime
-from socket import error as SocketError, timeout as SocketTimeout
 from typing import Dict
 
 import requests
 from requests.structures import CaseInsensitiveDict
 from urllib3.util import connection
+from urllib3.util.connection import allowed_gai_family, _set_socket_options
 
 from tos import TosClient
 from tos.__version__ import __version__
@@ -31,8 +30,7 @@ from .checkpoint import (CheckPointStore, _BreakpointDownloader,
 from .client import _make_virtual_host_url, _make_virtual_host_uri, _get_virtual_host, _get_host, _get_scheme
 from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
                      WHITE_LIST_FUNCTION)
-from .convertor import (convert_list_buckets_output,
-                        convert_list_object_versions_output)
+from .convertor import (convert_list_object_versions_output)
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType)
 from .exceptions import TosClientError, TosServerError
@@ -57,7 +55,7 @@ from .utils import (SizeAdapter, _cal_upload_callback, _make_copy_source,
                     get_parent_directory_from_File, get_value, init_content,
                     is_utf8_with_trigger, meta_header_encode, to_bytes, to_str,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
-                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo)
+                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo, gen_key)
 
 logger = logging.getLogger(__name__)
 _dns_cache = DnsCacheService()
@@ -392,7 +390,7 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
 
 def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheControl, ContentDisposition, ContentEncoding,
                                          ContentLanguage, ContentType,
-                                         EncodingType, Expires, GrantFullControl, GrantRead, GrantReadACP,
+                                         Expires, GrantFullControl, GrantRead, GrantReadACP,
                                          GrantWriteACP, Key, Metadata, SSECustomerAlgorithm, SSECustomerKey,
                                          SSECustomerKeyMD5, ServerSideEncryption, WebsiteRedirectLocation,
                                          StorageClass: StorageClassType):
@@ -435,8 +433,6 @@ def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheContr
         headers['x-tos-website-redirect-location'] = WebsiteRedirectLocation
     if ServerSideEncryption:
         headers['x-tos-server-side-encryption'] = ServerSideEncryption
-    if EncodingType:
-        headers['encoding-type'] = EncodingType
     if StorageClass:
         headers['x-tos-storage-class'] = StorageClass.value
 
@@ -555,12 +551,12 @@ class TosClientV2(TosClient):
                  security_token=None,
                  auto_recognize_content_type=True,
                  max_retry_count=3,
-                 request_timeout: int = 60,
+                 request_timeout=60,
                  max_connections=1024,
                  enable_crc=True,
                  connection_time=10,
-                 enable_verify_ssl=False,
-                 dns_cache_time=1,
+                 enable_verify_ssl=True,
+                 dns_cache_time=0,
                  proxy_host: str = None,
                  proxy_port: int = None,
                  proxy_username: str = None,
@@ -730,7 +726,7 @@ class TosClientV2(TosClient):
         """查询桶元数据
 
         此接口用于判断桶是否存在和是否有桶的访问权限。
-        如果桶不存在或者没有访问桶的权限，此接口会会返回404 Not Found或403 Forbidden状态码的TosServerError。
+        如果桶不存在或者没有访问桶的权限，此接口会返回404 Not Found或403 Forbidden状态码的TosServerError。
 
         :param bucket: 桶名
         :return: HeadBucketOutput
@@ -757,7 +753,7 @@ class TosClientV2(TosClient):
         :return: ListBucketsOutput
         """
         resp = self._req(method=HttpMethodType.Http_Method_Get.value)
-        result = convert_list_buckets_output(resp)
+        result = ListBucketsOutput(resp)
         return result
 
     def copy_object(self, bucket: str, key: str, src_bucket: str, src_key: str,
@@ -1029,7 +1025,7 @@ class TosClientV2(TosClient):
 
         data = None
 
-        if owner and grants:
+        if grants:
             body = to_put_object_acl_request(owner, grants)
             data = json.dumps(body)
 
@@ -1231,7 +1227,7 @@ class TosClientV2(TosClient):
                       storage_class: StorageClassType = None,
                       data_transfer_listener=None,
                       rate_limiter=None,
-                      pre_hash_crc64_ecma: int = None
+                      pre_hash_crc64_ecma: int = 0
                       ):
         """追加写对象
 
@@ -1465,7 +1461,7 @@ class TosClientV2(TosClient):
 
             return result
 
-    def create_multipart_upload(self, bucket, key,
+    def create_multipart_upload(self, bucket: str, key: str,
                                 encoding_type: str = None,
                                 cache_control: str = None,
                                 content_disposition: str = None,
@@ -1521,12 +1517,16 @@ class TosClientV2(TosClient):
         headers = _get_create_multipart_upload_headers(self.recognize_content_type, acl, cache_control,
                                                        content_disposition, content_encoding,
                                                        content_language,
-                                                       content_type, encoding_type, expires, grant_full_control,
+                                                       content_type, expires, grant_full_control,
                                                        grant_read, grant_read_acp, grant_write_acp, key, meta,
                                                        ssec_algorithm, ssec_key, ssec_key_md5,
                                                        server_side_encryption, website_redirect_location, storage_class)
 
-        resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Post.value, params={'uploads': ''},
+        params = {'uploads': ''}
+        if encoding_type:
+            params['encoding-type'] = encoding_type
+
+        resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Post.value, params=params,
                          headers=headers)
 
         return CreateMultipartUploadOutput(resp)
@@ -2048,8 +2048,7 @@ class TosClientV2(TosClient):
 
     def list_parts(self, bucket: str, key: str, upload_id: str,
                    part_number_marker: int = None,
-                   max_parts: int = 1000,
-                   encoding_type: str = None) -> ListPartsOutput:
+                   max_parts: int = 1000) -> ListPartsOutput:
         """ 列举段
 
         :param bucket: 桶名
@@ -2057,7 +2056,6 @@ class TosClientV2(TosClient):
         :param upload_id: 初始化分片任务返回的段任务ID，用于唯一标识上传的分片属于哪个对象。
         :param part_number_marker: 指定PartNumber的起始位置，只列举PartNumber大于此值的段。
         :param max_parts: 响应中最大的分片数量
-        :param encoding_type: 编码方式
         :return: ListPartsOutput
         """
         params = _get_list_parts_params(max_parts, part_number_marker, upload_id)
@@ -2155,90 +2153,90 @@ class TosClientV2(TosClient):
         raise exp
 
     def _open_dns_cache(self):
-        def dns_resolver(host):
-            try:
-                ip_list = []
-                adds = socket.getaddrinfo(host, 'http')
-                for item in adds:
-                    if item[4] not in ip_list:
-                        ip_list.append(item[4])
-
-                return ip_list
-            except Exception:
-                return None
-
         _orig_create_connection = connection.create_connection
 
-        def create_connect(host, cache_entry, https_port, *args, **kwargs):
-            for addr in cache_entry.copy_ip_list():
-                try:
-                    logger.info('in-request: cache success host:{} ip:{} port:{}'.format(host, addr.ip, addr.port))
-                    if https_port:
-                        conn = _orig_create_connection((addr.ip, https_port), *args, **kwargs)
-                    else:
-                        conn = _orig_create_connection((addr.ip, addr.port), *args, **kwargs)
-                except (SocketTimeout, SocketError):
-                    cache_entry.remove(addr)
-                    logger.info('in-request: remove cache host:{} ip:{} port:{}'.format(host, addr.ip, addr.port))
-                    continue
-                return conn
-            _dns_cache.remove(host)
-            return None
-
-        def get_connect(host, cache_entry, https_port, *args, **kwargs):
+        def get_connect(host, port, cache_entry,
+                        timeout,
+                        source_address,
+                        socket_options):
             if cache_entry is None:
-                ip_list = dns_resolver(host)
-                if ip_list and len(ip_list) > 0:
+                family = allowed_gai_family()
+                info = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+
+                if info and len(info) > 0:
                     expire = self.dns_cache_time
-                    _dns_cache.add(host, ip_list, int(time.time()) + expire)
-                    hostname, port = random.choice(ip_list)
-                    if not https_port:
-                        conn = _orig_create_connection((hostname, port), *args, **kwargs)
-                    else:
-                        conn = _orig_create_connection((hostname, https_port), *args, **kwargs)
-                    return conn
+                    _dns_cache.add(host, port, info, int(time.time()) + expire)
+                    cache_entry = _dns_cache.get_ip_list(host, port)
+                    return create_connection(cache_entry, timeout, source_address, socket_options)
+
             else:
-                conn = create_connect(host, cache_entry, https_port, *args, **kwargs)
-                if conn:
-                    return conn
+                logger.info('in-request cache dns host: {}, port: {}'.format(host, port))
+                return create_connection(cache_entry, timeout, source_address, socket_options)
 
-            return None
+        def create_connection(cache, timeout, source_address, socket_options):
+            for res in cache.copy_ip_list():
+                af, socktype, proto, canonname, sa = res
+                sock = None
+                try:
+                    sock = socket.socket(af, socktype, proto)
+                    # If provided, set socket level options before connecting.
+                    _set_socket_options(sock, socket_options)
 
-        def patched_create_connection(address, *args, **kwargs):
+                    if timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:
+                        sock.settimeout(timeout)
+                    if source_address:
+                        sock.bind(source_address)
+                    sock.connect(sa)
+                    return sock
+                except socket.error:
+                    cache.remove(res)
+                    if sock is not None:
+                        sock.close()
+                        sock = None
+
+            _dns_cache.remove(gen_key(cache.host, cache.port))
+
+        def patched_create_connection(address,
+                                      timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
+                                      source_address=None,
+                                      socket_options=None, ):
             """Wrap urllib3's create_connection to resolve the name elsewhere"""
             # resolve hostname to an ip address; use your own
             # resolver here, as otherwise the system resolver will be used.
             global _dns_cache
             host, port = address
-            https_port = None
-            if port == 443:
-                https_port = 443
+
             if utils.is_ip(host):
                 logger.info('in-request: ip request {} port {}'.format(host, port))
-                return _orig_create_connection(address, *args, **kwargs)
-            virtual_host = host
-            cache_entry_virtual = _dns_cache.get_ip_list(virtual_host)
+                return _orig_create_connection(address, timeout, source_address, socket_options)
 
+            virtual_host = host
             real_host = get_real_host(virtual_host)
-            cache_entry_real = _dns_cache.get_ip_list(real_host)
-            real_conn = get_connect(real_host, cache_entry_real, https_port, *args, **kwargs)
-            if real_conn:
-                return real_conn
-            # cache_entry_real 和 cache_entry_real 都为空 查询 DNS
-            virtual_conn = get_connect(host, cache_entry_virtual, https_port, *args, **kwargs)
+            if real_host:
+                cache_entry_real = _dns_cache.get_ip_list(real_host, port)
+                real_conn = get_connect(real_host, port, cache_entry_real, timeout, source_address, socket_options)
+                if real_conn:
+                    return real_conn
+
+            cache_entry_virtual = _dns_cache.get_ip_list(virtual_host, port)
+            virtual_conn = get_connect(host, port, cache_entry_virtual, timeout, source_address, socket_options)
             if virtual_conn:
                 return virtual_conn
 
-            return _orig_create_connection(address, *args, **kwargs)
+            # cache_entry_real 和 cache_entry_virtual 都为空 查询 DNS
+            return _orig_create_connection(address, timeout, source_address, socket_options)
 
-        connection.create_connection = patched_create_connection
+        if patched_create_connection.__name__ != connection.create_connection.__name__:
+            connection.create_connection = patched_create_connection
 
 
 def get_real_host(host):
     arr = host.split('.')
-    arr.pop(0)
-    real_host = '.'.join(arr)
-    return real_host
+    if len(arr) == 4 and arr[1].startswith('tos-cn'):
+        arr.pop(0)
+        real_host = '.'.join(arr)
+        return real_host
+    return None
 
 
 def hook_request_log(r, *args, **kwargs):
