@@ -319,25 +319,6 @@ def convert_get_object_acl_result(resp):
     return result
 
 
-def convert_list_buckets_output(resp: Response) -> ListBucketsOutput:
-    output = ListBucketsOutput(resp)
-    data = resp.json_read()
-    output.owner = Owner(
-        get_value(data['Owner'], 'ID'),
-        get_value(data['Owner'], 'Name'),
-    )
-
-    bkt_list = get_value(data, 'Buckets') or []
-    for bkt in bkt_list:
-        output.buckets.append(ListedBucket(
-            get_value(bkt, 'Name'),
-            get_value(bkt, 'Location'),
-            get_value(bkt, 'CreationDate'),
-            get_value(bkt, 'ExtranetEndpoint'),
-            get_value(bkt, 'IntranetEndpoint')))
-    return output
-
-
 def convert_list_object_versions_output(resp):
     result = ListObjectVersionsOutput(resp)
     data = resp.json_read()
@@ -374,7 +355,7 @@ def convert_list_object_versions_output(resp):
             key=get_value(object, 'Key'),
             last_modified=last_modified,
             etag=get_etag(object),
-            size=get_value(object, 'Size'),
+            size=get_value(object, 'Size', lambda x: int(x)),
             storage_class=StorageClassType(get_value(object, 'StorageClass')),
             version_id=get_value(object, 'VersionId'),
             hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
@@ -389,10 +370,13 @@ def convert_list_object_versions_output(resp):
 
     delete_marker_list = get_value(data, 'DeleteMarkers') or []
     for delete_marker in delete_marker_list:
+        last_modified = get_value(delete_marker, 'LastModified')
+        if last_modified:
+            last_modified = parse_modify_time_to_utc_datetime(last_modified)
         delete_marker_info = DeleteMarkerInfo(
             get_value(delete_marker, 'Key'),
-            get_value(delete_marker, 'IsLatest'),
-            get_value(delete_marker, 'LastModified'),
+            get_value(delete_marker, 'IsLatest', lambda x: bool(x)),
+            last_modified,
             get_value(delete_marker, 'VersionId')
         )
         owner_info = get_value(delete_marker, 'Owner')

@@ -29,7 +29,7 @@ class HeadBucketOutput(ResponseInfo):
     def __init__(self, resp):
         super(HeadBucketOutput, self).__init__(resp)
         self.region = get_value(self.header, "x-tos-bucket-region")
-        self.storage_class = StorageClassType(get_value(self.header, "x-tos-storage-class"))
+        self.storage_class = get_value(self.header, "x-tos-storage-class", lambda x: StorageClassType(x))
 
 
 class DeleteBucketOutput(ResponseInfo):
@@ -67,6 +67,20 @@ class ListBucketsOutput(ResponseInfo):
         super(ListBucketsOutput, self).__init__(resp)
         self.buckets = []
         self.owner = None
+        data = resp.json_read()
+        self.owner = Owner(
+            get_value(data['Owner'], 'ID'),
+            get_value(data['Owner'], 'Name'),
+        )
+
+        bkt_list = get_value(data, 'Buckets') or []
+        for bkt in bkt_list:
+            self.buckets.append(ListedBucket(
+                get_value(bkt, 'Name'),
+                get_value(bkt, 'Location'),
+                get_value(bkt, 'CreationDate'),
+                get_value(bkt, 'ExtranetEndpoint'),
+                get_value(bkt, 'IntranetEndpoint')))
 
 
 class PutObjectOutput(ResponseInfo):
@@ -149,7 +163,7 @@ class DeleteObjectsOutput(ResponseInfo):
 
 
 class Grantee(object):
-    def __init__(self, type: GranteeType, id: str=None, display_name: str=None, canned: CannedType=None):
+    def __init__(self, type: GranteeType, id: str = None, display_name: str = None, canned: CannedType = None):
         self.type = type
         self.display_name = display_name
         self.id = id
@@ -172,7 +186,7 @@ class HeadObjectOutput(ResponseInfo):
         self.etag = get_etag(resp.headers)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
         self.sse_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
-        self.sse__key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
+        self.sse_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
         self.website_redirect_location = get_value(resp.headers, "x-tos-website-redirect-location")
         self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
         self.storage_class = StorageClassType(get_value(resp.headers, "x-tos-storage-class"))
@@ -247,8 +261,8 @@ class ListObjectsOutput(ResponseInfo):
                 get_value(object, 'Key'),
                 last_modified=last_modified,
                 etag=get_etag(object),
-                size=get_value(object, 'Size'),
-                storage_class=StorageClassType(get_value(object, 'StorageClass')),
+                size=get_value(object, 'Size', int),
+                storage_class=get_value(object, 'StorageClass', lambda x: StorageClassType(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
             )
             owner_info = get_value(object, 'Owner')
@@ -324,7 +338,7 @@ class PutObjectACLOutput(ResponseInfo):
 class GetObjectACLOutput(ResponseInfo):
     def __init__(self, resp):
         super(GetObjectACLOutput, self).__init__(resp)
-        self.version_id = None
+        self.version_id = get_value(self.header, 'x-tos-version-id')
         self.owner = None
         self.grants = []
         data = resp.json_read()
@@ -339,10 +353,10 @@ class GetObjectACLOutput(ResponseInfo):
             g = Grantee(
                 id=get_value(grant['Grantee'], 'ID'),
                 display_name=get_value(grant['Grantee'], 'DisplayName'),
-                type=get_value(grant['Grantee'], 'Type'),
-                canned=get_value(grant['Grantee'], 'Canned'),
+                type=get_value(grant['Grantee'], 'Type', lambda x: GranteeType(x)),
+                canned=get_value(grant['Grantee'], 'Canned', lambda x: CannedType(x)),
             )
-            permission = PermissionType(get_value(grant, 'Permission'))
+            permission = get_value(grant, 'Permission', lambda x: PermissionType(x))
             self.grants.append(Grant(g, permission))
 
 
@@ -387,12 +401,14 @@ class AppendObjectOutput(ResponseInfo):
 class CreateMultipartUploadOutput(ResponseInfo):
     def __init__(self, resp):
         super(CreateMultipartUploadOutput, self).__init__(resp)
+
+        self.ssec_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
+        self.ssec_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
+
         data = resp.json_read()
         self.bucket = get_value(data, "Bucket")
         self.key = get_value(data, "Key")
         self.upload_id = get_value(data, "UploadId")
-        self.ssec_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
-        self.ssec_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
         if get_value(data, 'EncodingType'):
             self.encoding_type = get_value(data, 'EncodingType')
         else:
@@ -433,6 +449,8 @@ class UploadPartCopyOutput(ResponseInfo):
         self.part_number = part_number
         self.etag = get_etag(data)
         self.last_modified = get_value(data, "LastModified")
+        if self.last_modified:
+            self.last_modified = parse_modify_time_to_utc_datetime(self.last_modified)
         self.copy_source_version_id = get_value(resp.headers, 'x-tos-copy-source-version-id')
 
 
@@ -505,7 +523,7 @@ class ListPartsOutput(ResponseInfo):
         self.key = get_value(data, 'Key')
         self.upload_id = get_value(data, 'UploadId')
         self.part_number_marker = get_value(data, 'PartNumberMarker', lambda x: int(x))
-        self.next_part_number_marker = get_value(data, 'NextPartNumberMarker')
+        self.next_part_number_marker = get_value(data, 'NextPartNumberMarker', int)
         self.max_parts = get_value(data, 'MaxParts', lambda x: int(x))
         self.storage_class = StorageClassType(get_value(data, 'StorageClass'))
         self.parts = []
@@ -534,7 +552,7 @@ class ListPartsOutput(ResponseInfo):
                 part_number=get_value(part, 'PartNumber'),
                 last_modified=last_modified,
                 etag=get_etag(part),
-                size=get_value(part, 'Size')
+                size=get_value(part, 'Size', int)
             ))
 
 
