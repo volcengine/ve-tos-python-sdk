@@ -12,10 +12,10 @@ from urllib.parse import quote
 
 import requests
 from deprecated import deprecated
-from requests.adapters import HTTPAdapter, Retry
+from requests.adapters import HTTPAdapter
 from requests.structures import CaseInsensitiveDict
 
-from tos.__version__ import __version__
+from . import __version__
 
 from . import exceptions
 from .consts import (CONNECT_TIMEOUT, EMPTY_SHA256_HASH, GMT_DATE_FORMAT,
@@ -49,7 +49,7 @@ def _is_valid_region(region: str):
 
 
 def _if_map(region: str, endpoint: str):
-    if _is_valid_region(region):
+    if _is_valid_region(region) and not endpoint:
         return REGION_MAP[region]
     else:
         return endpoint

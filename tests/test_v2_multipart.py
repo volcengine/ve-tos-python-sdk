@@ -1,37 +1,18 @@
+# -*- coding: utf-8 -*-
+
 import datetime
-import logging
-import os
 import unittest
 
-from tests.common import random_bytes
-from tests.test_v2_bucker import random_string
-from tos import set_logger
-from tos.clientv2 import TosClientV2
+from tests.common import TosTestBase, random_bytes
 from tos.enum import ACLType, StorageClassType
 from tos.exceptions import TosServerError
 from tos.models2 import UploadedPart
 
-set_logger(level=logging.WARNING)
 
-
-class TestMultipart(unittest.TestCase):
-    def __init__(self, *args, **kwargs):
-        super(TestMultipart, self).__init__(*args, **kwargs)
-        self.ak = os.getenv('AK')
-        self.sk = os.getenv('SK')
-        self.endpoint = os.getenv('Endpoint')
-        self.region = os.getenv('Region')
-        self.bucket_name = "sun-" + random_string(10)
-        self.object_name = "test_object" + random_string(10)
-        self.prefix = random_string(12)
-        self.key_list = []
-
-    def setUp(self):
-        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, dns_cache_time=60 * 60,
-                                  request_timeout=10)
-
+class TestMultipart(TosTestBase):
     def test_multipart(self):
         bucket_name = self.bucket_name + "-test-multipart"
+        self.bucket_delete.append(bucket_name)
         self.client.create_bucket(bucket_name)
         key = self.random_key('.js')
         mult_out = self.client.create_multipart_upload(bucket_name, key)
@@ -63,11 +44,10 @@ class TestMultipart(unittest.TestCase):
 
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content + content)
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
 
     def test_multipart_with_options(self):
         bucket_name = self.bucket_name + "-test-multipart-with-option"
+        self.bucket_delete.append(bucket_name)
         self.client.create_bucket(bucket_name)
         key = self.random_key('.js')
         meta = {'name': 'sunyushan'}
@@ -99,16 +79,15 @@ class TestMultipart(unittest.TestCase):
         self.assertTrue(get_out.content_type, 'text')
         self.assertEqual(get_out.storage_class, StorageClassType.Storage_Class_Ia)
 
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_multipart_copy(self):
-        src_bucket_name = self.bucket_name + "-test-multipart"
+        src_bucket_name = self.bucket_name + "-test-multipart-copy"
+        self.bucket_delete.append(src_bucket_name)
         self.client.create_bucket(src_bucket_name)
         key = self.random_key('.js')
         content = random_bytes(1024 * 1024 * 5)
 
         save_bucket_name = self.bucket_name + "test-multipart" + "v2"
+        self.bucket_delete.append(save_bucket_name)
         self.client.create_bucket(save_bucket_name)
 
         self.client.put_object(src_bucket_name, key, content=content)
@@ -127,13 +106,9 @@ class TestMultipart(unittest.TestCase):
         get_out = self.client.get_object(save_bucket_name, key)
         self.assertEqual(get_out.read(), content + content)
 
-        self.client.delete_object(src_bucket_name, key)
-        self.client.delete_bucket(src_bucket_name)
-        self.client.delete_object(save_bucket_name, key)
-        self.client.delete_bucket(save_bucket_name)
-
     def test_multipart_abort(self):
-        bucket_name = self.bucket_name + "-test-multipart"
+        bucket_name = self.bucket_name + "-test-multipart-abort"
+        self.bucket_delete.append(bucket_name)
         self.client.create_bucket(bucket_name)
         key = self.random_key('.js')
         mult_out = self.client.create_multipart_upload(bucket_name, key)
@@ -148,16 +123,14 @@ class TestMultipart(unittest.TestCase):
         with self.assertRaises(TosServerError):
             self.client.list_parts(bucket_name, key, mult_out.upload_id)
 
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_upload_part_from_file(self):
         bucket_name = self.bucket_name + "-test-multipart-file"
+        self.bucket_delete.append(bucket_name)
         self.client.create_bucket(bucket_name)
         key = self.random_key('.js')
         mult_out = self.client.create_multipart_upload(bucket_name, key)
         parts = []
-        file_name = random_string(10)
+        file_name = self.random_filename()
         content = random_bytes(1024 * 1024 * 10)
         with open(file_name, 'wb') as fw:
             fw.write(content)
@@ -186,54 +159,30 @@ class TestMultipart(unittest.TestCase):
         self.assertTrue(len(complete_out.etag) > 0)
         self.assertTrue(complete_out.hash_crc64_ecma > 0)
 
-        get_out = self.client.get_object(bucket_name, key)
-        self.assertEqual(get_out.read(), content + content)
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-        os.remove(file_name)
+        self.assertObjectContent(bucket=bucket_name, key=key, content= content + content)
 
     def test_upload_part_from_file_with_offset(self):
         bucket_name = self.bucket_name + "-test-multipart-file"
+        self.bucket_delete.append(bucket_name)
         self.client.create_bucket(bucket_name)
         key = self.random_key('.js')
         mult_out = self.client.create_multipart_upload(bucket_name, key)
         parts = []
-        file_name = random_string(10)
+        file_name = self.random_filename()
         content = random_bytes(1024 * 13 * 1024)
         with open(file_name, 'wb') as fw:
             fw.write(content)
-            for i in range(1, 4):
-                upload_part_output = self.client.upload_part_from_file(bucket=bucket_name, key=key,
-                                                                       upload_id=mult_out.upload_id,
-                                                                       part_number=i, file_path=file_name,
-                                                                       offset=5 * (i - 1) * 1024 * 1024,
-                                                                       part_size=5 * 1024 * 1024)
-                parts.append(UploadedPart(i, upload_part_output.etag))
+        for i in range(1, 4):
+            upload_part_output = self.client.upload_part_from_file(bucket=bucket_name, key=key,
+                                                                   upload_id=mult_out.upload_id,
+                                                                   part_number=i, file_path=file_name,
+                                                                   offset=5 * (i - 1) * 1024 * 1024,
+                                                                   part_size=5 * 1024 * 1024)
+            parts.append(UploadedPart(i, upload_part_output.etag))
 
-            self.client.list_parts(bucket_name, key, mult_out.upload_id)
-            self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
-            get_out = self.client.get_object(bucket_name, key)
-            self.assertEqual(get_out.read(), content)
-
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-        os.remove(file_name)
-
-    def test_list_upload_tasks(self):
-        bucket_name = self.bucket_name + "-test-multipart-file"
-        self.client.create_bucket(bucket_name)
-        key = self.random_key('.js')
-
-        for i in range(100):
-            self.client.create_multipart_upload(bucket_name, key + str(i))
-
-        self.client.list_multipart_uploads(bucket_name, max_uploads=10)
-
-    def random_key(self, suffix=''):
-        key = self.prefix + random_string(12) + suffix
-        self.key_list.append(key)
-
-        return key
+        self.client.list_parts(bucket_name, key, mult_out.upload_id)
+        self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
+        self.assertObjectContent(bucket_name, key, content)
 
 
 if __name__ == '__main__':

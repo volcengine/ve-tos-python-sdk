@@ -1,8 +1,10 @@
 import concurrent.futures
+import hashlib
 import json
 import logging
 import os
 import threading
+import urllib.parse
 from concurrent.futures import as_completed
 from typing import Dict
 
@@ -12,7 +14,7 @@ from tos.exceptions import (CancelNotWithAbortError, CancelWithAbortError,
                             TosClientError, TosServerError)
 from tos.models2 import PartInfo, UploadedPart, _PartToDo
 from tos.utils import (SizeAdapter, _cal_download_callback,
-                       _cal_upload_callback, to_unicode)
+                       _cal_upload_callback, to_unicode, MergeProcess, to_bytes)
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +28,11 @@ class CheckPointStore(object):
     支持 删除对象的 checkpoint 信息
     """
 
-    def __init__(self, dir, file_name):
+    def __init__(self, dir, file_name, use_type: str):
 
         self.dir = dir
         self.file_name = file_name
+        self.suffix = use_type
 
         if os.path.isdir(self.dir):
             return
@@ -62,7 +65,8 @@ class CheckPointStore(object):
         os.remove(pathname)
 
     def path(self, bucket, key):
-        name = "{0}.{1}.{2}.upload".format(self.file_name, bucket, key)
+        encoding_data = urllib.parse.quote(hashlib.md5(to_bytes(bucket + '.' + key)).digest(), safe='')
+        name = "{0}.{1}.{2}".format(self.file_name, encoding_data, self.suffix)
         return os.path.join(self.dir, name)
 
 
@@ -109,7 +113,7 @@ class _BreakpointUploader(object):
     def __init__(self, client, bucket, key, file_path: str, store: CheckPointStore, task_num: int,
                  parts_to_update, upload_id, record: Dict,
                  datatransfer_listener=None, upload_event_listener=None,
-                 rate_limiter=None, cancel_hook=None):
+                 rate_limiter=None, cancel_hook=None, size=None):
 
         self.client = client
         self.bucket = bucket
@@ -118,9 +122,14 @@ class _BreakpointUploader(object):
         self.task_num = task_num
         self.cancel_hook = cancel_hook
         self.parts_to_update = parts_to_update
-        self.upload_id = upload_id
-
         self.datatransfer_listener = datatransfer_listener
+        need_bytes = 0
+        for part in self.parts_to_update:
+            need_bytes += part.size
+        if self.datatransfer_listener:
+            self.datatransfer_listener = MergeProcess(self.datatransfer_listener, size,
+                                                      len(self.parts_to_update), size - need_bytes)
+        self.upload_id = upload_id
         self.upload_event_listener = upload_event_listener
         self.rate_limiter = rate_limiter
 
@@ -236,7 +245,7 @@ class _BreakpointDownloader(object):
     def __init__(self, client, bucket, key, file_path: str, store: CheckPointStore, task_num: int,
                  parts_to_download, record: Dict, etag,
                  datatransfer_listener=None, download_event_listener=None,
-                 rate_limiter=None, cancel_hook=None, version_id=None):
+                 rate_limiter=None, cancel_hook=None, version_id=None, size=None):
         self.client = client
         self.bucket = bucket
         self.key = key
@@ -249,7 +258,13 @@ class _BreakpointDownloader(object):
         self.rate_limiter = rate_limiter
         self.cancel_hook = cancel_hook
         self.parts_to_download = parts_to_download
-        self._temp = file_path + '.temp'
+        need_bytes = 0
+        for part in parts_to_download:
+            need_bytes += part.size
+        if self.datatransfer_listener:
+            self.datatransfer_listener = MergeProcess(self.datatransfer_listener, size,
+                                                      len(self.parts_to_download), size - need_bytes)
+        self.temp = file_path + '.temp'
 
         # 下列变量加锁操作
         self.lock = threading.Lock()
@@ -257,18 +272,17 @@ class _BreakpointDownloader(object):
         self.store = store
 
         self.finished_parts = []
-
         for p in record["parts_info"]:
             self.finished_parts.append(
                 _PartToDo(p["part_number"], p["range_start"], p["range_end"], p["hash_crc64ecma"]))
 
     def download(self, tos_crc):
 
-        open(self._temp, 'a').close()
+        open(self.temp, 'a').close()
         _cal_download_callback(self.download_event_listener,
                                DownloadEventType.Download_Event_Create_TempFile_Succeed, None, self.bucket, self.key,
                                self.version_id,
-                               self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+                               self.file_path, self.store.path(self.bucket, self.key), self.temp, None)
 
         q = TaskExecutor(self.task_num, self._download_part, self.cancel_hook)
 
@@ -283,20 +297,20 @@ class _BreakpointDownloader(object):
                 download_crc = utils.cal_crc_from_parts(parts)
                 utils.check_crc("download_file", download_crc, tos_crc, "")
 
-            utils.rename_file(self._temp, self.file_path)
+            utils.rename_file(self.temp, self.file_path)
 
             self.store.delete(bucket=self.bucket, key=self.key)
 
             _cal_download_callback(self.download_event_listener,
                                    DownloadEventType.Download_Event_Rename_Temp_File_Succeed,
                                    None, self.bucket, self.key, self.version_id,
-                                   self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+                                   self.file_path, self.store.path(self.bucket, self.key), self.temp, None)
 
         except CancelWithAbortError as e:
             _cal_download_callback(self.download_event_listener,
                                    DownloadEventType.Download_Event_Download_Part_Aborted,
                                    e, self.bucket, self.key, self.version_id,
-                                   self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+                                   self.file_path, self.store.path(self.bucket, self.key), self.temp, None)
 
             # 删除临时文件
             os.remove(self.file_path)
@@ -309,20 +323,21 @@ class _BreakpointDownloader(object):
             _cal_download_callback(self.download_event_listener,
                                    DownloadEventType.Download_Event_Download_Part_Aborted,
                                    e, self.bucket, self.key, self.version_id,
-                                   self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+                                   self.file_path, self.store.path(self.bucket, self.key), self.temp, None)
             raise TosClientError('the task is canceled', e)
 
         except OSError as e:
             _cal_download_callback(self.download_event_listener,
                                    DownloadEventType.Download_Event_Rename_Temp_File_Failed,
                                    e, self.bucket, self.key, self.version_id,
-                                   self.file_path, self.store.path(self.bucket, self.key), self._temp, None)
+                                   self.file_path, self.store.path(self.bucket, self.key), self.temp, None)
+            raise e
         except Exception as e:
             raise e
 
     def _download_part(self, part):
 
-        with open(self._temp, 'wb') as f:
+        with open(self.temp, 'rb+') as f:
             try:
 
                 f.seek(part.start, os.SEEK_SET)
@@ -338,7 +353,7 @@ class _BreakpointDownloader(object):
                 _cal_download_callback(self.download_event_listener,
                                        DownloadEventType.Download_Event_Download_Part_Failed,
                                        e, self.bucket, self.key, self.version_id,
-                                       self.file_path, self.store.path(self.bucket, self.key), self._temp, part)
+                                       self.file_path, self.store.path(self.bucket, self.key), self.temp, part)
                 raise e
 
             self._finish_part(part)
@@ -346,7 +361,7 @@ class _BreakpointDownloader(object):
     def _finish_part(self, part):
         _cal_download_callback(self.download_event_listener, DownloadEventType.Download_Event_Download_Part_Succeed,
                                None, self.bucket, self.key, self.version_id,
-                               self.file_path, self.store.path(self.bucket, self.key), self._temp, part)
+                               self.file_path, self.store.path(self.bucket, self.key), self.temp, part)
         with self.lock:
             self.finished_parts.append(part)
             self.record['parts_info'].append(

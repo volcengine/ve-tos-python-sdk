@@ -1,4 +1,5 @@
-import logging
+# -*- coding: utf-8 -*-
+
 import os
 import time
 import unittest
@@ -9,13 +10,12 @@ from requests.exceptions import RetryError
 from urllib3.exceptions import NewConnectionError
 
 import tos
-from tos import DnsCacheService, RateLimiter
+from tos import DnsCacheService, RateLimiter, exceptions
 from tos.checkpoint import CancelHook
-from tos.clientv2 import _handler_retry_policy, _is_wrapper_data, TosClientV2
+from tos.clientv2 import _handler_retry_policy, _is_wrapper_data
 from tos.exceptions import TosServerError, CancelNotWithAbortError, CancelWithAbortError
+from tos.http import Response
 from tos.utils import SizeAdapter
-
-tos.set_logger(level=logging.INFO)
 
 
 class BaseFuncTestCase(unittest.TestCase):
@@ -124,6 +124,25 @@ class BaseFuncTestCase(unittest.TestCase):
         cancle.cancel(True)
         with self.assertRaises(CancelWithAbortError):
             cancle.is_cancel()
+
+    def test_stop_check(self):
+        io = StringIO("123")
+        req = TestResponse(4, io)
+        with self.assertRaises(tos.exceptions.TosClientError):
+            req.read()
+
+        io = StringIO("123")
+        req = TestResponse(4, io)
+        with self.assertRaises(tos.exceptions.TosClientError):
+            for content in req:
+                print(content)
+
+        io = StringIO("123")
+        req = TestResponse(3, io)
+        for content in req:
+            print(content)
+
+
 class args(object):
     def __init__(self, body, method, fun_name, client_exp, server_exp, want, expect_data=None):
         self.body = body
@@ -161,6 +180,36 @@ def wrapper_data(date, wrapper_progress, wrapper_limiter, wrapper_crc):
         date = tos.utils.add_crc_func(date, init_crc=0)
 
     return date
+
+
+class TestResponse(Response):
+    def __init__(self, length, body):
+        self.content_length = length
+        self.resp = body
+        self._all_read = False
+        self.offset = 0
+
+    def read(self, amt=None):
+        if self._all_read:
+            return b''
+
+        if amt is None:
+            content = self.resp.read()
+
+            self._all_read = True
+            if self.content_length and len(content) != self.content_length:
+                raise tos.exceptions.TosClientError('IO Content not equal content-length')
+            return content
+        else:
+            try:
+                read = next(self.resp)
+                self.offset += len(read)
+                return read
+            except StopIteration:
+                if self.content_length and self.offset != self.content_length:
+                    raise exceptions.TosClientError('IO Content not equal content-length')
+                self._all_read = True
+                return b''
 
 
 if __name__ == '__main__':
