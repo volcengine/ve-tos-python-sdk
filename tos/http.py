@@ -1,6 +1,4 @@
 import json
-from json import JSONDecodeError
-
 from requests.structures import CaseInsensitiveDict
 
 from . import exceptions
@@ -72,6 +70,6 @@ class Response(object):
     def json_read(self):
         try:
             body = self.read()
-            return json.loads(body)
-        except JSONDecodeError as e:
+            return json.loads(body.decode('utf-8'))
+        except Exception as e:
             raise TosClientError('unable to do serialization', e)
