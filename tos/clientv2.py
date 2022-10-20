@@ -21,8 +21,8 @@ from requests.structures import CaseInsensitiveDict
 from urllib3.util import connection
 from urllib3.util.connection import allowed_gai_family, _set_socket_options
 
-from tos import TosClient
-from tos.__version__ import __version__
+from . import TosClient
+from . import __version__
 from . import exceptions, utils
 from .auth import Auth
 from .checkpoint import (CheckPointStore, _BreakpointDownloader,
@@ -36,7 +36,8 @@ from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
 from .exceptions import TosClientError, TosServerError
 from .http import Request, Response
 from .json_utils import (to_complete_multipart_upload_request,
-                         to_put_object_acl_request, to_delete_multi_objects_request)
+                         to_put_acl_request, to_delete_multi_objects_request, to_put_bucket_cors_request,
+                         to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_object_tagging, to_fetch_object)
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       CompleteMultipartUploadOutput, CopyObjectOutput,
                       CreateBucketOutput, CreateMultipartUploadOutput,
@@ -48,14 +49,21 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       ListPartsOutput, Owner, PartInfo, PreSignedURLOutput,
                       PutObjectACLOutput, PutObjectOutput, SetObjectMetaOutput,
                       UploadFileOutput, UploadPartCopyOutput, UploadPartOutput,
-                      _PartToDo)
+                      _PartToDo, PutBucketCorsOutput, DeleteBucketCorsOutput, GetBucketCorsOutput,
+                      PutBucketMirrorBackOutPut, CustomDomainRule, PutBucketStorageClassOutput, GetBucketLocationOutput,
+                      PutBucketLifecycleOutput, GetBucketLifecycleOutput, DeleteBucketLifecycleOutput,
+                      GetBucketPolicyOutput, DeleteBucketPolicy, DeleteBucketMirrorBackOutput,
+                      GetBucketMirrorBackOutput, PutBucketPolicyOutPut, PutObjectTaggingOutput, GetObjectTaggingOutPut,
+                      DeleteObjectTaggingOutput, PutBucketACLOutput, GetBucketACLOutput, ContentLengthRange,
+                      ListObjectType2Output, ListObjectVersionsOutput, FetchObjectOutput, PutFetchTaskOutput,
+                      PreSignedPostSignatureOutPut, ListObjectsIterator)
 from .utils import (SizeAdapter, _cal_upload_callback, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
                     _ReaderAdapter, generate_http_proxies, get_content_type,
                     get_parent_directory_from_File, get_value, init_content,
                     is_utf8_with_trigger, meta_header_encode, to_bytes, to_str,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
-                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo, gen_key)
+                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo, gen_key, try_make_file_dir)
 
 logger = logging.getLogger(__name__)
 _dns_cache = DnsCacheService()
@@ -185,6 +193,26 @@ def _get_list_object_version_params(Delimiter, EncodingType, KeyMarker, MaxKeys,
         params['key-marker'] = KeyMarker
     if VersionIdMarker:
         params['version-id-marker'] = VersionIdMarker
+    return params
+
+
+def _get_list_object_v2_params(Delimiter, Start_After, ContinueToken, Reverse, MaxKeys, EncodingType, Prefix):
+    params = {'list-type': '2'}
+    if Delimiter:
+        params['delimiter'] = Delimiter
+    if EncodingType:
+        params['encoding-type'] = EncodingType
+    if MaxKeys:
+        params['max-keys'] = MaxKeys
+    if Start_After:
+        params['start-after'] = Start_After
+    if ContinueToken:
+        params['continuation-token'] = ContinueToken
+    if Reverse:
+        params['reverse'] = Reverse
+    if Prefix:
+        params['prefix'] = Prefix
+
     return params
 
 
@@ -342,6 +370,7 @@ def _get_object_params(ResponseCacheControl, ResponseContentDisposition, Respons
         params['response-content-type'] = ResponseContentType
     if ResponseExpires:
         params['response-expires'] = ResponseExpires.strftime(GMT_DATE_FORMAT)
+
     return params
 
 
@@ -465,6 +494,14 @@ def _get_set_object_meta_headers(recognize_content_type, cache_control, content_
 
 
 def _get_put_object_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWriteACP):
+    return _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, None, GrantWriteACP)
+
+
+def _get_put_bucket_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWrite, GrantWriteACP):
+    return _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWrite, GrantWriteACP)
+
+
+def _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWrite, GrantWriteACP):
     headers = {}
     if ACL:
         headers['x-tos-acl'] = ACL.value
@@ -474,6 +511,8 @@ def _get_put_object_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, 
         headers['x-tos-grant-read'] = GrantRead
     if GrantReadACP:
         headers['x-tos-grant-read-acp'] = GrantReadACP
+    if GrantWrite:
+        headers['x-tos-grant-write'] = GrantWrite
     if GrantWriteACP:
         headers['x-tos-grant-write-acp'] = GrantWriteACP
     return headers
@@ -494,6 +533,37 @@ def _get_upload_part_headers(content_length, content_md5, server_side_encryption
         headers['x-tos-server-side-encryption-customer-key-md5'] = ssec_key_md5
     if server_side_encryption:
         headers['x-tos-server-side-encryption'] = server_side_encryption
+
+    return headers
+
+
+def _get_fetch_headers(storage_class, acl, grant_full_control,
+                       grant_read, grant_read_acp, grant_write_acp, meta,
+                       ssec_customer_algorithm,
+                       ssec_customer_key, sse_customer_key_md5):
+    headers = {}
+    if meta:
+        for k in meta:
+            headers['x-tos-meta-' + k] = meta[k]
+        headers = meta_header_encode(headers)
+    if acl:
+        headers['x-tos-acl'] = acl.value
+    if grant_full_control:
+        headers['x-tos-grant-full-control'] = grant_full_control
+    if grant_read:
+        headers['x-tos-grant-read'] = grant_read
+    if grant_read_acp:
+        headers['x-tos-grant-read-acp'] = grant_read_acp
+    if grant_write_acp:
+        headers['x-tos-grant-write-acp'] = grant_write_acp
+    if ssec_customer_algorithm:
+        headers['x-tos-server-side-encryption-customer-algorithm'] = ssec_customer_algorithm
+    if ssec_customer_key:
+        headers['x-tos-server-side-encryption-customer-key'] = ssec_customer_key
+    if sse_customer_key_md5:
+        headers['x-tos-server-side-encryption-customer-key-md5'] = sse_customer_key_md5
+    if storage_class:
+        headers['x-tos-storage-class'] = storage_class.value
 
     return headers
 
@@ -586,6 +656,10 @@ class TosClientV2(TosClient):
         :param auth: 用户自定义auth
         :return TosClientV2:
         """
+
+        if 's3' in endpoint:
+            raise TosClientError("do not support s3 endpoint, please use tos endpoint")
+
         if auth:
             super(TosClientV2, self).__init__(auth=auth,
                                               endpoint=endpoint,
@@ -679,6 +753,29 @@ class TosClientV2(TosClient):
         signed_header['host'] = signed_header['Host']
         signed_header.pop('Host')
         return PreSignedURLOutput(signed_url, signed_header)
+
+    def pre_signed_post_signature(self, conditions: [],
+                                  bucket: str = None, key: str = None,
+                                  expires: int = 3600,
+                                  content_length_range: ContentLengthRange = None) -> PreSignedPostSignatureOutPut:
+        """ 生成POST上传预签名
+
+        :param conditions: 拼接到 policy中的条件组
+        :param bucket: 桶名
+        :param key: 对象名
+        :param expires: 过期时间
+        :param content_length_range: body长度范围
+        :return: PreSignedPostSignatureOutPut
+        """
+        _is_valid_expires(expires)
+        if content_length_range:
+            start = content_length_range.start
+            end = content_length_range.end
+            if start and end and start > end:
+                raise TosClientError("invalid content_length_range")
+
+        return self.auth.post_sign(bucket=bucket, key=key, expires=expires, conditions=conditions,
+                                   content_length_range=content_length_range)
 
     def create_bucket(self, bucket: str,
                       acl: ACLType = None,
@@ -950,7 +1047,7 @@ class TosClientV2(TosClient):
         :param marker: 分页标志
         :param max_keys: 最大返回数
         :param prefix: 前缀
-        :param reverse: 反向
+        :param reverse: 反转列举
         :return: ListObjectsOutput
         """
         params = _get_list_object_params(delimiter, encoding_type, marker, max_keys, prefix, reverse)
@@ -965,7 +1062,7 @@ class TosClientV2(TosClient):
                              key_marker: str = None,
                              version_id_marker: str = None,
                              max_keys: int = None,
-                             encoding_type: str = None):
+                             encoding_type: str = None) -> ListObjectVersionsOutput:
         """列举多版本对象
 
         :param bucket: 桶名
@@ -1026,7 +1123,7 @@ class TosClientV2(TosClient):
         data = None
 
         if grants:
-            body = to_put_object_acl_request(owner, grants)
+            body = to_put_acl_request(owner, grants)
             data = json.dumps(body)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, params=params,
@@ -1434,29 +1531,42 @@ class TosClientV2(TosClient):
         """
 
         check_client_encryption_algorithm(ssec_algorithm)
+        result = self.get_object(bucket=bucket,
+                                 key=key,
+                                 version_id=version_id,
+                                 if_match=if_match,
+                                 if_modified_since=if_modified_since,
+                                 if_none_match=if_none_match,
+                                 if_unmodified_since=if_unmodified_since,
+                                 ssec_algorithm=ssec_algorithm,
+                                 ssec_key=ssec_key,
+                                 ssec_key_md5=ssec_key_md5,
+                                 response_cache_control=response_cache_control,
+                                 response_content_disposition=response_content_disposition,
+                                 response_content_encoding=response_content_encoding,
+                                 response_content_language=response_content_language,
+                                 response_content_type=response_content_type,
+                                 response_expires=response_expires,
+                                 range_start=range_start,
+                                 range_end=range_end,
+                                 data_transfer_listener=data_transfer_listener,
+                                 rate_limiter=rate_limiter
+                                 )
+
+        if init_path(file_path, key):
+            dir = os.path.join(file_path, key)
+            os.makedirs(dir, exist_ok=True)
+            # 空循环读取数据
+            for content in result.content:
+                pass
+            return result
+
+        if os.path.isdir(file_path):
+            file_path = os.path.join(file_path, key)
+            try_make_file_dir(file_path)
+
 
         with open(file_path, 'wb') as f:
-            result = self.get_object(bucket=bucket,
-                                     key=key,
-                                     version_id=version_id,
-                                     if_match=if_match,
-                                     if_modified_since=if_modified_since,
-                                     if_none_match=if_none_match,
-                                     if_unmodified_since=if_unmodified_since,
-                                     ssec_algorithm=ssec_algorithm,
-                                     ssec_key=ssec_key,
-                                     ssec_key_md5=ssec_key_md5,
-                                     response_cache_control=response_cache_control,
-                                     response_content_disposition=response_content_disposition,
-                                     response_content_encoding=response_content_encoding,
-                                     response_content_language=response_content_language,
-                                     response_content_type=response_content_type,
-                                     response_expires=response_expires,
-                                     range_start=range_start,
-                                     range_end=range_end,
-                                     data_transfer_listener=data_transfer_listener,
-                                     rate_limiter=rate_limiter
-                                     )
             shutil.copyfileobj(result, f)
 
             return result
@@ -1613,12 +1723,14 @@ class TosClientV2(TosClient):
         last_modify = os.path.getmtime(file_path)
 
         dir = ""
-        if checkpoint_file and os.path.isdir(checkpoint_file):
-            dir = checkpoint_file
+        if checkpoint_file:
+            dir, file = os.path.split(checkpoint_file)
+            os.makedirs(dir, exist_ok=True)
         else:
             dir = get_parent_directory_from_File(os.path.abspath(file_path))
 
-        store = CheckPointStore(dir, file_path)
+        _, file_name = os.path.split(file_path)
+        store = CheckPointStore(dir, file_name, "upload")
 
         parts = []
         record = {}
@@ -1695,7 +1807,7 @@ class TosClientV2(TosClient):
                                        task_num=task_num, parts_to_update=parts, upload_id=upload_id,
                                        record=record, datatransfer_listener=data_transfer_listener,
                                        upload_event_listener=upload_event_listener, cancel_hook=cancel_hook,
-                                       rate_limiter=rate_limiter)
+                                       rate_limiter=rate_limiter, size=size)
 
         result = uploader.upload()
 
@@ -1747,29 +1859,34 @@ class TosClientV2(TosClient):
         if not file_path:
             raise TosClientError('tos: file_path = {0} is invalid'.format(file_path))
 
-        init_path(file_path)
-
         # 下载对象有效性
         result = self.head_object(bucket, key, version_id=version_id, if_match=if_match,
                                   if_modified_since=if_modified_since,
                                   if_none_match=if_none_match, if_unmodified_since=if_unmodified_since,
                                   ssec_algorithm=ssec_algorithm, ssec_key=ssec_key, ssec_key_md5=ssec_key_md5)
 
+        if init_path(file_path, key):
+            dir = os.path.join(file_path, key)
+            os.makedirs(dir, exist_ok=True)
+            return result
+
         dir = ""
         record = {}
         parts = []
         store = None
 
-        if checkpoint_file and os.path.isdir(checkpoint_file):
-            dir = checkpoint_file
+        if checkpoint_file:
+            dir, file = os.path.split(checkpoint_file)
         else:
             dir = get_parent_directory_from_File(os.path.abspath(file_path))
 
-        if os.path.isfile(file_path):
-            store = CheckPointStore(dir, file_path)
+        if os.path.isdir(file_path):
+            store = CheckPointStore(dir, key, 'download')
+            file_path = os.path.join(file_path, key)
+            try_make_file_dir(file_path)
         else:
-            store = CheckPointStore(dir, key)
-            file_path = file_path + '/' + key
+            _, file_name = os.path.split(file_path)
+            store = CheckPointStore(dir, file_name, 'download')
 
         if enable_checkpoint and _valid_download_checkpoint(bucket=bucket, store=store, key=key,
                                                             etag=result.etag, part_size=part_size):
@@ -1812,14 +1929,14 @@ class TosClientV2(TosClient):
                 record['if_none_match'] = if_none_match
 
             if if_unmodified_since:
-                record['if_unmodified_since'] = if_unmodified_since.timestamp()
+                record['if_unmodified_since'] = int(if_unmodified_since.timestamp())
             parts = _get_parts_to_download(size=result.content_length, part_size=part_size, parts_downloaded=[])
 
         downloader = _BreakpointDownloader(client=self, bucket=bucket, key=key, file_path=file_path, store=store,
                                            task_num=task_num, parts_to_download=parts, record=record, etag=result.etag,
                                            datatransfer_listener=data_transfer_listener,
                                            download_event_listener=download_event_listener, rate_limiter=rate_limiter,
-                                           cancel_hook=cancel_hook)
+                                           cancel_hook=cancel_hook, size=result.content_length)
 
         downloader.download(result.hash_crc64_ecma)
 
@@ -1851,7 +1968,6 @@ class TosClientV2(TosClient):
         :param content: 内容
         :param data_transfer_listener: 进度条
         :param rate_limiter: 限速度
-        以此实现io like 数据的超时重试
         :return: UploadPartOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -1962,7 +2078,7 @@ class TosClientV2(TosClient):
         :param bucket: 桶名
         :param key: 对象名
         :param upload_id: 分片任务id
-        :return: RequestResult
+        :return: AbortMultipartUpload
         """
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Delete.value,
@@ -2063,6 +2179,403 @@ class TosClientV2(TosClient):
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Get.value, params=params)
 
         return ListPartsOutput(resp)
+
+    def put_bucket_cors(self, bucket: str, cors_rule: []) -> PutBucketCorsOutput:
+        """ 为指定桶设置跨域请求配置
+
+        :param bucket: 桶名
+        :param cors_rule: 跨域请求规则
+        :return: PutBucketCorsOutput
+        """
+        data = to_put_bucket_cors_request(cors_rules=cors_rule)
+        data = json.dumps(data)
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        params = {'cors': ''}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params=params, headers=headers,
+                         data=data)
+
+        return PutBucketCorsOutput(resp)
+
+    def get_bucket_cors(self, bucket: str) -> GetBucketCorsOutput:
+        """ 获取指定 bucket 的 CORS 规则
+
+        :param bucket: 桶名
+        :return: GetBucketCorsOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'cors': ''})
+
+        return GetBucketCorsOutput(resp)
+
+    def delete_bucket_cors(self, bucket: str) -> DeleteBucketCorsOutput:
+        """ 删除指定 bucket 的 CORS 规则
+
+        :param bucket: 桶名
+        :return: DeleteBucketCorsOutput
+        """
+
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'cors': ''})
+
+        return DeleteBucketCorsOutput(resp)
+
+    def list_objects_type2(self, bucket: str,
+                           prefix: str = None,
+                           delimiter: str = None,
+                           start_after: str = None,
+                           continuation_token: str = None,
+                           reverse: bool = None,
+                           max_keys: int = 1000,
+                           encoding_type: str = None,
+                           list_only_once: bool = False) -> ListObjectType2Output:
+        """ 列举 bucket 中所有 objects 信息
+
+        :param bucket: 桶名
+        :param prefix: 前缀
+        :param delimiter: 分组字符
+        :param start_after: 设置从 start_after 之后按字典序开始返回 Object
+        :param continuation_token: 指定list操作需要从此token开始
+        :param reverse: 是否反转
+        :param max_keys: 指定每次返回 object 的最大数量
+        :param encoding_type: 返回key编码类型
+        :param list_only_once: 是否只列举一次
+        :return: ListObjectType2Output
+        """
+        params = _get_list_object_v2_params(delimiter, start_after, continuation_token, reverse, max_keys,
+                                            encoding_type, prefix)
+
+        if list_only_once:
+            resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params)
+            return ListObjectType2Output(resp)
+
+        iterator = ListObjectsIterator(self._req, max_keys, bucket=bucket, method=HttpMethodType.Http_Method_Get.value,
+                                       params=params, func='list_objects_type2')
+        result_arr = []
+        for iterm in iterator:
+            result_arr.append(iterm)
+        return result_arr.pop(0).combine(result_arr)
+
+    def put_bucket_storage_class(self, bucket: str,
+                                 storage_class: StorageClassType) -> PutBucketStorageClassOutput:
+        """ 设置 bucket 的存储类型
+
+        :param bucket: 桶名
+        :param storage_class: 存储类型
+        :return: PutBucketStorageClassOutput
+        """
+
+        check_enum_type(storage_class=storage_class)
+
+        headers = {}
+        if storage_class:
+            headers['x-tos-storage-class'] = storage_class.value
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params={'storageClass': ''},
+                         headers=headers)
+        return PutBucketStorageClassOutput(resp)
+
+    def get_bucket_location(self, bucket: str) -> GetBucketLocationOutput:
+        """ 获取 bucket 的location信息
+
+        :param bucket: 桶名
+        :return: GetBucketLocationOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'location': ''})
+        return GetBucketLocationOutput(resp)
+
+    def put_bucket_lifecycle(self, bucket: str, rules: []) -> PutBucketLifecycleOutput:
+        """ 设置 bucket 的生命周期规则
+
+        :param bucket: 桶名
+        :param rules: 生命周期规则
+        :return: PutBucketLifecycleOutput
+        """
+        data = to_put_bucket_lifecycle(rules)
+        data = json.dumps(data)
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, data=data, headers=headers,
+                         params={'lifecycle': ''})
+
+        return PutBucketLifecycleOutput(resp)
+
+    def get_bucket_lifecycle(self, bucket: str) -> GetBucketLifecycleOutput:
+        """ 获取 bucket 的生命周期规则
+
+        :param bucket: 桶名
+        :return: GetBucketLifecycleOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'lifecycle': ''})
+        return GetBucketLifecycleOutput(resp)
+
+    def delete_bucket_lifecycle(self, bucket: str) -> DeleteBucketLifecycleOutput:
+        """ 删除 桶的 生命周期规则
+
+        :param bucket: 桶名
+        :return: DeleteBucketLifecycleOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'lifecycle': ''})
+        return DeleteBucketLifecycleOutput(resp)
+
+    def put_bucket_policy(self, bucket: str, policy: str) -> PutBucketPolicyOutPut:
+        """ 设置 bucket 的授权规则
+
+        :param bucket: 桶名
+        :param policy: 授权规则
+        :return: PutBucketPolicyOutPut
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params={'policy': ''}, data=policy)
+        return PutBucketPolicyOutPut(resp)
+
+    def get_bucket_policy(self, bucket: str) -> GetBucketPolicyOutput:
+        """ 获取 bucket 授权规则
+
+        :param bucket: 桶名
+        :return: GetBucketPolicyOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'policy': ''})
+        return GetBucketPolicyOutput(resp)
+
+    def delete_bucket_policy(self, bucket) -> DeleteBucketPolicy:
+        """ 删除 bucket 授权规则
+
+        :param bucket: 桶名
+        :return: DeleteBucketPolicy
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'policy': ''})
+        return DeleteBucketPolicy(resp)
+
+    def put_bucket_mirror_back(self, bucket: str, rules: []) -> PutBucketMirrorBackOutPut:
+        """ 设置 bucket 的镜像回源规则
+
+        :param bucket: 桶名
+        :param rules: 镜像回源规则
+        :return: PutBucketMirrorBackOutPut
+        """
+        data = to_put_bucket_mirror_back(rules)
+        data = json.dumps(data)
+
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params={'mirror': ''}, data=data)
+
+        return PutBucketMirrorBackOutPut(resp)
+
+    def get_bucket_mirror_back(self, bucket) -> GetBucketMirrorBackOutput:
+        """ 获取 bucket 的镜像回源规则
+
+        :param bucket: 桶名
+        :return: GetBucketMirrorBackOutput
+        """
+
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'mirror': ''})
+        return GetBucketMirrorBackOutput(resp)
+
+    def delete_bucket_mirror_back(self, bucket) -> DeleteBucketMirrorBackOutput:
+        """ 删除 bucket 的镜像回源规则
+
+        :param bucket: 桶名
+        :return: DeleteBucketMirrorBackOutput
+        """
+
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'mirror': ''})
+        return DeleteBucketMirrorBackOutput(resp)
+
+    def put_object_tagging(self, bucket: str, key: str, tag_set: [],
+                           version_id: str = None) -> PutObjectTaggingOutput:
+        """ 为 object 添加标签
+
+        :param bucket: 桶名
+        :param key: 对象名
+        :param tag_set: 标签集合
+        :param version_id: 版本号
+        :return: PutObjectTaggingOutput
+        """
+        params = {'tagging': ''}
+        if version_id:
+            params['versionId'] = version_id
+
+        data = to_put_object_tagging(tag_set)
+        data = json.dumps(data)
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params=params, data=data, key=key)
+        return PutObjectTaggingOutput(resp)
+
+    def get_object_tagging(self, bucket: str, key: str,
+                           version_id: str = None) -> GetObjectTaggingOutPut:
+        """ 获取 object 标签
+
+        :param bucket: 桶名
+        :param key: 对象名
+        :param version_id: 版本号
+        :return: GetObjectTaggingOutPut
+        """
+        params = {'tagging': ''}
+        if version_id:
+            params['versionId'] = version_id
+        resp = self._req(bucket=bucket, key=key, params=params, method=HttpMethodType.Http_Method_Get.value)
+        return GetObjectTaggingOutPut(resp)
+
+    def delete_object_tagging(self, bucket: str, key: str,
+                              version_id: str = None) -> DeleteObjectTaggingOutput:
+        """ 删除 object 标签
+
+        :param bucket: 桶名
+        :param key: 对象名
+        :param version_id: 版本号
+        :return: DeleteObjectTaggingOutput
+        """
+        params = {'tagging': ''}
+        if version_id:
+            params['versionId'] = version_id
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params=params, key=key)
+        return DeleteObjectTaggingOutput(resp)
+
+    def put_bucket_acl(self, bucket: str,
+                       acl: ACLType = None,
+                       grant_full_control: str = None,
+                       grant_read: str = None,
+                       grant_read_acp: str = None,
+                       grant_write: str = None,
+                       grant_write_acp: str = None,
+                       owner: Owner = None,
+                       grants: [] = None
+                       ) -> PutBucketACLOutput:
+        """ 设计 bucket 的 acl 规则
+
+        :param bucket: 桶名
+        :param acl: 对象ACL.default（默认）：Object遵循所在存储空间的访问权限。
+                            private：Object是私有资源。只有Bucket的拥有者和授权用户有该Bucket的读写权限，其他用户没有权限操作该Bucket。
+                            public-read：Bucket是公共读资源。只有Bucket的拥有者和授权用户有该Bucket的读写权限，其他用户只有该Bucket的读权限。请谨慎使用该权限。
+                            public-read-write：Bucket是公共读写资源。所有用户都有该Bucket的读写权限。请谨慎使用该权限。
+                            authenticated-read：认证用户读。
+                            bucket-owner-read：桶所有者读。
+                            bucket-owner-full-control：桶所有者完全权限。
+        :param grant_full_control:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_read:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_read_acp:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_write: 'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_write_acp: 'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param owner: 桶的拥有者
+        :param grants: 访问控制列表.
+        :return: PutBucketACLOutput
+        """
+        check_enum_type(acl=acl)
+        params = {'acl': ''}
+        headers = _get_put_bucket_acl_headers(acl, grant_full_control, grant_read, grant_read_acp, grant_write,
+                                              grant_write_acp)
+
+        data = None
+
+        if grants:
+            body = to_put_acl_request(owner, grants)
+            data = json.dumps(body)
+
+        resp = self._req(bucket=bucket, params=params, method=HttpMethodType.Http_Method_Put.value, headers=headers,
+                         data=data)
+        return PutBucketACLOutput(resp)
+
+    def get_bucket_acl(self, bucket: str) -> GetBucketACLOutput:
+        """ 获取 bucket 的 acl 规则
+
+        :param bucket: 桶名
+        :return: GetBucketACLOutput
+        """
+        params = {'acl': ''}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params)
+
+        return GetBucketACLOutput(resp)
+
+    def fetch_object(self, bucket: str, key: str, url: str,
+                     acl: ACLType = None,
+                     grant_full_control: str = None,
+                     grant_read: str = None,
+                     grant_read_acp: str = None,
+                     grant_write_acp: str = None,
+                     storage_class: StorageClassType = None,
+                     ssec_algorithm: str = None,
+                     ssec_key: str = None,
+                     ssec_key_md5: str = None,
+                     meta: Dict = None,
+                     ignore_same_key: bool = False,
+                     hex_md5: str = None) -> FetchObjectOutput:
+        """ fetch 拉取对象
+
+        :param bucket: 桶名
+        :param key: 对象名
+        :param url: 获取地址
+        :param acl: 对象ACL.default（默认）：Object遵循所在存储空间的访问权限。
+                            private：Object是私有资源。只有Bucket的拥有者和授权用户有该Bucket的读写权限，其他用户没有权限操作该Bucket。
+                            public-read：Bucket是公共读资源。只有Bucket的拥有者和授权用户有该Bucket的读写权限，其他用户只有该Bucket的读权限。请谨慎使用该权限。
+                            public-read-write：Bucket是公共读写资源。所有用户都有该Bucket的读写权限。请谨慎使用该权限。
+                            authenticated-read：认证用户读。
+                            bucket-owner-read：桶所有者读。
+                            bucket-owner-full-control：桶所有者完全权限。
+        :param grant_full_control:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_read:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_read_acp:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_write_acp: 'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param storage_class: 对象存储类型
+        :param ssec_algorithm: 指定加密目标对象使用的算法，比如AES256。
+        :param ssec_key: 指定加密目标对象的加密密钥。
+        :param ssec_key_md5: 该头域表示加密目标对象使用的密钥的MD5值。MD5值用于消息完整性检查，确认加密密钥传输过程中没有出错。
+        :param meta: 对象元数据
+        :param ignore_same_key: 是否忽略相同的对象名
+        :param hex_md5: 对象md5值
+        :return: FetchObjectOutput
+        """
+
+        data = to_fetch_object(url, key, ignore_same_key, hex_md5)
+        data = json.dumps(data)
+        headers = _get_fetch_headers(storage_class, acl, grant_full_control, grant_read, grant_read_acp,
+                                     grant_write_acp, meta, ssec_algorithm, ssec_key, ssec_key_md5)
+        headers['Content-Length'] = str(len(data))
+        resp = self._req(bucket=bucket, key=key, params={'fetch': ''}, headers=headers,
+                         method=HttpMethodType.Http_Method_Post.value, data=data)
+
+        return FetchObjectOutput(resp)
+
+    def put_fetch_task(self, bucket: str, key: str, url: str,
+                       acl: ACLType = None,
+                       grant_full_control: str = None,
+                       grant_read: str = None,
+                       grant_read_acp: str = None,
+                       grant_write_acp: str = None,
+                       storage_class: StorageClassType = None,
+                       ssec_algorithm: str = None,
+                       ssec_key: str = None,
+                       ssec_key_md5: str = None,
+                       meta: Dict = None,
+                       ignore_same_key: bool = False,
+                       hex_md5: str = None) -> PutFetchTaskOutput:
+        """ 添加 fetch 拉起对象任务
+
+        :param bucket: 桶名
+        :param key: 对象名
+        :param url: 获取地址
+        :param acl: 对象ACL.default（默认）：Object遵循所在存储空间的访问权限。
+                            private：Object是私有资源。只有Bucket的拥有者和授权用户有该Bucket的读写权限，其他用户没有权限操作该Bucket。
+                            public-read：Bucket是公共读资源。只有Bucket的拥有者和授权用户有该Bucket的读写权限，其他用户只有该Bucket的读权限。请谨慎使用该权限。
+                            public-read-write：Bucket是公共读写资源。所有用户都有该Bucket的读写权限。请谨慎使用该权限。
+                            authenticated-read：认证用户读。
+                            bucket-owner-read：桶所有者读。
+                            bucket-owner-full-control：桶所有者完全权限。
+        :param grant_full_control:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_read:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_read_acp:  'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param grant_write_acp: 'id="xxx",canned="AllUsers"|"AuthenticatedUsers"'
+        :param storage_class: 对象存储类型
+        :param ssec_algorithm: 指定加密目标对象使用的算法，比如AES256。
+        :param ssec_key: 指定加密目标对象的加密密钥。
+        :param ssec_key_md5: 该头域表示加密目标对象使用的密钥的MD5值。MD5值用于消息完整性检查，确认加密密钥传输过程中没有出错。
+        :param meta: 对象元数据
+        :param ignore_same_key: 是否忽略相同的对象名
+        :param hex_md5: 对象md5值
+        :return: PutFetchTaskOutput
+        """
+
+        headers = _get_fetch_headers(storage_class, acl, grant_full_control, grant_read, grant_read_acp,
+                                     grant_write_acp, meta, ssec_algorithm, ssec_key, ssec_key_md5)
+        data = to_fetch_object(url, key, ignore_same_key, hex_md5)
+        data = json.dumps(data)
+
+        resp = self._req(bucket=bucket, key=key, params={'fetchTask': ''}, headers=headers,
+                         method=HttpMethodType.Http_Method_Post.value, data=data)
+
+        return PutFetchTaskOutput(resp)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None):
         # 获取调用方法的名称

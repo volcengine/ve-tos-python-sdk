@@ -3,8 +3,10 @@ from datetime import datetime
 
 from requests.structures import CaseInsensitiveDict
 
-from tos.enum import CannedType, GranteeType, PermissionType, StorageClassType
 from . import utils
+from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType
+from .consts import CHUNK_SIZE
+from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo
 from .utils import (get_etag, get_value, meta_header_decode,
                     parse_gmt_time_to_utc_datetime,
@@ -65,8 +67,8 @@ class Owner(object):
 class ListBucketsOutput(ResponseInfo):
     def __init__(self, resp):
         super(ListBucketsOutput, self).__init__(resp)
-        self.buckets = []
-        self.owner = None
+        self.buckets = []  # ListedBucket
+        self.owner = None  # Owner
         data = resp.json_read()
         self.owner = Owner(
             get_value(data['Owner'], 'ID'),
@@ -105,6 +107,9 @@ class CopyObjectOutput(ResponseInfo):
         if self.last_modified:
             self.last_modified = parse_modify_time_to_utc_datetime(self.last_modified)
 
+        if not self.etag:
+            make_server_error_with_exception(resp, data)
+
 
 class DeleteObjectOutput(ResponseInfo):
     def __init__(self, resp):
@@ -139,8 +144,8 @@ class DeleteError(object):
 class DeleteObjectsOutput(ResponseInfo):
     def __init__(self, resp):
         super(DeleteObjectsOutput, self).__init__(resp)
-        self.deleted = []
-        self.error = []
+        self.deleted = []  # Deleted
+        self.error = []  # DeleteError
 
         data = resp.json_read()
 
@@ -236,8 +241,8 @@ class ListObjectsOutput(ResponseInfo):
         self.max_keys = get_value(data, 'MaxKeys', int)
         self.next_marker = get_value(data, 'NextMarker')
         self.delimiter = get_value(data, 'Delimiter')
-        self.contents = []
-        self.common_prefixes = []
+        self.contents = []  # ListedObject
+        self.common_prefixes = []  # CommonPrefixInfo
         if get_value(data, 'EncodingType'):
             self.encoding_type = get_value(data, 'EncodingType')
         else:
@@ -272,6 +277,108 @@ class ListObjectsOutput(ResponseInfo):
                     get_value(owner_info, 'DisplayName')
                 )
             self.contents.append(object_info)
+
+
+class ListObjectsIterator(object):
+    def __init__(self, req_func, max_key, bucket=None, key=None, method=None, data=None, headers=None, params=None,
+                 func=None):
+        self.req = req_func
+        self.bucket = bucket
+        self.key = key
+        self.method = method
+        self.data = data
+        self.headers = headers
+        self.params = params
+        self.func = func
+        self.max_key = max_key
+        self.number = 0
+        self.is_truncated = True
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        if self.is_truncated and self.new_max_key > 0:
+            resp = self.req(bucket=self.bucket, method=self.method, key=self.key, data=self.data,
+                            headers=self.headers, params=self.params)
+            info = ListObjectType2Output(resp)
+            self.is_truncated = info.is_truncated
+            self.number += len(info.contents)
+            self.params['max-keys'] = self.new_max_key
+            self.params['continuation-toke'] = info.next_continuation_token
+            return info
+        else:
+            raise StopIteration
+
+    @property
+    def new_max_key(self):
+        return self.max_key - self.number
+
+
+class ListObjectType2Output(ResponseInfo):
+    def __init__(self, resp):
+        super(ListObjectType2Output, self).__init__(resp)
+        data = resp.json_read()
+        self.name = get_value(data, 'Name')
+        self.prefix = get_value(data, 'Prefix')
+        self.continuationToken = get_value(data, 'ContinuationToken')
+        self.key_count = get_value(data, 'KeyCount', int)
+        self.max_keys = get_value(data, 'MaxKeys', int)
+        self.delimiter = get_value(data, 'Delimiter')
+        self.common_prefixes = []  # CommonPrefixInfo
+        self.contents = []  # ListedObject
+        if get_value(data, 'IsTruncated'):
+            self.is_truncated = get_value(data, 'IsTruncated', lambda x: bool(x))
+        else:
+            self.is_truncated = False
+
+        if get_value(data, 'EncodingType'):
+            self.encoding_type = get_value(data, 'EncodingType')
+        else:
+            self.encoding_type = 'url'
+
+        self.next_continuation_token = get_value(data, 'NextContinuationToken')
+        common_prefix_list = get_value(data, 'CommonPrefixes') or []
+        for common_prefix in common_prefix_list:
+            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix')))
+
+        object_list = get_value(data, 'Contents') or []
+        for object in object_list:
+            last_modified = get_value(object, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            object_info = ListedObject(
+                key=get_value(object, 'Key'),
+                last_modified=last_modified,
+                etag=get_etag(object),
+                size=get_value(object, 'Size', int),
+                storage_class=StorageClassType(get_value(object, 'StorageClass', lambda x: StorageClassType(x))),
+                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
+            )
+            owner_info = get_value(object, 'Owner')
+            if owner_info:
+                object_info.owner = Owner(
+                    get_value(owner_info, "ID"),
+                    get_value(owner_info, 'DisplayName')
+                )
+            self.contents.append(object_info)
+
+    def combine(self, listObjectType2Outputs: []):
+        for output in listObjectType2Outputs:
+            self.contents += output.contents
+            for prefix in output.common_prefixes:
+                if prefix not in self.common_prefixes:
+                    self.common_prefixes.append(prefix)
+        if len(listObjectType2Outputs) > 0:
+            last = listObjectType2Outputs[len(listObjectType2Outputs) - 1]
+            self.next_continuation_token = last.next_continuation_token
+            self.is_truncated = last.is_truncated
+            self.key_count = len(self.contents) + len(self.common_prefixes)
+
+        return self
 
 
 class ListedObject(object):
@@ -380,14 +487,29 @@ class GetObjectOutput(HeadObjectOutput):
             self.content = utils.add_crc_func(data=self.content, size=self.content_length)
 
     def read(self, amt=None):
-        return self.content.read(amt)
-
-    def __iter__(self):
-        return iter(self.content)
+        data = self.content.read(amt)
+        if self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
+            raise TosClientError('client crc is not equal to tos crc')
+        return data
 
     @property
     def client_crc(self):
         return self.content.crc
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        content = self.read(CHUNK_SIZE)
+        if content:
+            return content
+        else:
+            if self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
+                raise TosClientError('client crc is not equal to tos crc')
+            raise StopIteration
 
 
 class AppendObjectOutput(ResponseInfo):
@@ -452,6 +574,9 @@ class UploadPartCopyOutput(ResponseInfo):
         if self.last_modified:
             self.last_modified = parse_modify_time_to_utc_datetime(self.last_modified)
         self.copy_source_version_id = get_value(resp.headers, 'x-tos-copy-source-version-id')
+
+        if not self.etag:
+            raise make_server_error_with_exception(resp, data)
 
 
 class ListedUpload(object):
@@ -556,6 +681,109 @@ class ListPartsOutput(ResponseInfo):
             ))
 
 
+class PutBucketCorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketCorsOutput, self).__init__(resp)
+
+
+class GetBucketCorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketCorsOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.cors_rules = []
+        cors_rules = get_value(data, 'CORSRules') or []
+        for rule in cors_rules:
+            self.cors_rules.append(CORSRule(
+                allowed_origins=get_value(rule, 'AllowedOrigins'),
+                allowed_methods=get_value(rule, 'AllowedMethods'),
+                allowed_headers=get_value(rule, 'AllowedHeaders'),
+                expose_headers=get_value(rule, 'ExposeHeaders'),
+                max_age_seconds=get_value(rule, 'MaxAgeSeconds', lambda x: int(x))
+            ))
+
+
+class DeleteBucketCorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketCorsOutput, self).__init__(resp)
+
+
+class Condition(object):
+    def __init__(self, http_code: int = None, object_key_prefix: str = None):
+        self.http_code = http_code
+        self.object_key_prefix = object_key_prefix
+
+
+class SourceEndpoint(object):
+    def __init__(self, primary: [] = None, follower: [] = None):
+        self.primary = primary
+        self.follower = follower
+
+
+class PublicSource(object):
+    def __init__(self, source_endpoint: SourceEndpoint):
+        self.source_endpoint = source_endpoint
+
+
+class MirrorHeader(object):
+    def __init__(self, pass_all: bool = None, pass_headers: [] = None, remove: [] = None):
+        self.pass_all = pass_all
+        self.pass_headers = pass_headers
+        self.remove = remove
+
+
+class Redirect(object):
+    def __init__(self, redirect_type: RedirectType = None, public_source: PublicSource = None,
+                 fetch_source_on_redirect: bool = None, pass_query: bool = None, follow_redirect: bool = None,
+                 mirror_header: MirrorHeader = None):
+        self.redirect_type = redirect_type
+        self.fetch_source_on_redirect = fetch_source_on_redirect
+        self.public_source = public_source
+        self.pass_query = pass_query
+        self.follow_redirect = follow_redirect
+        self.mirror_header = mirror_header
+
+
+class Rule(object):
+    def __init__(self, id: str = None, condition: Condition = None, redirect: Redirect = None):
+        self.id = id
+        self.condition = condition
+        self.redirect = redirect
+
+
+class PutBucketMirrorBackOutPut(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketMirrorBackOutPut, self).__init__(resp)
+
+
+# class GetBucketMirrorBackOutPut(ResponseInfo):
+#     def __init__(self, resp):
+#         super(GetBucketMirrorBackOutPut, self).__init__(resp)
+#         data = resp.json_read()
+#         self.cors_rules = []
+#         rules = get_value(data, 'Rules')
+#         for rule in rules:
+#             self.cors_rules.append(Rule(
+#                 id=get_value(rule, 'ID', lambda x: int(x)),
+#                 condition=Condition(get_value(rule, 'HttpCode', lambda x: int(x)), get_value(rule, 'ObjectKeyPrefix')),
+#                 redirect=Redirect()
+#             ))
+
+
+class DeleteBucketMirrorBackOutPut(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketMirrorBackOutPut, self).__init__(resp)
+
+
+class CustomDomainRule(object):
+    def __init__(self, domain: str, cname: str, forbidden: bool, forbiddenReason: str, cert_id: str, cert_status: str):
+        self.domain = domain
+        self.cname = cname
+        self.forbidden = forbidden
+        self.forbiddenReason = forbiddenReason
+        self.cert_id = cert_id
+        self.cert_status = cert_status
+
+
 class UploadedPart(object):
     def __init__(self, part_number: int, etag: int, size: int = None, last_modified: datetime = None):
         self.part_number = part_number
@@ -642,3 +870,320 @@ class _PartToDo(object):
     def __str__(self):
         info = {'part_number': self.part_number, 'start': self.start, 'end': self.end, 'part_crc': self.part_crc}
         return str(info)
+
+
+class CORSRule(object):
+    def __init__(self, allowed_origins: [] = None, allowed_methods: [] = None, allowed_headers: [] = None,
+                 expose_headers: [] = None,
+                 max_age_seconds: int = None):
+        self.allowed_origins = allowed_origins
+        self.allowed_methods = allowed_methods
+        self.allowed_headers = allowed_headers
+        self.expose_headers = expose_headers
+        self.max_age_seconds = max_age_seconds
+
+
+class Tag(object):
+    def __init__(self, key: str = None, value: str = None):
+        self.key = key
+        self.value = value
+
+
+class PutBucketStorageClassOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketStorageClassOutput, self).__init__(resp)
+
+
+class GetBucketLocationOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketLocationOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.region = get_value(data, 'Region')
+        self.extranet_endpoint = get_value(data, 'ExtranetEndpoint')
+        self.intranet_endpoint = get_value(data, 'IntranetEndpoint')
+
+
+class BucketLifeCycleExpiration(object):
+    def __init__(self, days: int = None, date: datetime = None):
+        self.days = days
+        self.date = date
+
+
+class BucketLifeCycleNoCurrentVersionExpiration(object):
+    def __init__(self, no_current_days: int = None):
+        self.no_current_days = no_current_days
+
+
+class BucketLifeCycleAbortInCompleteMultipartUpload(object):
+    def __init__(self, days_after_init: int = None):
+        self.days_after_init = days_after_init
+
+
+class BucketLifeCycleTransition(object):
+    def __init__(self, storage_class: StorageClassType = None, days: int = None, date: datetime = None):
+        self.storage_class = storage_class
+        self.days = days
+        self.date = date
+
+
+class BucketLifeCycleNonCurrentVersionTransition(object):
+    def __init__(self, storage_class: StorageClassType = None, non_current_days: int = None):
+        self.storage_class = storage_class
+        self.non_current_days = non_current_days
+
+
+class BucketLifeCycleRule(object):
+
+    def __init__(self, status: StatusType = None,
+                 expiration: BucketLifeCycleExpiration = None,
+                 no_current_version_expiration: BucketLifeCycleNoCurrentVersionExpiration = None,
+                 abort_in_complete_multipart_upload: BucketLifeCycleAbortInCompleteMultipartUpload = None,
+                 tags: [] = None,
+                 transitions: [] = None,
+                 non_current_version_transitions: [] = None,
+                 id: str = None,
+                 prefix: str = None):
+        self.id = id
+        self.prefix = prefix
+        self.status = status
+        self.expiration = expiration
+        self.no_current_version_expiration = no_current_version_expiration
+        self.abort_in_complete_multipart_upload = abort_in_complete_multipart_upload
+        self.tags = tags
+        self.transitions = transitions
+        self.non_current_version_transitions = non_current_version_transitions
+
+
+class PutBucketLifecycleOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketLifecycleOutput, self).__init__(resp)
+
+
+class GetBucketLifecycleOutput(ResponseInfo):
+    def __init__(self, resp):
+        self.rules = []
+        super(GetBucketLifecycleOutput, self).__init__(resp)
+        data = resp.json_read()
+        rules_json = get_value(data, 'Rules') or []
+        for rule_json in rules_json:
+            rule = BucketLifeCycleRule()
+            rule.id = get_value(rule_json, 'ID')
+            rule.prefix = get_value(rule_json, 'Prefix')
+            if get_value(rule_json, 'Status'):
+                rule.status = get_value(rule_json, 'Status', lambda x: StatusType(x))
+
+            expiration_json = get_value(rule_json, 'Expiration')
+            non_current_version_expiration_json = get_value(rule_json, 'NoncurrentVersionExpiration')
+            abort_incomplete_multipart_upload_json = get_value(rule_json, 'AbortIncompleteMultipartUpload')
+            tags_json = get_value(rule_json, 'Tags') or []
+            transitions_json = get_value(rule_json, 'Transitions') or []
+            non_current_version_transitions_json = get_value(rule_json, 'NoncurrentVersionTransitions') or []
+
+            if expiration_json:
+                bucket_expiration = BucketLifeCycleExpiration()
+                bucket_expiration.days = get_value(expiration_json, 'Days', int)
+                if get_value(expiration_json, 'Date'):
+                    bucket_expiration.date = parse_modify_time_to_utc_datetime(get_value(expiration_json, 'Date'))
+                rule.expiration = bucket_expiration
+
+            if non_current_version_transitions_json:
+                rule.non_current_version_transitions = []
+                for vt in non_current_version_transitions_json:
+                    tr = BucketLifeCycleNonCurrentVersionTransition()
+                    tr.storage_class = get_value(vt, 'StorageClass', lambda x: StorageClassType(x))
+                    tr.non_current_days = get_value(vt, 'NoncurrentDays', int)
+                    rule.non_current_version_transitions.append(tr)
+
+            if transitions_json:
+                rule.transitions = []
+                for transition_json in transitions_json:
+                    ts = BucketLifeCycleTransition()
+                    ts.storage_class = get_value(transition_json, 'StorageClass', lambda x: StorageClassType(x))
+                    ts.days = get_value(transition_json, 'Days', int)
+                    if get_value(transition_json, 'Date'):
+                        ts.date = parse_modify_time_to_utc_datetime(get_value(transition_json, 'Date'))
+                    rule.transitions.append(ts)
+
+            if tags_json:
+                rule.tags = []
+                for tag_json in tags_json:
+                    tag = Tag()
+                    tag.key = get_value(tag_json, 'Key')
+                    tag.value = get_value(tag_json, 'Value')
+                    rule.tags.append(tag)
+
+            if abort_incomplete_multipart_upload_json:
+                abort = BucketLifeCycleAbortInCompleteMultipartUpload()
+                abort.days_after_init = get_value(abort_incomplete_multipart_upload_json, 'DaysAfterInitiation',
+                                                  int)
+                rule.abort_in_complete_multipart_upload = abort
+
+            if non_current_version_expiration_json:
+                exp = BucketLifeCycleNoCurrentVersionExpiration()
+                exp.no_current_days = get_value(non_current_version_expiration_json, 'NoncurrentDays', int)
+                rule.no_current_version_expiration = exp
+            self.rules.append(rule)
+
+
+class DeleteBucketLifecycleOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketLifecycleOutput, self).__init__(resp)
+
+
+class PutBucketPolicyOutPut(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketPolicyOutPut, self).__init__(resp)
+
+
+class GetBucketPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketPolicyOutput, self).__init__(resp)
+        self.policy = resp.read().decode("utf-8")
+
+
+class DeleteBucketPolicy(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketPolicy, self).__init__(resp)
+
+
+class GetBucketMirrorBackOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketMirrorBackOutput, self).__init__(resp)
+        self.rules = []
+        data = resp.json_read()
+        get_rules = get_value(data, 'Rules') or []
+        for rule in get_rules:
+            id = get_value(rule, 'ID')
+            cond = get_value(rule, 'Condition')
+            condition = None
+            red = get_value(rule, 'Redirect')
+            redirect = None
+            if cond:
+                condition = Condition(
+                    http_code=get_value(cond, 'HttpCode', int),
+                    object_key_prefix=get_value(cond, 'ObjectKeyPrefix')
+                )
+            if red:
+                redirect = Redirect()
+                redirect.redirect_type = get_value(red, 'RedirectType', lambda x: RedirectType(x))
+                redirect.fetch_source_on_redirect = get_value(red, 'FetchSourceOnRedirect', lambda x: bool(x))
+
+                if get_value(red, 'PublicSource') and get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'):
+                    redirect.public_source = PublicSource(SourceEndpoint(
+                        primary=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Primary'),
+                        follower=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Follower')
+                    ))
+
+                redirect.pass_query = get_value(red, 'PassQuery', lambda x: bool(x))
+                redirect.follow_redirect = get_value(red, 'FollowRedirect', lambda x: bool(x))
+                if get_value(red, 'MirrorHeader'):
+                    redirect.mirror_header = MirrorHeader(
+                        pass_all=get_value(get_value(red, 'MirrorHeader'), 'PassAll', lambda x: bool(x)),
+                        pass_headers=get_value(get_value(red, 'MirrorHeader'), 'Pass'),
+                        remove=get_value(get_value(red, 'MirrorHeader'), 'Remove')
+                    )
+                r = Rule(id=id, condition=condition, redirect=redirect)
+                self.rules.append(r)
+
+
+class PutObjectTaggingOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutObjectTaggingOutput, self).__init__(resp)
+        self.version_id = get_value(resp.headers, 'x-tos-version-id')
+
+
+class GetObjectTaggingOutPut(ResponseInfo):
+    def __init__(self, resp):
+        super(GetObjectTaggingOutPut, self).__init__(resp)
+        self.version_id = self.version_id = get_value(resp.headers, 'x-tos-version-Id')
+        self.tag_set = []
+        data = resp.json_read()
+        tag_set = get_value(data, 'TagSet')
+        if tag_set:
+            tags = get_value(tag_set, 'Tags')
+            if tags:
+                for tag in tags:
+                    self.tag_set.append(Tag(
+                        get_value(tag, 'Key'),
+                        get_value(tag, 'Value')
+                    ))
+
+
+class DeleteObjectTaggingOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteObjectTaggingOutput, self).__init__(resp)
+        self.version_id = get_value(resp.headers, 'x-tos-version-id')
+
+
+class DeleteBucketMirrorBackOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketMirrorBackOutput, self).__init__(resp)
+
+
+class PutBucketACLOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketACLOutput, self).__init__(resp)
+
+
+class GetBucketACLOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketACLOutput, self).__init__(resp)
+        self.owner = None
+        self.grants = []
+        data = resp.json_read()
+
+        self.owner = Owner(
+            get_value(data['Owner'], 'ID'),
+            get_value(data['Owner'], 'DisplayName'),
+        )
+
+        grant_list = data['Grants'] or []
+        for grant in grant_list:
+            g = Grantee(
+                id=get_value(grant['Grantee'], 'ID'),
+                display_name=get_value(grant['Grantee'], 'DisplayName'),
+                type=get_value(grant['Grantee'], 'Type'),
+                canned=get_value(grant['Grantee'], 'Canned'),
+            )
+            permission = PermissionType(get_value(grant, 'Permission'))
+            self.grants.append(Grant(g, permission))
+
+
+class PreSignedPostSignatureOutPut(object):
+    def __init__(self):
+        self.origin_policy = None  # 签名前 policy
+        self.policy = None  # 签名后policy 用于表单域policy
+        self.algorithm = None  # 用于表单域 x-tos-algorithm
+        self.credential = None  # 用于表单域 x-tos-credential
+        self.date = None  # 用于表单域 x-tos-date
+        self.signature = None  # 用于表单域 x-tos-signature
+
+
+class PostSignatureCondition(object):
+    def __init__(self, key: str, value: str, operator=None):
+        self.key = key
+        self.value = value
+        self.operator = operator
+
+
+class ContentLengthRange(object):
+    def __init__(self, range_start: int, range_end: int):
+        self.start = range_start
+        self.end = range_end
+
+
+class FetchObjectOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(FetchObjectOutput, self).__init__(resp)
+        self.version_id = get_value(resp.headers, 'x-version-id')
+        self.ssec_algorithm = get_value(resp.headers, 'x-server-side-encryption-customer-key-md5')
+        self.ssec_key_md5 = get_value(resp.headers, 'x-server-side-encryption-customer-algorithm')
+        data = resp.json_read()
+        self.etag = get_etag(data)
+
+
+class PutFetchTaskOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutFetchTaskOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.task_id = get_value(data, 'TaskId')

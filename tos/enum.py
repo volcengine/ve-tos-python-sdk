@@ -12,6 +12,7 @@ class ACLType(Enum):
     ACL_Authenticated_Read = "authenticated-read"
     ACL_Bucket_Owner_Read = "bucket-owner-read"
     ACL_Bucket_Owner_Full_Control = "bucket-owner-full-control"
+    ACL_Bucket_Owner_Entrusted = "bucket-owner-entrusted"
 
 
 class StorageClassType(Enum):
@@ -60,6 +61,7 @@ class HttpMethodType(Enum):
 
 
 class DataTransferType(Enum):
+    Data_Transfer_Init = 0
     Data_Transfer_Started = 1
     Data_Transfer_RW = 2
     Data_Transfer_Succeed = 3
@@ -84,3 +86,13 @@ class DownloadEventType(Enum):
     Download_Event_Download_Part_Aborted = 5
     Download_Event_Rename_Temp_File_Succeed = 6
     Download_Event_Rename_Temp_File_Failed = 7
+
+
+class RedirectType(Enum):
+    Mirror = "Mirror"
+    Async = "Async"
+
+
+class StatusType(Enum):
+    Status_Enable = 'Enabled'
+    Status_Disable = 'Disabled'

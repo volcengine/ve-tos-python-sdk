@@ -1,9 +1,13 @@
 import json
 
-from .models2 import ResponseInfo
-from .utils import get_value, to_str
-
 _TOS_ERROR_TO_EXCEPTION = {}
+
+
+def get_value(kv, key, handler=lambda x: x):
+    if key in kv:
+        return handler(kv[key])
+    else:
+        return None
 
 
 class TosError(Exception):
@@ -16,16 +20,16 @@ class TosError(Exception):
 
 
 def make_exception(resp):
-    body = resp.read()
-    details = _parse_error_body(body)
+    details = _parse_error_body(resp)
     return TosError(details.get('Message', ''))
 
 
-def _parse_error_body(body):
+def _parse_error_body(resp):
+    body = resp.read()
     try:
-        return json.loads(body)
+        return json.loads(body.decode('utf-8'))
     except Exception:
-        return {'message': to_str(body)}
+        return {'message': body.decode('utf-8')}
 
 
 class TosClientError(TosError):
@@ -39,7 +43,7 @@ class TosClientError(TosError):
         return str(error)
 
 
-class TosServerError(TosError, ResponseInfo):
+class TosServerError(TosError):
     def __init__(self, resp, msg: str, code: str, host_id: str, resource: str):
         self.message = msg
         self.request_id = resp.request_id
@@ -63,12 +67,19 @@ class TosServerError(TosError, ResponseInfo):
 
 
 def make_server_error(resp):
-    body = resp.read()
-    details = _parse_error_body(body)
+    details = _parse_error_body(resp)
     code = details.get('Code', '')
     host_id = details.get('HostId', '')
     resource = details.get('Resource', '')
     message = details.get('Message', '')
+    return TosServerError(resp, message, code, host_id, resource)
+
+
+def make_server_error_with_exception(resp, body):
+    code = body.get('Code', '')
+    host_id = body.get('HostId', '')
+    resource = body.get('Resource', '')
+    message = body.get('Message', '')
     return TosServerError(resp, message, code, host_id, resource)
 
 
