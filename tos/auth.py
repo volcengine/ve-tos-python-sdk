@@ -1,12 +1,18 @@
 # -*- coding: utf-8 -*-
+import base64
 import datetime
 import hmac
+import json
 import logging
 from hashlib import sha256
 from urllib.parse import quote
 
-from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD
+import pytz
+
+from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD, LAST_MODIFY_TIME_DATE_FORMAT
 from .credential import FederationCredentials, StaticCredentials
+from .exceptions import TosClientError
+from .models2 import PreSignedPostSignatureOutPut, ContentLengthRange
 from .utils import to_bytes
 
 logger = logging.getLogger(__name__)
@@ -68,6 +74,37 @@ def _sign(key, msg, hex=False):
     return sig
 
 
+def _check_policy_key(key):
+    if not key:
+        raise TosClientError('invalid preSingedCondition key')
+
+
+def _get_post_policy(date: str, expire: int, algorithm, credential, bucket, object_key,
+                     conditions: [], content_length_range: ContentLengthRange = None, sts: str = None) -> dict:
+    time = datetime.datetime.strptime(date, DATE_FORMAT).replace(tzinfo=pytz.utc) + datetime.timedelta(seconds=expire)
+    post_policy = {
+        "expiration": time.strftime(LAST_MODIFY_TIME_DATE_FORMAT)
+    }
+
+    cond = [{"x-tos-algorithm": algorithm}, {"x-tos-credential": credential}, {"x-tos-date": date}, {"key": object_key},
+            {"bucket": bucket}]
+    if sts:
+        cond.append({'x-tos-security-token': sts})
+
+    for c in conditions:
+        _check_policy_key(c.key)
+        if c.operator:
+            cond.append([c.operator, "${}".format(c.key), c.value])
+            continue
+        cond.append({c.key: c.value})
+
+    if content_length_range:
+        cond.append(["content-length-range", content_length_range.start, content_length_range.end])
+
+    post_policy["conditions"] = cond
+    return post_policy
+
+
 class AuthBase():
     def __init__(self, credentials_provider, region):
         self.credentials_provider = credentials_provider
@@ -83,7 +120,7 @@ class AuthBase():
         req.headers['Date'] = date
         req.headers['x-tos-date'] = date
 
-        signature = self._make_signature(req, date)
+        signature = self._make_signature(req=req, date=date)
         req.headers['Authorization'] = self._inject_signature_to_request(req, signature, date)
 
     def sign_url(self, req, expires):
@@ -100,14 +137,33 @@ class AuthBase():
 
         if self.credential.get_security_token():
             req.params["X-Tos-Security-Token"] = self.credential.get_security_token()
-        req.params['X-Tos-Signature'] = self._make_signature(req, date)
+        req.params['X-Tos-Signature'] = self._make_signature(req=req, date=date)
 
         return req.url + '?' + '&'.join(_param_to_quoted_query(k, v) for k, v in req.params.items())
 
-    def _make_signature(self, req, date):
-        canonical_request = _canonical_request(req)
-        logger.debug("pre-request: canonical_request:\n%s", canonical_request)
-        string_to_sign = self._string_to_sign(canonical_request, date)
+    def post_sign(self, bucket: str, key: str, expires: int, conditions: [],
+                  content_length_range: ContentLengthRange) -> PreSignedPostSignatureOutPut:
+        date = datetime.datetime.utcnow().strftime(DATE_FORMAT)
+        self.credential = self.credentials_provider.get_credentials()
+
+        sign = PreSignedPostSignatureOutPut()
+        sign.algorithm = "TOS4-HMAC-SHA256"
+        sign.date = date
+        sign.credential = self._credential(date)
+        sign.origin_policy = _get_post_policy(date, expires, sign.algorithm, sign.credential, bucket, key,
+                                              conditions, content_length_range,
+                                              self.credential.get_security_token())
+        sign.origin_policy = json.dumps(sign.origin_policy)
+        sign.policy = base64.b64encode(sign.origin_policy.encode('utf-8')).decode('utf-8')
+        sign.signature = self._make_signature(date=date, string_to_sign=sign.policy)
+
+        return sign
+
+    def _make_signature(self, date, req=None, string_to_sign=None):
+        if not string_to_sign:
+            canonical_request = _canonical_request(req)
+            logger.debug("pre-request: canonical_request:\n%s", canonical_request)
+            string_to_sign = self._string_to_sign(canonical_request, date)
         logger.debug("pre-request: string_to_sign:\n%s", string_to_sign)
         signature = self._signature(string_to_sign, date)
         logger.debug("pre-request: signature:\n%s", signature)

@@ -22,7 +22,7 @@ from .utils import (get_etag, get_value, parse_gmt_time_to_utc_datetime,
 
 def convert_list_buckets_result(resp):
     result = ListBucketResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
     result.owner = UserInfo(
         get_value(data['Owner'], 'ID'),
         get_value(data['Owner'], 'Name'),
@@ -41,7 +41,7 @@ def convert_list_buckets_result(resp):
 
 def convert_create_multipart_upload_result(resp):
     result = CreateMultipartUploadResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.upload_id = get_value(data, 'UploadId')
     result.bucket = get_value(data, 'Bucket')
@@ -51,7 +51,7 @@ def convert_create_multipart_upload_result(resp):
 
 def convert_list_multipart_uploads_result(resp):
     result = ListMultipartUploadsResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.bucket = get_value(data, 'Bucket')
     result.upload_id_marker = get_value(data, 'UploadIdMarker')
@@ -93,7 +93,7 @@ def convert_list_multipart_uploads_result(resp):
 
 def convert_copy_object_result(resp):
     result = CopyObjectResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.etag = get_etag(data)
     result.last_modified = get_value(data, 'LastModified')
@@ -105,7 +105,7 @@ def convert_copy_object_result(resp):
 
 def convert_upload_part_copy_result(resp):
     result = UploadPartCopyResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.etag = get_etag(data)
     result.last_modified = get_value(data, 'LastModified')
@@ -116,7 +116,7 @@ def convert_upload_part_copy_result(resp):
 
 def convert_list_parts_result(resp):
     result = ListPartsResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.bucket = get_value(data, 'Bucket')
     result.key = get_value(data, 'Key')
@@ -153,7 +153,7 @@ def convert_list_parts_result(resp):
 
 def convert_complete_multipart_upload_result(resp):
     result = CompleteMultipartUploadResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.location = get_value(data, 'Location')
     result.bucket = get_value(data, 'Bucket')
@@ -164,7 +164,7 @@ def convert_complete_multipart_upload_result(resp):
 
 def convert_list_objects_result(resp):
     result = ListObjectsResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.name = get_value(data, 'Name')
     result.prefix = get_value(data, 'Prefix')
@@ -210,7 +210,7 @@ def convert_list_objects_result(resp):
 
 def convert_list_object_versions_result(resp):
     result = ListObjectVersionsResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.name = get_value(data, 'Name')
     result.prefix = get_value(data, 'Prefix')
@@ -277,7 +277,7 @@ def convert_list_object_versions_result(resp):
 
 def convert_delete_objects_result(resp):
     result = DeleteObjectsResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     delete_list = get_value(data, 'Deleted') or []
     for delete in delete_list:
@@ -300,7 +300,7 @@ def convert_delete_objects_result(resp):
 
 def convert_get_object_acl_result(resp):
     result = GetObjectAclResult(resp)
-    data = json.loads(resp.read())
+    data = json.loads(resp.read().decode('utf-8'))
 
     result.owner = UserInfo(
         get_value(data['Owner'], 'ID'),

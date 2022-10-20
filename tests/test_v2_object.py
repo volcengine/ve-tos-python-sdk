@@ -1,55 +1,27 @@
-import base64
+# -*- coding: utf-8 -*-
+
 import datetime
-import hashlib
-import logging
 import os
-import threading
-import time
 import unittest
 from io import StringIO
 
-from tests.common import random_bytes, TestClient2
-from tests.test_v2_bucker import random_string
-from tos import set_logger
-from tos.checkpoint import CancelHook
-from tos.clientv2 import TosClientV2
+import requests
+
+import tos.models2
+from tests.common import TosTestBase, random_string, random_bytes, calculate_md5
 from tos.enum import (ACLType, AzRedundancyType, DataTransferType,
                       GranteeType, MetadataDirectiveType, PermissionType,
                       StorageClassType)
 from tos.exceptions import TosClientError, TosServerError
-from tos.models2 import Deleted, Grant, Grantee, ListObjectsOutput, Owner, ObjectTobeDeleted
+from tos.models2 import Deleted, Grant, Grantee, ListObjectsOutput, Owner, ObjectTobeDeleted, Tag, \
+    PostSignatureCondition
 from tos.utils import RateLimiter
 
-set_logger(level=logging.INFO)
 
-
-def calculate_md5(content):
-    md5 = hashlib.md5()
-    buf = content.read()
-    md5.update(buf)
-    return base64.b64encode(md5.digest())
-
-
-class TestObject(unittest.TestCase):
-    def __init__(self, *args, **kwargs):
-        super(TestObject, self).__init__(*args, **kwargs)
-        self.ak = os.getenv('AK')
-        self.sk = os.getenv('SK')
-        self.endpoint = os.getenv('Endpoint')
-        self.region = os.getenv('Region')
-        self.bucket_name = "sun-" + random_string(10)
-        self.object_name = "test_object" + random_string(10)
-        self.prefix = random_string(12)
-
-    def setUp(self):
-        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2,
-                                  dns_cache_time=60)
-        self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True,
-                                          max_retry_count=2,
-                                          dns_cache_time=60)
-
+class TestObject(TosTestBase):
     def test_object(self):
         bucket_name = self.bucket_name + '-test-object'
+        self.bucket_delete.append(bucket_name)
         key = self.random_key('.js')
         content = random_bytes(1024)
 
@@ -80,17 +52,13 @@ class TestObject(unittest.TestCase):
         read_content = range_out.read()
         self.assertEqual(read_content, content[1:101])
 
-        out = self.client.delete_object(bucket_name, key=key)
-
-        self.client.delete_bucket(bucket_name)
-
     def test_put_with_meta(self):
         bucket_name = self.bucket_name + '-put-object-with-meta'
         key = "张三.txt"
         content = random_string(123)
 
         self.client.create_bucket(bucket_name)
-
+        self.bucket_delete.append(bucket_name)
         meta = {'name': '张三', 'age': '12'}
         self.client.put_object(bucket_name, key, content=b'')
         self.client.put_object(bucket_name, key=key,
@@ -109,21 +77,16 @@ class TestObject(unittest.TestCase):
         self.assertEqual(m['name'], meta['name'])
         self.assertEqual(m['age'], meta['age'])
 
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_with_string_io(self):
         io = StringIO('a')
         io.seek(0)
         bucket_name = self.bucket_name + 'string-io'
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
         self.client.put_object(bucket=bucket_name, key="2", content=io)
         out = self.client.get_object(bucket=bucket_name, key='2')
         self.assertEqual(out.read(), b'a')
         self.client.put_object(bucket=bucket_name, key='4', content=b'')
-        self.client.delete_object(bucket=bucket_name, key="2")
-        self.client.delete_object(bucket=bucket_name, key="4")
-        self.client.delete_bucket(bucket=bucket_name)
 
     def test_put_with_options(self):
         bucket_name = self.bucket_name + '-put-with-options'
@@ -131,7 +94,7 @@ class TestObject(unittest.TestCase):
         content = random_bytes(123)
 
         self.client.create_bucket(bucket_name)
-
+        self.bucket_delete.append(bucket_name)
         self.client.put_object(bucket_name, key=key,
                                content=content,
                                cache_control='CacheControl',
@@ -150,22 +113,19 @@ class TestObject(unittest.TestCase):
         self.assertEqual(get_object_out.content_language, 'english')
         self.assertEqual(get_object_out.website_redirect_location, '/test')
 
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_put_with_cryptography(self):
         bucket_name = self.bucket_name + '-put-object-with-test-put-with-cryptography'
         key = self.random_key()
         content = random_bytes(100)
 
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
         with self.assertRaises(TosServerError):
             self.client.put_object(bucket_name, key=key, content=content, content_md5=random_bytes(20))
 
         with self.assertRaises(TosServerError):
             self.client.put_object(bucket_name, key=key, content=content, ssec_algorithm="DEC")
-
-        self.client.delete_bucket(bucket_name)
 
     def test_put_with_empty_content(self):
         bucket_name = self.bucket_name + '-put-empty-object'
@@ -173,13 +133,12 @@ class TestObject(unittest.TestCase):
         content = b''
 
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
         self.client.put_object(bucket_name, key=key, content=content)
         get_object_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_object_out.client_crc, 0)
         self.assertEqual(get_object_out.hash_crc64_ecma, 0)
-
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
 
     def test_put_with_illegal_name(self):
         bucket_name = self.bucket_name + '-put-object-with-illegal-name'
@@ -187,6 +146,8 @@ class TestObject(unittest.TestCase):
         content = random_bytes(100)
 
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
         with self.assertRaises(TosClientError):
             self.client.put_object(bucket_name, key, content=content)
 
@@ -214,13 +175,12 @@ class TestObject(unittest.TestCase):
         self.client.get_object(bucket_name, key)
         self.client.delete_object(bucket_name, key)
 
-        self.client.delete_bucket(bucket_name)
-
     def test_put_with_server_encryption(self):
         bucket_name = self.bucket_name + '-put-object-with-server-encryption'
         key = self.random_key('.js')
         content = random_bytes(100)
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
 
         self.client.put_object(bucket_name, key, content=content, server_side_encryption="AES256")
         self.client.get_object(bucket_name, key)
@@ -231,18 +191,17 @@ class TestObject(unittest.TestCase):
         with self.assertRaises(TosServerError):
             self.client.put_object(bucket_name, key, content=content, ssec_algorithm="AES256")
 
-        self.client.delete_bucket(bucket_name)
-
     def test_put_with_data_transfer_listener(self):
         bucket_name = self.bucket_name + '-put-object-with-transfer-listener'
         key = self.random_key('.js')
         content = random_bytes(1024 * 100)
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
 
         def progress(consumed_bytes, total_bytes, rw_once_bytes,
-                     type: DataTransferType):
+                     data_type: DataTransferType):
             print("consumed_bytes:{0},total_bytes{1}, rw_once_bytes:{2}, type:{3}".format(consumed_bytes, total_bytes,
-                                                                                          rw_once_bytes, type))
+                                                                                          rw_once_bytes, data_type))
 
         self.client.put_object(bucket_name, key, content=content, data_transfer_listener=progress)
 
@@ -252,140 +211,24 @@ class TestObject(unittest.TestCase):
         for buf in out.content:
             read_info = read_info + buf
 
-        self.client.delete_object(bucket_name, key)
-
-        self.client.delete_bucket(bucket_name)
-
     def test_object_from_file(self):
         bucket_name = self.bucket_name + '-put-object-from-file'
         key = self.random_key('.js')
-        file_name = random_string(10)
+        file_name = self.random_filename()
         content = random_bytes(100)
         with open(file_name, 'wb') as fw:
             fw.write(content)
 
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
 
-        self.client.put_object_from_file(bucket=bucket_name, key=key, file_path=file_name)
+        limiter = RateLimiter(8 * 1024, 20 * 1024)
+        self.client.put_object_from_file(bucket=bucket_name, key=key, file_path=file_name, rate_limiter=limiter)
 
-        self.client.get_object_to_file(bucket_name, key, "out.txt")
-
-        with open('out.txt', 'rb') as wf:
-            self.assertEqual(wf.read(), content)
-
-        get_object_out = self.client.get_object(bucket=bucket_name, key=key)
-
-        self.assertEqual(get_object_out.read(), content)
-
-        self.client.delete_object(bucket_name, key)
-
-        self.client.delete_bucket(bucket_name)
-        os.remove(file_name)
-        os.remove('out.txt')
-
-    def test_upload_file(self):
-        self._test_upload_file(self.bucket_name + '-upload-file-1', True)
-        self._test_upload_file(self.bucket_name + '-upload-file-2', False)
-
-    def _test_upload_file(self, bucket_name, is_abort):
-        key = self.random_key('.js')
-        file_name = random_string(10)
-
-        content = random_bytes(1024 * 1024 * 40)
-
-        with open(file_name, "wb") as fw:
-            fw.write(content)
-
-        self.client.create_bucket(bucket_name)
-
-        def upload_event_listener(upload_event_type, err, bucket, key, upload_id, checkpoint_file, upload_part_info):
-            print(upload_event_type, err, bucket, key, upload_id, checkpoint_file, upload_part_info)
-
-        class MyCancel(CancelHook):
-            def cancel(self, is_abort: bool):
-                time.sleep(1)
-                super(MyCancel, self).cancel(is_abort)
-
-        cancel = MyCancel()
-        t1 = threading.Thread(target=cancel.cancel, args=(is_abort,))
-        t1.start()
-        exp = None
-        try:
-            self.client.upload_file(bucket_name, key, file_path=file_name,
-                                    upload_event_listener=upload_event_listener, part_size=1024 * 1024 * 5, task_num=1,
-                                    cancel_hook=cancel)
-        except Exception as e:
-            exp = e
-            self.client.upload_file(bucket_name, key, file_path=file_name,
-                                    upload_event_listener=upload_event_listener, part_size=1024 * 1024 * 5, task_num=3)
-
-        self.assertIsNotNone(exp)
-        exp = None
-
-        def process(type, err, bucket, key, version_id, file_path, checkpoint_file, temp_file, download_info):
-            print(type, err, bucket, key, version_id, file_path, checkpoint_file, temp_file, download_info)
-
-        cancel = MyCancel()
-        t1 = threading.Thread(target=cancel.cancel, args=(is_abort,))
-        t1.start()
-        try:
-            self.client.download_file(bucket=bucket_name, key=key,
-                                      file_path="./file", task_num=3,
-                                      part_size=1024 * 1024, download_event_listener=process, cancel_hook=cancel)
-        except Exception as e:
-            exp = e
-            self.client.download_file(bucket=bucket_name, key=key,
-                                      file_path="./file", task_num=3,
-                                      part_size=1024 * 1024, download_event_listener=process)
-
-        self.assertIsNotNone(exp)
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
-        os.remove(file_name)
-
-    def test_upload_file_fuc(self):
-        bucket_name = self.bucket_name + "sun-test-upload-file"
-        key = "test.upload"
-        file_name = random_string(10)
-
-        content = random_bytes(1024 * 1024 * 40)
-
-        with open(file_name, "wb") as fw:
-            fw.write(content)
-
-        self.client.create_bucket(bucket_name)
-        self.client.upload_file(bucket_name, key, file_name)
-
-        def process(type, err, bucket, key, version_id, file_path, checkpoint_file, temp_file, download_info):
-            print(type, err, bucket, key, version_id, file_path, checkpoint_file, temp_file, download_info)
-
-        self.client.download_file(bucket=bucket_name, key=key,
-                                  file_path="./file", task_num=3,
-                                  part_size=1024 * 1024, download_event_listener=process)
-
-        self.client.delete_object(bucket_name, key)
-        os.remove('./file/test.upload')
-        os.remove(file_name)
-
-    def test_download_file(self):
-        bucket_name = self.bucket_name + "-download-file"
-        key = self.random_key(".js")
-        file_name = random_string(10)
-        content = random_bytes(1024 * 1024 * 10)
-
-        with open(file_name, "wb") as fw:
-            fw.write(content)
-
-        self.client.create_bucket(bucket_name)
-
-        upload_out = self.client.upload_file(bucket_name, key, file_path=file_name, part_size=1024 * 1024 * 5)
-
-        download_out = self.client.download_file(bucket=bucket_name, key=key, file_path='file',
-                                                 part_size=1024 * 1024)
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-        os.remove(file_name)
+        get_file_name = self.random_filename()
+        self.client.get_object_to_file(bucket_name, key, get_file_name)
+        self.assertFileContent(get_file_name, content)
+        self.assertObjectContent(bucket_name, key, content)
 
     def test_delete_multi_objects(self):
         bucket_name = self.bucket_name + "-delete-multi-objects"
@@ -394,17 +237,15 @@ class TestObject(unittest.TestCase):
         content = random_bytes(20)
 
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
         self.client.put_object(bucket=bucket_name, key=key_1, content=content)
         self.client.put_object(bucket=bucket_name, key=key_2, content=content)
         self.client.head_object(bucket_name, key_1)
         object = []
         object.append(ObjectTobeDeleted(key_1))
         object.append(ObjectTobeDeleted(key_1))
-        out = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
-
-        self.client.delete_object(bucket_name, key_1)
-        self.client.delete_object(bucket_name, key_2)
-        self.client.delete_bucket(bucket_name)
+        self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
 
     def test_copy_object(self):
         bucket_name_1 = self.bucket_name + '-copy-object1'
@@ -412,7 +253,9 @@ class TestObject(unittest.TestCase):
         key = self.random_key(".java")
         content = random_bytes(100)
         self.client.create_bucket(bucket_name_1)
+        self.bucket_delete.append(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
+        self.bucket_delete.append(bucket_name_2)
         self.client.put_object(bucket_name_1, key, content=content)
         self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
         self.client.head_object(bucket_name_2, key)
@@ -423,17 +266,15 @@ class TestObject(unittest.TestCase):
         with self.assertRaises(TosServerError):
             self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
 
-        self.client.delete_object(bucket_name_2, key)
-        self.client.delete_bucket(bucket_name_1)
-        self.client.delete_bucket(bucket_name_2)
-
     def test_copy_object_options(self):
         bucket_name_1 = self.bucket_name + '-copy-object1'
         bucket_name_2 = self.bucket_name + '-copy-object2'
         key = self.random_key(".java")
         content = random_bytes(100)
         self.client.create_bucket(bucket_name_1)
+        self.bucket_delete.append(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
+        self.bucket_delete.append(bucket_name_2)
         meta = {'姓名': '张三'}
         self.client.put_object(bucket_name_1, key=key,
                                content=content,
@@ -459,14 +300,6 @@ class TestObject(unittest.TestCase):
         self.assertEqual(get_object_out.content_language, 'english')
         self.assertEqual(get_object_out.meta['姓名'], meta['姓名'])
         self.assertEqual(get_object_out.read(), content)
-        # 重定向不会被属性拷贝
-        # self.assertEqual(get_object_out.website_redirect_location, '/test')
-
-        self.client.delete_object(bucket=bucket_name_1, key=key)
-        self.client.delete_object(bucket=bucket_name_2, key=key)
-
-        self.client.delete_bucket(bucket_name_1)
-        self.client.delete_bucket(bucket_name_2)
 
     def test_copy_with_set_option(self):
         bucket_name_1 = self.bucket_name + '-copy-object1'
@@ -474,7 +307,9 @@ class TestObject(unittest.TestCase):
         key = self.random_key(".java")
         content = random_bytes(100)
         self.client.create_bucket(bucket_name_1)
+        self.bucket_delete.append(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
+        self.bucket_delete.append(bucket_name_2)
         meta = {'姓名': '张三'}
         self.client.put_object(bucket_name_1, key=key,
                                content=content)
@@ -502,61 +337,45 @@ class TestObject(unittest.TestCase):
         self.assertEqual(get_object_out.meta['姓名'], meta['姓名'])
 
         self.assertEqual(get_object_out.read(), content)
-        # 重定向不会被属性拷贝
-        # self.assertEqual(get_object_out.website_redirect_location, '/test')
 
-        self.client.delete_object(bucket=bucket_name_1, key=key)
-        self.client.delete_object(bucket=bucket_name_2, key=key)
+    # # 目前不知道如何开启多版本, 后续补充测试
+    # def test_mult_version(self):
+    #     bucket_name = self.bucket_name + '-test-mult-object'
+    #     key = self.random_key('.js')
+    #     content = random_bytes(1024)
+    #     self.client.create_bucket(bucket_name)
+    #     self.bucket_delete.append(bucket_name)
+    #     out = self.version_client.put_bucket_versioning(bucket_name, enable=True)
+    #
+    #     time.sleep(30)
+    #     put_object_out_v1 = self.client.put_object(bucket_name, key=key, content=content)
+    #     version_1 = put_object_out_v1.version_id
+    #     content = random_bytes(2048)
+    #     put_object_out_v2 = self.client.put_object(bucket_name, key=key, content=content)
+    #     version_2 = put_object_out_v2.version_id
+    #     get_out = self.client.get_object(bucket_name, key)
+    #     self.assertEqual(get_out.version_id, version_2)
 
-        self.client.delete_bucket(bucket_name_1)
-        self.client.delete_bucket(bucket_name_2)
-
-    # 目前不知道如何开启多版本, 后续补充测试
-    def test_mult_version(self):
-        bucket_name = self.bucket_name + '-test-mult-object'
-        key = self.random_key('.js')
-        content = random_bytes(1024)
-        self.client.create_bucket(bucket_name)
-        out = self.version_client.put_bucket_versioning(bucket_name, enable=True)
-
-        time.sleep(30)
-        put_object_out_v1 = self.client.put_object(bucket_name, key=key, content=content)
-        version_1 = put_object_out_v1.version_id
-        content = random_bytes(2048)
-        put_object_out_v2 = self.client.put_object(bucket_name, key=key, content=content)
-        version_2 = put_object_out_v2.version_id
-        get_out = self.client.get_object(bucket_name, key)
-        self.assertEqual(get_out.version_id, version_2)
-        self.client.list_object_versions(bucket_name)
-        self.client.delete_object(bucket_name, key, version_id=version_1)
-        self.client.delete_object(bucket_name, key, version_id=version_2)
-        # self.client.delete_bucket(bucket_name)
-
-    def test_list_object_version(self):
-        bucket_name = self.bucket_name + '-test-list-version'
-        self.client.create_bucket(bucket_name)
-        self.version_client.put_bucket_versioning(bucket_name, enable=True)
-        for i in range(100):
-            key = self.random_key('.js')
-            content = random_bytes(1)
-            self.client.put_object(bucket_name, key=key, content=content)
-            self.client.put_object(bucket_name, key=key, content=random_bytes(1))
-
-        for i in range(10):
-            self.client.put_object(bucket_name, key=str(i), content=random_bytes(1))
-            self.client.put_object(bucket_name, key=str(i), content=random_bytes(1))
-
-        list_object_out = self.client.list_object_versions(bucket_name, max_keys=50, prefix=self.prefix)
-        self.assertEqual(self.prefix, list_object_out.prefix)
-        self.assertEqual(list_object_out.max_keys, 50)
-        self.assertTrue(list_object_out.is_truncated)
-
-        self.client.list_object_versions(bucket_name, max_keys=51, prefix=self.prefix,
-                                         key_marker=list_object_out.next_key_marker,
-                                         delimiter=self.prefix)
-        objects = self.client.list_objects(bucket_name)
-        for obj in objects.contents:
-            self.client.delete_object(bucket_name, obj.key)
+    # def test_list_object_version(self):
+    #     bucket_name = self.bucket_name + '-test-list-version'
+    #     self.client.create_bucket(bucket_name)
+    #     self.bucket_delete.append(bucket_name)
+    #
+    #     self.version_client.put_bucket_versioning(bucket_name, enable=True)
+    #     for i in range(100):
+    #         key = self.random_key('.js')
+    #         content = random_bytes(1)
+    #         self.client.put_object(bucket_name, key=key, content=content)
+    #         self.client.put_object(bucket_name, key=key, content=random_bytes(1))
+    #
+    #     for i in range(10):
+    #         self.client.put_object(bucket_name, key=str(i), content=random_bytes(1))
+    #         self.client.put_object(bucket_name, key=str(i), content=random_bytes(1))
+    #
+    #     list_object_out = self.client.list_object_versions(bucket_name, max_keys=50, prefix=self.prefix)
+    #     self.assertEqual(self.prefix, list_object_out.prefix)
+    #     self.assertEqual(list_object_out.max_keys, 50)
+    #     self.assertTrue(list_object_out.is_truncated)
 
     def test_append(self):
         bucket_name = self.bucket_name + '-test-append-object'
@@ -564,6 +383,7 @@ class TestObject(unittest.TestCase):
         content = random_bytes(1024)
 
         self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
+        self.bucket_delete.append(bucket_name)
         append_object_out = self.client.append_object(bucket_name, key, 0, content=content)
         self.assertTrue(append_object_out.hash_crc64_ecma > 0)
         self.assertEqual(append_object_out.next_append_offset, 1024)
@@ -578,9 +398,6 @@ class TestObject(unittest.TestCase):
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content)
 
-        out = self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_append_with_options(self):
         bucket_name = self.bucket_name + '-test-append-with-options'
         key = self.random_key('.js')
@@ -594,6 +411,7 @@ class TestObject(unittest.TestCase):
         limiter = RateLimiter(5 * 1024 * 1024, 20 * 1024 * 1024)
 
         self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
+        self.bucket_delete.append(bucket_name)
         meta = {'name': '张三', 'age': '13'}
         append_object_out = self.client.append_object(bucket_name, key, 0,
                                                       content=content,
@@ -616,16 +434,13 @@ class TestObject(unittest.TestCase):
         get_object_out = self.client.get_object(bucket_name, key)
         self.assertTrue(get_object_out.object_type == 'Appendable')
 
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_list_object_info(self):
         bucket_name = self.bucket_name + '-test-list-object'
         key = self.random_key('.js')
         content = random_bytes(1024)
 
         self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
-
+        self.bucket_delete.append(bucket_name)
         self.client.put_object(bucket_name, key=key, content=content)
         list_object_out = self.client.list_objects(bucket_name)
         self.assertEqual(list_object_out.name, bucket_name)
@@ -639,12 +454,11 @@ class TestObject(unittest.TestCase):
         self.assertTrue(object.size == 1024)
         self.assertTrue(len(object.owner.id) > 0)
 
-        self.client.delete_object(bucket_name, key=key)
-        self.client.delete_bucket(bucket_name)
-
     def test_list_object_full_func(self):
         bucket_name = self.bucket_name + '-test-list-object'
         self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
+        self.bucket_delete.append(bucket_name)
+
         for i in range(100):
             key = self.random_key('.js')
             content = random_bytes(1)
@@ -664,16 +478,10 @@ class TestObject(unittest.TestCase):
         self.assertEqual(len(list_object_out_v2.contents), 50)
         self.assertFalse(list_object_out_v2.is_truncated)
 
-        objects = self.client.list_objects(bucket_name)
-        for obj in objects.contents:
-            self.client.delete_object(bucket_name, obj.key)
-
-        self.client.delete_bucket(bucket_name)
-
     def test_list_object_with_case(self):
         bucket_name = self.bucket_name + '-test-list-object-with-case'
         self.client.create_bucket(bucket_name)
-
+        self.bucket_delete.append(bucket_name)
         for i in range(100):
             key = self.random_key('.js')
             content = random_string(1000)
@@ -727,20 +535,11 @@ class TestObject(unittest.TestCase):
         out5 = self.client.list_objects(bucket_name, delimiter='/')
         self.assertEqual(len(out5.common_prefixes), 0)
 
-        list_all = self.client.list_objects(bucket_name)
-        for obj in list_all.contents:
-            self.client.delete_object(bucket_name, obj.key)
-
-        self.client.delete_bucket(bucket_name)
-
-        # 后续补充相关，目前没有开启多版本的方式
-        def test_list_objet_version(self):
-            pass
-
     def test_set_object_meta(self):
         bucket_name = self.bucket_name + '-test-set-object-meta'
         key = self.random_key('.js')
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
         meta = {'name': 'sunyushan', 'age': '10'}
         self.client.put_object(bucket_name, key=key, content=random_bytes(10), meta=meta)
         meta['name'] = '张三'
@@ -748,27 +547,23 @@ class TestObject(unittest.TestCase):
 
         get_object_out = self.client.get_object(bucket_name, key=key)
         self.assertEqual(meta['name'], get_object_out.meta['name'])
-        self.client.delete_object(bucket_name, key=key)
-
-        self.client.delete_bucket(bucket_name)
 
     def test_get_object_meta(self):
         bucket_name = self.bucket_name + '-test-get-object-meta'
         key = self.random_key('.js')
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
         meta = {'name': 'jason', 'age': '10'}
         self.client.put_object(bucket_name, key=key, content=random_bytes(10), meta=meta)
 
         self.client.get_object(bucket_name, key=key)
-        self.client.delete_object(bucket_name, key=key)
-
-        self.client.delete_bucket(bucket_name)
 
     def test_get_object_with_data_transfer_listener(self):
         bucket_name = self.bucket_name + '-test-with-transfer-listener'
         key = self.random_key('.js')
         content = random_bytes(1025 * 1024)
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
 
         def progress(consumed_bytes, total_bytes, rw_once_bytes,
                      type: DataTransferType):
@@ -782,15 +577,13 @@ class TestObject(unittest.TestCase):
                                                 rate_limiter=RateLimiter(1024 * 1024 * 5, 1024 * 1024 * 20))
         self.assertEqual(get_object_out.read(), content)
         self.assertEqual(get_object_out.hash_crc64_ecma, get_object_out.client_crc)
-        self.client.delete_object(bucket_name, key=key)
-
-        self.client.delete_bucket(bucket_name)
 
     def test_with_rate_limiter(self):
         bucket_name = self.bucket_name + '-test-with-rate-limiter'
         key = self.random_key('.js')
         content = random_bytes(1024 * 1024)
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
 
         def progress(consumed_bytes, total_bytes, rw_once_bytes,
                      type: DataTransferType):
@@ -804,14 +597,12 @@ class TestObject(unittest.TestCase):
 
         get_object_out = self.client.get_object(bucket_name, key=key, data_transfer_listener=progress)
         self.assertEqual(get_object_out.read(), content)
-        self.client.delete_object(bucket_name, key=key)
-
-        self.client.delete_bucket(bucket_name)
 
     def test_put_object_acl(self):
         bucket_name = self.bucket_name + '-test-put-object-acl'
         key = self.random_key('.js')
         self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
         self.client.put_object(bucket_name, key, content=random_bytes(5))
         grants = []
         grantee = Grantee(id="123", display_name="123", type=GranteeType.Grantee_User)
@@ -823,11 +614,9 @@ class TestObject(unittest.TestCase):
 
         out = self.client.get_object_acl(bucket_name, key)
 
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
-
     def test_put_with_md5(self):
         bucket_name = self.bucket_name + '-put-with-md5'
+        self.bucket_delete.append(bucket_name)
         key = self.random_key('.js')
         content = random_bytes(100)
         file_name = random_string(5)
@@ -844,10 +633,129 @@ class TestObject(unittest.TestCase):
 
         with self.assertRaises(TosServerError):
             self.client.put_object_from_file(bucket_name, key, file_name, content_md5='test_error')
-
-        self.client.delete_object(bucket_name, key)
-        self.client.delete_bucket(bucket_name)
         os.remove(path=file_name)
+
+    def test_tagging(self):
+        bucket_name = self.bucket_name + 'tagging'
+        key = self.random_key('.js')
+        content = random_bytes(100)
+        self.client.create_bucket(bucket_name)
+        self.client.put_object(bucket=bucket_name, key=key, content=content)
+        tag_set = []
+        tag_set.append(Tag(
+            key='1',
+            value='1'
+        ))
+        put_out = self.client.put_object_tagging(bucket=bucket_name, key=key, tag_set=tag_set)
+        self.assertIsNone(put_out.version_id)
+
+        get_out = self.client.get_object_tagging(bucket=bucket_name, key=key)
+        get_set = get_out.tag_set
+        self.assertTrue(len(get_set) == 1)
+        self.assertEqual(get_set[0].key, '1')
+        self.assertEqual(get_set[0].key, '1')
+
+        delete_out = self.client.delete_object_tagging(bucket=bucket_name, key=key)
+        self.assertIsNone(delete_out.version_id)
+        get_out_2 = self.client.get_object_tagging(bucket=bucket_name, key=key)
+        self.assertTrue(len(get_out_2.tag_set) == 0)
+
+        self.client.delete_object(bucket=bucket_name, key=key)
+        self.client.delete_bucket(bucket_name)
+
+    def test_list_object_v2(self):
+        bucket_name = self.bucket_name + '-test-list-object-with-case'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        for i in range(3):
+            for j in range(3):
+                for k in range(3):
+                    path = '{}/{}/{}'.format(i, j, k)
+                    self.client.put_object(bucket_name, path, content=b'1')
+
+        out_2 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2)
+        out_2_reverse = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
+                                                       reverse=True)
+        out_3 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
+                                               delimiter='/', continuation_token=out_2.next_continuation_token)
+
+        continuation_token = None
+        is_truncated = True
+        count = 0
+        while is_truncated:
+            out = self.client.list_objects_type2(bucket_name, continuation_token=continuation_token)
+            is_truncated = out.is_truncated
+            count += len(out.contents)
+        self.assertEqual(count, 27)
+
+    def test_fetch_object(self):
+        bucket_name = self.bucket_name + '-fetch-object'
+        bucket_fetch = self.bucket_name + '-fetch-test'
+        self.bucket_delete.append(bucket_name)
+        self.bucket_delete.append(bucket_fetch)
+        object_name = 'test.txt'
+        self.client.create_bucket(bucket_fetch)
+        self.client.put_object(bucket_fetch, object_name)
+        self.client.put_object_acl(bucket=bucket_fetch, key=object_name, acl=ACLType.ACL_Public_Read_Write)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket=bucket_name)
+        meta = {'姓名': '张三'}
+        fetch_out = self.client.fetch_object(bucket=bucket_name, key=key,
+                                             url="https://{}.{}".format(bucket_fetch,
+                                                                        self.endpoint) + '/' + object_name,
+                                             meta=meta)
+        out = self.client.get_object(bucket=bucket_name, key=key)
+        get_out = self.client.get_object(bucket=bucket_name, key=key)
+        get_out.meta['姓名'] = meta['姓名']
+
+    def test_fetch_task_object(self):
+        bucket_name = self.bucket_name + '-fetch-object'
+        self.bucket_delete.append(bucket_name)
+        bucket_fetch = self.bucket_name + '-fetch-task-test'
+        self.bucket_delete.append(bucket_fetch)
+
+        key = self.random_key('123')
+
+        self.client.create_bucket(bucket=bucket_fetch)
+        self.client.put_object(bucket=bucket_fetch, key=key, acl=ACLType.ACL_Public_Read_Write)
+        url = 'http://{}.{}'.format(bucket_fetch, self.endpoint) + '/' + key
+        self.client.create_bucket(bucket=bucket_name)
+        out = self.client.put_fetch_task(bucket=bucket_name, key=key,
+                                         url=url)
+
+    def test_post_object(self):
+        bucket_name = self.bucket_name + '-post-object'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        file_name = self.random_filename()
+        content = random_bytes(1024)
+        with open(file_name, 'wb+') as f:
+            f.write(content)
+        key = self.random_key()
+        out = self.client.pre_signed_post_signature(bucket=bucket_name, key=key, conditions=[])
+        form = {'key': key, 'x-tos-algorithm': out.algorithm, 'bucket': bucket_name, 'x-tos-date': out.date,
+                'policy': out.policy, 'x-tos-signature': out.signature, 'x-tos-credential': out.credential}
+        resp = requests.post(url=self.client._make_virtual_host_url(bucket_name, key),
+                             files={"upload_file": open(file_name, 'rb')},
+                             data=form)
+        self.assertEqual(resp.status_code, 204)
+
+        condition = [PostSignatureCondition(key='x-tos-acl', value='private')]
+        out2 = self.client.pre_signed_post_signature(conditions=condition, bucket=bucket_name, key=key)
+        form2 = {'key': key, 'x-tos-algorithm': out2.algorithm, 'bucket': bucket_name, 'x-tos-date': out2.date,
+                 'policy': out2.policy, 'x-tos-signature': out2.signature, 'x-tos-credential': out2.credential,
+                 'x-tos-acl': 'private'}
+        resp = requests.post(url=self.client._make_virtual_host_url(bucket_name),
+                             files={"upload_file": open(file_name, 'rb')},
+                             data=form2)
+
+        self.assertEqual(resp.status_code, 204)
+
+        form2['x-tos-acl'] = 'public-read'
+        resp = requests.post(url=self.client._make_virtual_host_url(bucket_name),
+                             files={"upload_file": open(file_name, 'rb')},
+                             data=form2)
+        self.assertEqual(resp.status_code, 403)
 
     def random_key(self, suffix=''):
         key = self.prefix + random_string(12) + suffix

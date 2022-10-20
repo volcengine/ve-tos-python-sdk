@@ -1,11 +1,17 @@
 # -*- coding: utf-8 -*-
+import base64
+import errno
+import hashlib
 import json
+import os
+import random
+import re
+import string
 import unittest
 
 from requests.structures import CaseInsensitiveDict
 
 import tos
-from tests.test_v2_bucker import random_string
 from tos import TosClientV2
 
 
@@ -42,8 +48,65 @@ class MockResponse():
         return generate()
 
 
-def random_bytes(n):
-    return to_bytes(random_string(n))
+class TosTestBase(unittest.TestCase):
+    def __init__(self, *args, **kwargs):
+        super(TosTestBase, self).__init__(*args, **kwargs)
+        self.ak = os.getenv('AK')
+        self.sk = os.getenv('SK')
+        self.endpoint = os.getenv('Endpoint')
+        self.region = os.getenv('Region')
+        self.bucket_name = "sun-" + random_string(10)
+        self.object_name = "test_object" + random_string(10)
+        self.prefix = random_string(12)
+        self.bucket_delete = []
+        self.temp_files = []
+
+    def setUp(self):
+        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2)
+        self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True,
+                                          max_retry_count=2)
+
+    def tearDown(self):
+        for file in self.temp_files:
+            try:
+                os.remove(file)
+            except OSError as e:
+                if e.errno != errno.ENOENT:
+                    raise
+        for bkt in self.bucket_delete:
+            clean_and_delete_bucket(self.client, bkt)
+
+    def assertFileContent(self, filename, content):
+        with open(filename, 'rb') as f:
+            read = f.read()
+            self.assertEqual(len(read), len(content))
+            self.assertEqual(read, content)
+
+    def assertObjectContent(self, bucket, key, content):
+        out = self.client.get_object(bucket=bucket, key=key)
+        self.assertEqual(out.read(), content)
+
+    def assertDownloadUploadFile(self, upload, download):
+        with open(upload, 'rb') as fu:
+            with open(download, 'rb') as fd:
+                up = fu.read()
+                down = fd.read()
+                self.assertEqual(len(up), len(down))
+                self.assertEqual(up, down)
+
+    def random_key(self, suffix=''):
+        key = self.prefix + random_string(12) + suffix
+        return key
+
+    def random_filename(self):
+        filename = random_string(16)
+        self.temp_files.append(filename)
+
+        return filename
+
+
+def random_string(n):
+    return ''.join(random.choice(string.ascii_lowercase) for i in range(n))
 
 
 def to_bytes(data):
@@ -52,6 +115,17 @@ def to_bytes(data):
         return data.encode(encoding='utf-8')
     else:
         return data
+
+
+def calculate_md5(content):
+    md5 = hashlib.md5()
+    buf = content.read()
+    md5.update(buf)
+    return base64.b64encode(md5.digest())
+
+
+def random_bytes(n):
+    return to_bytes(random_string(n))
 
 
 class TestClient2(TosClientV2):
@@ -68,3 +142,51 @@ class TestClient2(TosClientV2):
         data = json.dumps(data)
         resp = super(TestClient2, self)._req(bucket=bucket, method='PUT', data=data, params=params)
         return resp
+
+
+def clean_and_delete_bucket(tos_client: tos.TosClientV2, bucket: str):
+    try:
+        out = tos_client.head_bucket(bucket=bucket)
+    except tos.exceptions.TosServerError as e:
+        status = e.status_code
+        if status == 404:
+            return
+
+    truncated = True
+
+    while truncated:
+        rsp = tos_client.list_objects(bucket=bucket)
+        truncated = rsp.is_truncated
+
+        for obj in rsp.contents:
+            tos_client.delete_object(bucket=bucket, key=obj.key)
+
+    truncated = True
+    while truncated:
+        rsp = tos_client.list_object_versions(bucket=bucket)
+        truncated = rsp.is_truncated
+
+        for obj in rsp.versions:
+            tos_client.delete_object(bucket=bucket, key=obj.key, version_id=obj.version_id)
+
+        for obj in rsp.delete_markers:
+            tos_client.delete_object(bucket=bucket, key=obj.key, version_id=obj.version_id)
+
+    truncated = True
+    while truncated:
+        rsp = tos_client.list_multipart_uploads(bucket=bucket)
+        truncated = rsp.is_truncated
+
+        for upload in rsp.uploads:
+            tos_client.abort_multipart_upload(bucket=bucket, key=upload.key, upload_id=upload.upload_id)
+
+    tos_client.delete_bucket(bucket=bucket)
+
+
+def clean_and_delete_bucket_with_prefix(tos_client: tos.TosClientV2, prefix: str):
+    l = tos_client.list_buckets()
+
+    for bkc in l.buckets:
+        bkc_name = bkc.name
+        if re.match('^{}'.format(prefix), bkc_name):
+            clean_and_delete_bucket(tos_client=tos_client, bucket=bkc_name)
