@@ -12,10 +12,10 @@ import crcmod as crcmod
 import pytz
 import six
 
-from . import exceptions as exp
+from .exceptions import TosServerError, TosClientError
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
-                     LAST_MODIFY_TIME_DATE_FORMAT, MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
-                     CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM)
+                     MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
+                     CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT)
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
 from .mine_type import TYPES_MAP
@@ -68,11 +68,19 @@ def get_content_type(key):
     return TYPES_MAP[ext] if ext in TYPES_MAP else DEFAULT_MIMETYPE
 
 
-def init_path(path: str):
+def init_path(path: str, key: str):
+    try_make_file_dir(path)
+    if os.path.isdir(path) and key.endswith('/'):
+        return True
+    return False
+
+
+def try_make_file_dir(path: str):
     if os.path.isdir(path) or os.path.isfile(path):
         return
-    # 默认path为文件夹路径:
-    os.makedirs(path)
+    file_dir, file_name = os.path.split(path)
+    if file_dir:
+        os.makedirs(file_dir, exist_ok=True)
 
 
 def _make_range_string(start, last):
@@ -80,7 +88,7 @@ def _make_range_string(start, last):
         return ''
 
     if start is not None and last is not None and start > last:
-        raise exp.TosClientError('invalid range format')
+        raise TosClientError('invalid range format')
 
     return 'bytes=' + _range(start, last)
 
@@ -145,7 +153,7 @@ def generate_http_proxies(ip: str, port: int, user_name: str = None, password: s
         # 返回  "http": "http://{user_name}:{password}@{ip}:{port}/"
         proxy = "http://{0}:{1}@{2}:{3}/".format(user_name, password, ip, port)
 
-    return {'http': proxy}
+    return {'http': proxy, 'https': proxy}
 
 
 def _make_copy_source(src_bucket, src_key, src_version_id):
@@ -396,9 +404,8 @@ class _ReaderAdapter(object):
 
     def read(self, amt=None):
         if self.offset >= self.size:
-            if self.download_operator:
-                _cal_progress_callback(self.progress_callback, self.size, self.size, 0,
-                                       DataTransferType.Data_Transfer_Succeed)
+            _cal_progress_callback(self.get_progress(), self.size, self.size, 0,
+                                   DataTransferType.Data_Transfer_Succeed)
             return to_bytes('')
         if self.offset == 0:
             _cal_progress_callback(self.progress_callback, min(self.offset, self.size), self.size, 0,
@@ -440,6 +447,14 @@ class _ReaderAdapter(object):
                 self.data.seek(self.init_offset, os.SEEK_SET)
             if isinstance(self.data, _ReaderAdapter) or isinstance(self.data, SizeAdapter):
                 self.data.reset()
+
+    def get_progress(self):
+        if self.progress_callback:
+            return self.progress_callback
+        elif isinstance(self.data, _ReaderAdapter):
+            return self.data.get_progress()
+
+        return None
 
 
 def init_content(data, can_reset=None, init_offset=None):
@@ -586,7 +601,7 @@ class Crc64(object):
 def check_crc(operation, client_crc, tos_crc, request_id):
     tos_crc = int(tos_crc)
     if client_crc != tos_crc:
-        raise exp.TosClientError(
+        raise TosClientError(
             "Check CRC failed: req_id: {0}, operation: {1}, CRC checksum of client: {2} is mismatch "
             "with tos: {3}".format(request_id, operation, client_crc, tos_crc))
 
@@ -619,7 +634,7 @@ def copy_and_verify_length(src, dst, expected_len,
         dst.write(buf)
 
     if num != expected_len:
-        raise exp.TosClientError("Some error from read source, request_id:{0}".format(request_id))
+        raise TosClientError("Some error from read source, request_id:{0}".format(request_id))
 
 
 is_py3 = (sys.version_info[0] == 3)
@@ -837,60 +852,60 @@ def check_enum_type(acl=None, storage_class=None, metadata_directive=None, az_re
 
 def check_acl_type(obj):
     if not isinstance(obj, ACLType):
-        raise exp.TosClientError('invalid acl type')
+        raise TosClientError('invalid acl type')
 
 
 def check_storage_class_type(obj):
     if not isinstance(obj, StorageClassType):
-        raise exp.TosClientError('invalid storage class')
+        raise TosClientError('invalid storage class')
 
 
 def check_metadata_directive_type(obj):
     if not isinstance(obj, MetadataDirectiveType):
-        raise exp.TosClientError('invalid metadata directive type')
+        raise TosClientError('invalid metadata directive type')
 
 
 def check_az_redundancy_type(obj):
     if not isinstance(obj, AzRedundancyType):
-        raise exp.TosClientError('invalid az redundancy type')
+        raise TosClientError('invalid az redundancy type')
 
 
 def check_permission_type(obj):
     if not isinstance(obj, PermissionType):
-        raise exp.TosClientError('invalid permission type')
+        raise TosClientError('invalid permission type')
 
 
 def check_grantee_type(obj):
     if not isinstance(obj, GranteeType):
-        raise exp.TosClientError('invalid grantee type')
+        raise TosClientError('invalid grantee type')
 
 
 def check_canned_type(obj):
     if not isinstance(obj, CannedType):
-        raise exp.TosClientError('invalid canned type')
+        raise TosClientError('invalid canned type')
 
 
 def check_part_size(part_size):
     if not (part_size is not None and MIN_PART_SIZE <= part_size <= MAX_PART_SIZE):
-        raise exp.TosClientError('invalid part size, the size must be [5242880, 5368709120], size={}'.format(part_size))
+        raise TosClientError('invalid part size, the size must be [5242880, 5368709120], size={}'.format(part_size))
 
 
 def check_part_number(size, part_size):
     number = get_number(size, part_size)
     if number > MAX_PART_NUMBER:
-        raise exp.TosClientError('unsupported part number, the maximum is 10000')
+        raise TosClientError('unsupported part number, the maximum is 10000')
 
 
 def check_client_encryption_algorithm(algorithm):
     if algorithm:
         if algorithm not in CLIENT_ENCRYPTION_ALGORITHM:
-            return exp.TosClientError('invalid encryption-decryption algorithm')
+            return TosClientError('invalid encryption-decryption algorithm')
 
 
 def check_server_encryption_algorithm(algorithm):
     if algorithm:
         if algorithm not in SERVER_ENCRYPTION_ALGORITHM:
-            return exp.TosClientError('invalid encryption-decryption algorithm')
+            return TosClientError('invalid encryption-decryption algorithm')
 
 
 def is_ip(host):
@@ -915,3 +930,33 @@ class LogInfo(object):
             'after-request: {} exec httpCode: {}, requestId: {}, usedTime: {} s'.format(func_name, res.status,
                                                                                         res.request_id,
                                                                                         end - self.start))
+
+
+class MergeProcess(object):
+    def __init__(self, process, total_bytes, task_num, consumed_bytes):
+        self.process = process
+        self.totalBytes = total_bytes
+        self.consumed_bytes = consumed_bytes
+        if consumed_bytes == 0:
+            self.status = DataTransferType.Data_Transfer_Init
+        else:
+            self.status = DataTransferType.Data_Transfer_RW
+        self.taskNum = task_num
+        self.count = 0
+        self.lock = threading.Lock()
+
+    def __call__(self, consumed_bytes, total_bytes, rw_once_bytes, type: DataTransferType):
+        with self.lock:
+            if type == DataTransferType.Data_Transfer_Started and self.status == DataTransferType.Data_Transfer_Init:
+                self.status = DataTransferType.Data_Transfer_Started
+                self.process(0, self.totalBytes, 0, self.status)
+            elif type == DataTransferType.Data_Transfer_RW:
+                self.status = DataTransferType.Data_Transfer_RW
+                self.consumed_bytes += rw_once_bytes
+                self.process(self.consumed_bytes, self.totalBytes, rw_once_bytes, DataTransferType.Data_Transfer_RW)
+
+            elif type == DataTransferType.Data_Transfer_Succeed:
+                self.count += 1
+                if self.count == self.taskNum:
+                    self.process(self.consumed_bytes, self.totalBytes, 0, DataTransferType.Data_Transfer_Succeed)
+
