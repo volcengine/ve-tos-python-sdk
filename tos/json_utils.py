@@ -71,28 +71,6 @@ def to_put_bucket_mirror_back(rules: []):
     arr = []
     for rule in rules:
         info = {}
-        # info = {'ID': rule.id,
-        #         'Condition': {
-        #             'HttpCode': rule.condition.http_code,
-        #             'ObjectKeyPrefix': rule.condition.object_key_prefix
-        #         },
-        #         'Redirect': {
-        #             'RedirectType': rule.redirect.redirect_type.value,
-        #             'FetchSourceOnRedirect': rule.redirect.fetch_source_on_redirect,
-        #             'PublicSource': {
-        #                 'SourceEndpoint': {
-        #                     'Primary': rule.redirect.public_source.source_endpoint.primary
-        #                 }
-        #             },
-        #             'PassQuery': rule.redirect.pass_query,
-        #             'FollowRedirect': rule.redirect.follow_redirect,
-        #             'MirrorHeader': {
-        #                 'PassAll': rule.redirect.mirror_header.pass_all,
-        #                 'Pass': rule.redirect.mirror_header.pass_headers,
-        #                 'Remove': rule.redirect.mirror_header.remove
-        #             }
-        #         }
-        #         }
         if rule.id:
             info['ID'] = rule.id
         if rule.condition:
@@ -105,7 +83,7 @@ def to_put_bucket_mirror_back(rules: []):
             info['Redirect'] = {}
             if rule.redirect.redirect_type:
                 info['Redirect']['RedirectType'] = rule.redirect.redirect_type.value
-            if rule.redirect.fetch_source_on_redirect:
+            if rule.redirect.fetch_source_on_redirect is not None:
                 info['Redirect']['FetchSourceOnRedirect'] = rule.redirect.fetch_source_on_redirect
             if rule.redirect.public_source:
                 info['Redirect']['PublicSource'] = {}
@@ -117,9 +95,9 @@ def to_put_bucket_mirror_back(rules: []):
                     if rule.redirect.public_source.source_endpoint.follower:
                         info['Redirect']['PublicSource']['SourceEndpoint'][
                             'Follower'] = rule.redirect.public_source.source_endpoint.follower
-            if rule.redirect.pass_query:
+            if rule.redirect.pass_query is not None:
                 info['Redirect']['PassQuery'] = rule.redirect.pass_query
-            if rule.redirect.follow_redirect:
+            if rule.redirect.follow_redirect is not None:
                 info['Redirect']['FollowRedirect'] = rule.redirect.follow_redirect
             if rule.redirect.mirror_header:
                 info['Redirect']['MirrorHeader'] = {}
@@ -216,7 +194,7 @@ def to_put_object_tagging(tags: []):
     for tag in tags:
         info.append({
             'Key': tag.key,
-            'Value': tag.key
+            'Value': tag.value
         })
     data = {'TagSet': {
         'Tags': info

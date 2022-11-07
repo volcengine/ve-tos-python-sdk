@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 
 import datetime
+import http
+import logging
 import os
+import time
 import unittest
 from io import StringIO
 
+import http.client as httplib
 import requests
 
-import tos.models2
 from tests.common import TosTestBase, random_string, random_bytes, calculate_md5
 from tos.enum import (ACLType, AzRedundancyType, DataTransferType,
                       GranteeType, MetadataDirectiveType, PermissionType,
@@ -16,6 +19,17 @@ from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import Deleted, Grant, Grantee, ListObjectsOutput, Owner, ObjectTobeDeleted, Tag, \
     PostSignatureCondition
 from tos.utils import RateLimiter
+
+import tos
+
+tos.set_logger(level=logging.DEBUG)
+
+
+def get_socket_io():
+    conn = http.client.HTTPConnection('www.baidu.com', 80)
+    conn.request('GET', '/')
+    content = conn.getresponse()
+    return content
 
 
 class TestObject(TosTestBase):
@@ -56,26 +70,31 @@ class TestObject(TosTestBase):
         bucket_name = self.bucket_name + '-put-object-with-meta'
         key = "张三.txt"
         content = random_string(123)
-
+        conn = httplib.HTTPConnection('www.baidu.com', 80)
+        conn.request('GET', '/')
+        content_io = conn.getresponse()
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
-        meta = {'name': '张三', 'age': '12'}
-        self.client.put_object(bucket_name, key, content=b'')
-        self.client.put_object(bucket_name, key=key,
-                               content=content,
-                               meta=meta
-                               )
-        get_object_out = self.client.get_object(bucket_name, key)
-        m = get_object_out.meta
-        self.assertEqual(m['name'], meta['name'])
-        self.assertEqual(m['age'], meta['age'])
+        for i in range(2):
+            meta = {'name': '张三', 'age': '12'}
+            self.client.put_object(bucket_name, key, content=b'')
+            self.client.put_object(bucket_name, key=key,
+                                   content=content,
+                                   meta=meta
+                                   )
+            get_object_out = self.client.get_object(bucket_name, key)
+            m = get_object_out.meta
+            self.assertEqual(m['name'], meta['name'])
+            self.assertEqual(m['age'], meta['age'])
 
-        meta['name'] = '李四'
-        self.client.set_object_meta(bucket_name, key, meta=meta)
-        head_out = self.client.head_object(bucket_name, key)
-        m = head_out.meta
-        self.assertEqual(m['name'], meta['name'])
-        self.assertEqual(m['age'], meta['age'])
+            meta['name'] = '李四'
+            self.client.set_object_meta(bucket_name, key, meta=meta)
+            head_out = self.client.head_object(bucket_name, key)
+            m = head_out.meta
+            self.assertEqual(m['name'], meta['name'])
+            self.assertEqual(m['age'], meta['age'])
+            key = '李四.txt'
+            content = content_io
 
     def test_with_string_io(self):
         io = StringIO('a')
@@ -130,15 +149,22 @@ class TestObject(TosTestBase):
     def test_put_with_empty_content(self):
         bucket_name = self.bucket_name + '-put-empty-object'
         key = self.random_key()
+        conn = httplib.HTTPConnection('www.baidu.com', 80)
+        conn.request('GET', '/')
+        content_io = conn.getresponse()
         content = b''
 
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
-
-        self.client.put_object(bucket_name, key=key, content=content)
-        get_object_out = self.client.get_object(bucket_name, key)
-        self.assertEqual(get_object_out.client_crc, 0)
-        self.assertEqual(get_object_out.hash_crc64_ecma, 0)
+        for i in range(2):
+            self.client.put_object(bucket_name, key=key, content=content)
+            get_object_out = self.client.get_object(bucket_name, key)
+            if self.client.enable_crc:
+                self.assertEqual(get_object_out.client_crc, 0)
+            self.assertEqual(get_object_out.hash_crc64_ecma, 0)
+            content = content_io
+            content.read()
+            key = self.random_key()
 
     def test_put_with_illegal_name(self):
         bucket_name = self.bucket_name + '-put-object-with-illegal-name'
@@ -192,8 +218,10 @@ class TestObject(TosTestBase):
             self.client.put_object(bucket_name, key, content=content, ssec_algorithm="AES256")
 
     def test_put_with_data_transfer_listener(self):
+        self.client.enable_crc = False
         bucket_name = self.bucket_name + '-put-object-with-transfer-listener'
         key = self.random_key('.js')
+        key_2 = self.random_key('.js')
         content = random_bytes(1024 * 100)
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
@@ -210,6 +238,15 @@ class TestObject(TosTestBase):
         read_info = bytes()
         for buf in out.content:
             read_info = read_info + buf
+        self.assertEqual(read_info, content)
+
+        out = self.client.get_object(bucket_name, key)
+        self.client.put_object(bucket_name, key_2, content=out, data_transfer_listener=progress)
+        get_out = self.client.get_object(bucket_name, key_2, data_transfer_listener=progress)
+        read_info = bytes()
+        for buf in get_out.content:
+            read_info = read_info + buf
+        self.assertEqual(read_info, content)
 
     def test_object_from_file(self):
         bucket_name = self.bucket_name + '-put-object-from-file'
@@ -229,6 +266,84 @@ class TestObject(TosTestBase):
         self.client.get_object_to_file(bucket_name, key, get_file_name)
         self.assertFileContent(get_file_name, content)
         self.assertObjectContent(bucket_name, key, content)
+
+    def test_object_from_file_with_large_file(self):
+        bucket_name = self.bucket_name + '-put-object-from-file'
+        key = self.random_key('.js')
+        file_name = self.random_filename()
+        content = random_bytes(1024 * 1024 * 10)
+        with open(file_name, 'wb') as fw:
+            fw.write(content)
+
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object_from_file(bucket=bucket_name, key=key, file_path=file_name)
+        get_file_name = self.random_filename()
+        self.client.get_object_to_file(bucket_name, key, get_file_name)
+        object_out = self.client.get_object(bucket_name, key)
+        while True:
+            if not object_out.read(64 * 1024):
+                break
+        assert object_out.client_crc == object_out.hash_crc64_ecma
+        self.assertFileContent(get_file_name, content)
+        self.assertObjectContent(bucket_name, key, content)
+
+    def test_object_with_io(self):
+        bucket_name = self.bucket_name + '-put-object-from-file'
+        key = self.random_key('.js')
+        file_name = self.random_filename()
+        content = random_bytes(1024 * 1024)
+        with open(file_name, 'wb') as fw:
+            fw.write(content)
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object_from_file(bucket=bucket_name, key=key, file_path=file_name)
+        input = self.client.get_object(bucket_name, key)
+        self.client.put_object(bucket_name, key + '1', content=input)
+        self.assertObjectContent(bucket_name, key + '1', content)
+
+    def test_with_stream(self):
+        bucket_name = self.bucket_name + 'test-with-stream'
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        conn = http.client.HTTPConnection('www.baidu.com', 80)
+        conn.request('GET', '/')
+        content = conn.getresponse()
+
+        def generator():
+            var1 = "5\r\n"
+            var2 = "x=FOO\r\n"
+            var3 = "0\r\n\r\n"
+            x = var1.encode('utf8')
+            y = var2.encode('utf8')
+            z = var3.encode('utf8')
+            yield x
+            yield y
+            yield z
+
+        self.client.put_object(bucket_name, key, content=generator())
+        out = self.client.get_object(bucket_name, key)
+        buf = b''
+        for i in generator():
+            buf += i
+        self.assertEqual(out.read(), buf)
+
+        self.client.put_object(bucket_name, key, content=content)
+        out = self.client.get_object(bucket_name, key)
+        conn = http.client.HTTPConnection('www.baidu.com', 80)
+        conn.request('GET', '/')
+        content = conn.getresponse()
+        buf = b''
+        for chuck in content:
+            buf += chuck
+        self.assertEqual(len(buf), len(out.read()))
+
+
+        input = requests.get('https://www.volcengine.com')
+        self.client.put_object(bucket_name, key, content=input)
+        out = self.client.get_object(bucket_name, key)
+        self.assertEqual(len(out.read()), len(requests.get('https://www.volcengine.com').text))
 
     def test_delete_multi_objects(self):
         bucket_name = self.bucket_name + "-delete-multi-objects"
@@ -251,7 +366,7 @@ class TestObject(TosTestBase):
         bucket_name_1 = self.bucket_name + '-copy-object1'
         bucket_name_2 = self.bucket_name + '-copy-object2'
         key = self.random_key(".java")
-        content = random_bytes(100)
+        content = random_bytes(1024 * 1024 * 5)
         self.client.create_bucket(bucket_name_1)
         self.bucket_delete.append(bucket_name_1)
         self.client.create_bucket(bucket_name_2)
@@ -259,7 +374,7 @@ class TestObject(TosTestBase):
         self.client.put_object(bucket_name_1, key, content=content)
         self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
         self.client.head_object(bucket_name_2, key)
-        self.client.get_object(bucket_name_2, key)
+        self.assertObjectContent(bucket_name_2, key, content)
 
         self.client.delete_object(bucket_name_1, key)
 
@@ -445,6 +560,7 @@ class TestObject(TosTestBase):
         list_object_out = self.client.list_objects(bucket_name)
         self.assertEqual(list_object_out.name, bucket_name)
         self.assertFalse(list_object_out.is_truncated)
+        self.assertEqual(list_object_out.max_keys, 1000)
         self.assertTrue(len(list_object_out.contents) > 0)
 
         object = list_object_out.contents[0]
@@ -453,6 +569,7 @@ class TestObject(TosTestBase):
         self.assertTrue(object.last_modified is not None)
         self.assertTrue(object.size == 1024)
         self.assertTrue(len(object.owner.id) > 0)
+        self.assertTrue(object.storage_class, StorageClassType.Storage_Class_Standard)
 
     def test_list_object_full_func(self):
         bucket_name = self.bucket_name + '-test-list-object'
@@ -578,6 +695,38 @@ class TestObject(TosTestBase):
         self.assertEqual(get_object_out.read(), content)
         self.assertEqual(get_object_out.hash_crc64_ecma, get_object_out.client_crc)
 
+    def test_get_object_to_file(self):
+        bucket_name = self.bucket_name + 'download-dir'
+        cwd = os.getcwd()
+        key = self.random_key('.txt')
+        content = random_bytes(1024 * 1024 * 5)
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        file_name = self.random_filename()
+        with open(file_name, 'wb') as f:
+            f.write(content)
+        self.client.put_object_from_file(bucket_name, key, file_name)
+        self.client.get_object_to_file(bucket_name, key, cwd + '/test.txt')
+        self.assertFileContent(cwd + '/test.txt', content)
+
+        content = content + b'1'
+        self.client.put_object(bucket_name, key, content=content)
+        self.client.get_object_to_file(bucket_name, key, cwd + '/test.txt')
+        self.assertFileContent(cwd + '/test.txt', content)
+        os.remove(cwd + '/test.txt')
+
+        self.client.get_object_to_file(bucket_name, key, cwd + '/test/f1')
+        self.assertFileContent(cwd + '/test/f1', content)
+
+        self.client.get_object_to_file(bucket_name, key, cwd + '/dir1/')
+        self.assertFileContent(cwd + '/dir1/' + key, content)
+        os.remove(cwd + '/dir1/' + key)
+
+        key = key + '/'
+        self.client.put_object(bucket_name, key, content=content)
+        self.client.get_object_to_file(bucket_name, key, cwd + '/dir3/')
+        self.assertTrue(os.path.isdir(cwd + '/dir3/' + key))
+
     def test_with_rate_limiter(self):
         bucket_name = self.bucket_name + '-test-with-rate-limiter'
         key = self.random_key('.js')
@@ -592,10 +741,14 @@ class TestObject(TosTestBase):
                                                                                         rw_once_bytes, type))
 
         limiter = RateLimiter(1024 * 1024 * 5, 1024 * 1024 * 20)
-        self.client.put_object(bucket_name, key=key, content=content, data_transfer_listener=progress,
-                               rate_limiter=limiter)
+        self.client.put_object(bucket_name, key=key, content=content)
 
-        get_object_out = self.client.get_object(bucket_name, key=key, data_transfer_listener=progress)
+        get_object_out = self.client.get_object(bucket_name, key=key)
+
+        self.client.put_object(bucket_name, key + '1', content=get_object_out, data_transfer_listener=progress,
+                               rate_limiter=limiter)
+        get_object_out = self.client.get_object(bucket_name, key=key, data_transfer_listener=progress,
+                                                rate_limiter=limiter)
         self.assertEqual(get_object_out.read(), content)
 
     def test_put_object_acl(self):
@@ -613,6 +766,7 @@ class TestObject(TosTestBase):
         self.client.put_object_acl(bucket_name, key, owner=Owner("123", "test"), grants=grants)
 
         out = self.client.get_object_acl(bucket_name, key)
+        print(out)
 
     def test_put_with_md5(self):
         bucket_name = self.bucket_name + '-put-with-md5'
@@ -644,16 +798,24 @@ class TestObject(TosTestBase):
         tag_set = []
         tag_set.append(Tag(
             key='1',
-            value='1'
+            value='2'
+        ))
+        tag_set.append(Tag(
+            key='3',
+            value='4'
         ))
         put_out = self.client.put_object_tagging(bucket=bucket_name, key=key, tag_set=tag_set)
         self.assertIsNone(put_out.version_id)
 
         get_out = self.client.get_object_tagging(bucket=bucket_name, key=key)
+        self.assertIsNotNone(get_out.request_id)
         get_set = get_out.tag_set
-        self.assertTrue(len(get_set) == 1)
+        self.assertTrue(len(get_set) == 2)
         self.assertEqual(get_set[0].key, '1')
-        self.assertEqual(get_set[0].key, '1')
+        self.assertEqual(get_set[0].value, '2')
+
+        self.assertEqual(get_set[1].key, '3')
+        self.assertEqual(get_set[1].value, '4')
 
         delete_out = self.client.delete_object_tagging(bucket=bucket_name, key=key)
         self.assertIsNone(delete_out.version_id)
@@ -663,30 +825,30 @@ class TestObject(TosTestBase):
         self.client.delete_object(bucket=bucket_name, key=key)
         self.client.delete_bucket(bucket_name)
 
-    def test_list_object_v2(self):
-        bucket_name = self.bucket_name + '-test-list-object-with-case'
-        self.client.create_bucket(bucket_name)
-        self.bucket_delete.append(bucket_name)
-        for i in range(3):
-            for j in range(3):
-                for k in range(3):
-                    path = '{}/{}/{}'.format(i, j, k)
-                    self.client.put_object(bucket_name, path, content=b'1')
-
-        out_2 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2)
-        out_2_reverse = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
-                                                       reverse=True)
-        out_3 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
-                                               delimiter='/', continuation_token=out_2.next_continuation_token)
-
-        continuation_token = None
-        is_truncated = True
-        count = 0
-        while is_truncated:
-            out = self.client.list_objects_type2(bucket_name, continuation_token=continuation_token)
-            is_truncated = out.is_truncated
-            count += len(out.contents)
-        self.assertEqual(count, 27)
+    # def test_list_object_v2(self):
+    #     bucket_name = self.bucket_name + '-test-list-object-with-case'
+    #     self.client.create_bucket(bucket_name)
+    #     self.bucket_delete.append(bucket_name)
+    #     for i in range(3):
+    #         for j in range(3):
+    #             for k in range(3):
+    #                 path = '{}/{}/{}'.format(i, j, k)
+    #                 self.client.put_object(bucket_name, path, content=b'1')
+    #
+    #     out_2 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2)
+    #     out_2_reverse = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
+    #                                                    reverse=True)
+    #     out_3 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
+    #                                            delimiter='/', continuation_token=out_2.next_continuation_token)
+    #
+    #     continuation_token = None
+    #     is_truncated = True
+    #     count = 0
+    #     while is_truncated:
+    #         out = self.client.list_objects_type2(bucket_name, continuation_token=continuation_token)
+    #         is_truncated = out.is_truncated
+    #         count += len(out.contents)
+    #     self.assertEqual(count, 27)
 
     def test_fetch_object(self):
         bucket_name = self.bucket_name + '-fetch-object'
@@ -703,8 +865,10 @@ class TestObject(TosTestBase):
         fetch_out = self.client.fetch_object(bucket=bucket_name, key=key,
                                              url="https://{}.{}".format(bucket_fetch,
                                                                         self.endpoint) + '/' + object_name,
-                                             meta=meta)
+                                             meta=meta, acl=ACLType.ACL_Public_Read)
         out = self.client.get_object(bucket=bucket_name, key=key)
+        acl_out = self.client.get_object_acl(bucket_name, key)
+        self.assertEqual(acl_out.grants[0].permission, PermissionType.Permission_Read)
         get_out = self.client.get_object(bucket=bucket_name, key=key)
         get_out.meta['姓名'] = meta['姓名']
 
@@ -720,8 +884,8 @@ class TestObject(TosTestBase):
         self.client.put_object(bucket=bucket_fetch, key=key, acl=ACLType.ACL_Public_Read_Write)
         url = 'http://{}.{}'.format(bucket_fetch, self.endpoint) + '/' + key
         self.client.create_bucket(bucket=bucket_name)
-        out = self.client.put_fetch_task(bucket=bucket_name, key=key,
-                                         url=url)
+        out = self.client.put_fetch_task(bucket=bucket_name, key=key, url=url)
+        self.assertIsNotNone(out.task_id)
 
     def test_post_object(self):
         bucket_name = self.bucket_name + '-post-object'
@@ -756,6 +920,133 @@ class TestObject(TosTestBase):
                              files={"upload_file": open(file_name, 'rb')},
                              data=form2)
         self.assertEqual(resp.status_code, 403)
+
+    def test_wrapper_socket_io(self):
+        bucket_name = self.bucket_name + 'test-wrapper-crc'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        case = [True, False]
+        for i in case:
+            for j in case:
+                for k in case:
+                    print('init:{}, crc:{} use_data_transfer_listener: {}, ues_limiter: {}'.format("yes", i, j, k))
+                    self.wrapper_socket_io(True, i, j, k, bucket_name)
+
+    def test_wrapper(self):
+        bucket_name = self.bucket_name + 'test-wrapper-crc'
+        content = random_bytes(1024 * 1024 * 6)
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        case = [True, False]
+        # for i in case:
+        #     for j in case:
+        #         for k in case:
+        #             print('init:{}, crc:{} use_data_transfer_listener: {}, ues_limiter: {}'.format("yes", i, j, k))
+        #             self.wappper(True, i, j, k, bucket_name, content, reset_content=content)
+
+        file_name = self.random_filename()
+        with open(file_name, 'wb') as f:
+            f.write(content)
+        with open(file_name, 'rb') as f:
+            size = os.path.getsize(file_name)
+            body = tos.utils._make_upload_part_file_content(f, offset=1024, part_size=1024, size=size)
+            for i in case:
+                for j in case:
+                    for k in case:
+                        print('init:{}, crc:{} use_data_transfer_listener: {}, ues_limiter: {}'.format("yes", i, j, k))
+                        self.wappper(True, i, j, k, bucket_name, content[1024:2048], reset_content=content[1024:2048])
+
+
+
+    def wrapper_socket_io(self, init, crc, use_data_transfer_listener, ues_limiter, bucket_name):
+        def progress(consumed_bytes, total_bytes, rw_once_bytes,
+                     data_type: DataTransferType):
+            print("consumed_bytes:{0},total_bytes{1}, rw_once_bytes:{2}, type:{3}".format(consumed_bytes, total_bytes,
+                                                                                          rw_once_bytes, data_type))
+
+        data_transfer_listener = None
+        limiter = None
+        if use_data_transfer_listener:
+            data_transfer_listener = progress
+        if ues_limiter:
+            limiter = RateLimiter(1024 * 1024, 1024 * 1024 * 5)
+        if crc:
+            client = tos.TosClientV2(self.ak, self.sk, self.endpoint, self.region)
+        else:
+            client = tos.TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=False)
+        key = self.random_key('.js')
+        content = get_socket_io()
+        if init:
+            content = tos.utils.init_content(content)
+            self.assertTrue(isinstance(content, tos.utils._IterableAdapter))
+        if data_transfer_listener:
+            content = tos.utils.add_progress_listener_func(content, data_transfer_listener)
+            self.assertTrue(isinstance(content, tos.utils._IterableAdapter))
+        if limiter:
+            content = tos.utils.add_rate_limiter_func(content, limiter)
+            self.assertTrue(isinstance(content, tos.utils._IterableAdapter))
+        if crc:
+            content = tos.utils.add_crc_func(content)
+            self.assertTrue(isinstance(content, tos.utils._IterableAdapter))
+
+        self.assertTrue(hasattr(content, 'can_reset'))
+        self.assertEqual(content.can_reset, False)
+        out = client.put_object(bucket_name, key=key, content=content)
+        if crc:
+            self.assertEqual(out.hash_crc64_ecma, content.crc)
+        self.assertObjectContent(bucket_name, key, get_socket_io().read())
+
+    def wappper(self, init, crc, use_data_transfer_listener, ues_limiter, bucket_name, content, reset_content=None):
+
+        def progress(consumed_bytes, total_bytes, rw_once_bytes,
+                     data_type: DataTransferType):
+            print("consumed_bytes:{0},total_bytes{1}, rw_once_bytes:{2}, type:{3}".format(consumed_bytes, total_bytes,
+                                                                                          rw_once_bytes, data_type))
+
+        origin = content
+        data_transfer_listener = None
+        limiter = None
+        if use_data_transfer_listener:
+            data_transfer_listener = progress
+        if ues_limiter:
+            limiter = RateLimiter(1024 * 1024 * 3, 1024 * 1024 * 10)
+        if crc:
+            client = tos.TosClientV2(self.ak, self.sk, self.endpoint, self.region)
+        else:
+            client = tos.TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=False)
+        key = self.random_key('.js')
+        if init:
+            content = tos.utils.init_content(content)
+            self.assertTrue(isinstance(content, tos.utils._ReaderAdapter))
+            self.assertEqual(content.can_reset, True)
+        if data_transfer_listener:
+            content = tos.utils.add_progress_listener_func(content, data_transfer_listener)
+            self.assertTrue(isinstance(content, tos.utils._ReaderAdapter))
+            self.assertEqual(content.can_reset, True)
+        if limiter:
+            content = tos.utils.add_rate_limiter_func(content, limiter)
+            self.assertTrue(isinstance(content, tos.utils._ReaderAdapter))
+            self.assertEqual(content.can_reset, True)
+        if crc:
+            content = tos.utils.add_crc_func(content)
+            self.assertTrue(isinstance(content, tos.utils._ReaderAdapter))
+            self.assertEqual(content.can_reset, True)
+
+        self.assertTrue(hasattr(content, 'can_reset'))
+        self.assertEqual(content.can_reset, True)
+        out = client.put_object(bucket_name, key=key, content=content)
+        if limiter:
+            self.assertTrue(limiter._current_amount > 0)
+        if crc:
+            self.assertEqual(out.hash_crc64_ecma, content.crc)
+        self.assertObjectContent(bucket_name, key, origin)
+
+        if reset_content:
+            content.reset()
+            client.put_object(bucket_name, key, content=content)
+            if crc:
+                self.assertEqual(out.hash_crc64_ecma, content.crc)
+            self.assertObjectContent(bucket_name, key, reset_content)
 
     def random_key(self, suffix=''):
         key = self.prefix + random_string(12) + suffix
