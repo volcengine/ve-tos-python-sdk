@@ -358,7 +358,8 @@ def convert_list_object_versions_output(resp):
             size=get_value(object, 'Size', lambda x: int(x)),
             storage_class=StorageClassType(get_value(object, 'StorageClass')),
             version_id=get_value(object, 'VersionId'),
-            hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
+            hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
+            is_latest=get_value(object, "IsLatest", lambda x: bool(x))
         )
         owner_info = get_value(object, 'Owner')
         if owner_info:

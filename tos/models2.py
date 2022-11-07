@@ -7,7 +7,7 @@ from . import utils
 from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError, make_server_error_with_exception
-from .models import CommonPrefixInfo
+from .models import CommonPrefixInfo, DeleteMarkerInfo
 from .utils import (get_etag, get_value, meta_header_decode,
                     parse_gmt_time_to_utc_datetime,
                     parse_modify_time_to_utc_datetime)
@@ -191,7 +191,7 @@ class HeadObjectOutput(ResponseInfo):
         self.etag = get_etag(resp.headers)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
         self.sse_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
-        self.sse_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
+        self.sse_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-MD5")
         self.website_redirect_location = get_value(resp.headers, "x-tos-website-redirect-location")
         self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
         self.storage_class = StorageClassType(get_value(resp.headers, "x-tos-storage-class"))
@@ -406,9 +406,10 @@ class ListedCommonPrefix(object):
 
 class ListedObjectVersion(ListedObject):
     def __init__(self, key: str, last_modified: datetime, etag: str, size: int, storage_class: StorageClassType,
-                 hash_crc64_ecma, owner: Owner = None, version_id: str = None):
+                 hash_crc64_ecma, owner: Owner = None, version_id: str = None, is_latest: bool = None):
         super(ListedObjectVersion, self).__init__(key, last_modified, etag, size, storage_class, hash_crc64_ecma, owner)
         self.version_id = version_id
+        self.is_latest = is_latest
 
 
 class ListObjectVersionsOutput(ResponseInfo):
@@ -427,6 +428,72 @@ class ListObjectVersionsOutput(ResponseInfo):
         self.common_prefixes = []  # string list
         self.versions = []  # ListedObjectVersion list
         self.delete_markers = []  # DeleteMarkerInfo list
+
+        data = resp.json_read()
+        self.name = get_value(data, 'Name')
+        self.prefix = get_value(data, 'Prefix')
+        self.key_marker = get_value(data, 'KeyMarker')
+        self.version_id_marker = get_value(data, 'VersionIdMarker')
+        self.next_key_marker = get_value(data, 'NextKeyMarker')
+        self.next_version_id_marker = get_value(data, 'NextVersionIdMarker')
+        self.delimiter = get_value(data, 'Delimiter')
+        self.max_keys = get_value(data, 'MaxKeys', int)
+
+        if get_value(data, 'EncodingType'):
+            self.encoding_type = get_value(data, 'EncodingType')
+        else:
+            self.encoding_type = 'url'
+
+        if get_value(data, 'IsTruncated'):
+            self.is_truncated = get_value(data, 'IsTruncated', lambda x: bool(x))
+        else:
+            self.is_truncated = False
+
+        common_prefix_list = get_value(data, 'CommonPrefixes') or []
+        for common_prefix in common_prefix_list:
+            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix')))
+
+        object_list = get_value(data, 'Versions') or []
+        for object in object_list:
+            last_modified = get_value(object, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            object_info = ListedObjectVersion(
+                key=get_value(object, 'Key'),
+                last_modified=last_modified,
+                etag=get_etag(object),
+                size=get_value(object, 'Size', lambda x: int(x)),
+                storage_class=StorageClassType(get_value(object, 'StorageClass')),
+                version_id=get_value(object, 'VersionId'),
+                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
+                is_latest=get_value(object, "IsLatest", lambda x: bool(x))
+            )
+            owner_info = get_value(object, 'Owner')
+            if owner_info:
+                object_info.owner = Owner(
+                    get_value(owner_info, "ID"),
+                    get_value(owner_info, 'DisplayName')
+                )
+            self.versions.append(object_info)
+
+        delete_marker_list = get_value(data, 'DeleteMarkers') or []
+        for delete_marker in delete_marker_list:
+            last_modified = get_value(delete_marker, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            delete_marker_info = DeleteMarkerInfo(
+                get_value(delete_marker, 'Key'),
+                get_value(delete_marker, 'IsLatest', lambda x: bool(x)),
+                last_modified,
+                get_value(delete_marker, 'VersionId')
+            )
+            owner_info = get_value(delete_marker, 'Owner')
+            if owner_info:
+                delete_marker_info.owner = Owner(
+                    get_value(owner_info, "ID"),
+                    get_value(owner_info, 'DisplayName')
+                )
+            self.delete_markers.append(delete_marker_info)
 
 
 class Grants(object):
@@ -473,28 +540,35 @@ class SetObjectMetaOutput(ResponseInfo):
 
 
 class GetObjectOutput(HeadObjectOutput):
-    def __init__(self, resp, progress_callback=None, rate_limiter=None, enable_crc=False):
+    def __init__(self, resp, progress_callback=None, rate_limiter=None, enable_crc=False, discard=0):
         super(GetObjectOutput, self).__init__(resp)
+        self.enable_crc = enable_crc
         self.content_range = get_value(resp.headers, "content-range")
         self.content = resp
         if progress_callback:
-            self.content = utils.add_progress_listener_func(resp, progress_callback, self.content_length,
-                                                            download_operator=True)
+            self.content = utils.add_progress_listener_func(data=resp, progress_callback=progress_callback,
+                                                            size=self.content_length,
+                                                            download_operator=True, is_response=True)
         if rate_limiter:
-            self.content = utils.add_rate_limiter_func(self.content, rate_limiter)
+            self.content = utils.add_rate_limiter_func(data=self.content, rate_limiter=rate_limiter, size=self.content_length,
+                                                       is_response=True)
 
         if enable_crc:
-            self.content = utils.add_crc_func(data=self.content, size=self.content_length)
+            self.content = utils.add_crc_func(data=self.content, size=self.content_length, is_response=True)
 
     def read(self, amt=None):
         data = self.content.read(amt)
-        if self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
-            raise TosClientError('client crc is not equal to tos crc')
+        if not data:
+            if self.enable_crc and self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
+                raise TosClientError(
+                    'client crc:{} is not equal to tos crc:{}'.format(self.client_crc, self.hash_crc64_ecma))
         return data
 
     @property
     def client_crc(self):
-        return self.content.crc
+        if self.enable_crc:
+            return self.content.crc
+        return 0
 
     def __iter__(self):
         return self
@@ -507,8 +581,9 @@ class GetObjectOutput(HeadObjectOutput):
         if content:
             return content
         else:
-            if self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
-                raise TosClientError('client crc is not equal to tos crc')
+            if self.enable_crc and self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
+                raise TosClientError(
+                    'client crc:{} is not equal to tos crc:{}'.format(self.client_crc, self.hash_crc64_ecma))
             raise StopIteration
 
 
@@ -601,6 +676,7 @@ class ListMultipartUploadsOutput(ResponseInfo):
         self.delimiter = get_value(data, 'Delimiter')
         self.prefix = get_value(data, 'Prefix')
         self.max_uploads = get_value(data, 'MaxUploads', lambda x: int(x))
+        self.key_marker = get_value(data, 'KeyMarker')
         self.common_prefixes = []
         self.uploads = []
         if get_value(data, 'EncodingType'):
@@ -1142,8 +1218,8 @@ class GetBucketACLOutput(ResponseInfo):
             g = Grantee(
                 id=get_value(grant['Grantee'], 'ID'),
                 display_name=get_value(grant['Grantee'], 'DisplayName'),
-                type=get_value(grant['Grantee'], 'Type'),
-                canned=get_value(grant['Grantee'], 'Canned'),
+                type=get_value(grant['Grantee'], 'Type', lambda x: GranteeType(x)),
+                canned=get_value(grant['Grantee'], 'Canned', lambda x: CannedType(x)),
             )
             permission = PermissionType(get_value(grant, 'Permission'))
             self.grants.append(Grant(g, permission))

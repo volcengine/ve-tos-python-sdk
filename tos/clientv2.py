@@ -30,7 +30,6 @@ from .checkpoint import (CheckPointStore, _BreakpointDownloader,
 from .client import _make_virtual_host_url, _make_virtual_host_uri, _get_virtual_host, _get_host, _get_scheme
 from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
                      WHITE_LIST_FUNCTION)
-from .convertor import (convert_list_object_versions_output)
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType)
 from .exceptions import TosClientError, TosServerError
@@ -50,24 +49,25 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       PutObjectACLOutput, PutObjectOutput, SetObjectMetaOutput,
                       UploadFileOutput, UploadPartCopyOutput, UploadPartOutput,
                       _PartToDo, PutBucketCorsOutput, DeleteBucketCorsOutput, GetBucketCorsOutput,
-                      PutBucketMirrorBackOutPut, CustomDomainRule, PutBucketStorageClassOutput, GetBucketLocationOutput,
+                      PutBucketMirrorBackOutPut, PutBucketStorageClassOutput, GetBucketLocationOutput,
                       PutBucketLifecycleOutput, GetBucketLifecycleOutput, DeleteBucketLifecycleOutput,
                       GetBucketPolicyOutput, DeleteBucketPolicy, DeleteBucketMirrorBackOutput,
                       GetBucketMirrorBackOutput, PutBucketPolicyOutPut, PutObjectTaggingOutput, GetObjectTaggingOutPut,
                       DeleteObjectTaggingOutput, PutBucketACLOutput, GetBucketACLOutput, ContentLengthRange,
-                      ListObjectType2Output, ListObjectVersionsOutput, FetchObjectOutput, PutFetchTaskOutput,
-                      PreSignedPostSignatureOutPut, ListObjectsIterator)
+                      ListObjectVersionsOutput, FetchObjectOutput, PutFetchTaskOutput,
+                      PreSignedPostSignatureOutPut)
 from .utils import (SizeAdapter, _cal_upload_callback, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
                     _ReaderAdapter, generate_http_proxies, get_content_type,
                     get_parent_directory_from_File, get_value, init_content,
                     is_utf8_with_trigger, meta_header_encode, to_bytes, to_str,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
-                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo, gen_key, try_make_file_dir)
+                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo, gen_key,
+                    try_make_file_dir, _IterableAdapter)
 
 logger = logging.getLogger(__name__)
 _dns_cache = DnsCacheService()
-USER_AGENT = 'tos-python-sdk/{0}({1}/{2};{3})'.format(__version__, sys.platform, platform.machine(),
+USER_AGENT = 'tos-python-sdk/{0}({1}/{2};{3})'.format(__version__.__version__, sys.platform, platform.machine(),
                                                       platform.python_version())
 
 BASE_RETRY_DELAY_TIME = 500
@@ -147,11 +147,11 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
     if CopySourceIfUnmodifiedSince:
         headers['x-tos-copy-source-if-unmodified-since'] = CopySourceIfUnmodifiedSince.strftime(GMT_DATE_FORMAT)
     if SSECustomerAlgorithm:
-        headers['x-tos-server-side-encryption-customer-algorithm'] = SSECustomerAlgorithm
+        headers['x-tos-copy-source-server-side-encryption-customer-algorithm'] = SSECustomerAlgorithm
     if SSECustomerKey:
-        headers['x-tos-server-side-encryption-customer-key'] = SSECustomerKey
+        headers['x-tos-copy-source-server-side-encryption-customer-key'] = SSECustomerKey
     if SSECustomerKeyMD5:
-        headers['x-tos-server-side-encryption-customer-key-md5'] = SSECustomerKeyMD5
+        headers['x-tos-copy-source-server-side-encryption-customer-key-MD5'] = SSECustomerKeyMD5
     if server_side_encryption:
         headers['x-tos-server-side-encryption'] = server_side_encryption
     if website_redirect_location:
@@ -731,8 +731,8 @@ class TosClientV2(TosClient):
         :param expires: 过期时间（单位：秒），链接在当前时间再过expires秒后过期
         :param header: 需要签名的头部信息
         :param query: 需要签名的http查询参数
-        :param alternative_endpoint:
-        :return 签名url:如果该参数不为空，则声称的 signed url 使用该参数作为域名，而不是使用 TOS Client 初始化参数中的 endpoint
+        :param alternative_endpoint: 签名url:如果该参数不为空，则声称的 signed url 使用该参数作为域名，而不是使用 TOS Client 初始化参数中的 endpoint
+        :return
         """
         if not _is_valid_expires(expires):
             raise TosClientError('expires invalid')
@@ -962,7 +962,7 @@ class TosClientV2(TosClient):
 
         :param bucket: 桶名
         :param objects: 对象名
-        :param quiet: 版本号
+        :param quiet: 批删之后响应模式
         :return: DeleteObjectsOutput
         """
 
@@ -1079,7 +1079,7 @@ class TosClientV2(TosClient):
 
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params)
 
-        return convert_list_object_versions_output(resp)
+        return ListObjectVersionsOutput(resp)
 
     def put_object_acl(self, bucket: str, key: str,
                        version: str = None,
@@ -1214,21 +1214,16 @@ class TosClientV2(TosClient):
             if self.enable_crc:
                 content = utils.add_crc_func(content)
 
-        resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, data=content,
-                         headers=headers)
-
         try:
-
+            resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, data=content,
+                             headers=headers)
             result = PutObjectOutput(resp)
-            if data_transfer_listener:
-                data_transfer_listener(content.len, content.len, 0, DataTransferType.Data_Transfer_Succeed)
             if self.enable_crc:
                 if content:
                     utils.check_crc('put_object', content.crc, result.hash_crc64_ecma, result.request_id)
             return result
 
         except (TosClientError, TosServerError) as e:
-
             if data_transfer_listener:
                 data_transfer_listener(0, 0, 0, DataTransferType.Data_Transfer_Failed)
             raise e
@@ -1565,11 +1560,10 @@ class TosClientV2(TosClient):
             file_path = os.path.join(file_path, key)
             try_make_file_dir(file_path)
 
-
         with open(file_path, 'wb') as f:
             shutil.copyfileobj(result, f)
 
-            return result
+        return result
 
     def create_multipart_upload(self, bucket: str, key: str,
                                 encoding_type: str = None,
@@ -1967,7 +1961,7 @@ class TosClientV2(TosClient):
         :param content_length: 消息体的长度
         :param content: 内容
         :param data_transfer_listener: 进度条
-        :param rate_limiter: 限速度
+        :param rate_limiter: 限速
         :return: UploadPartOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -2217,41 +2211,41 @@ class TosClientV2(TosClient):
 
         return DeleteBucketCorsOutput(resp)
 
-    def list_objects_type2(self, bucket: str,
-                           prefix: str = None,
-                           delimiter: str = None,
-                           start_after: str = None,
-                           continuation_token: str = None,
-                           reverse: bool = None,
-                           max_keys: int = 1000,
-                           encoding_type: str = None,
-                           list_only_once: bool = False) -> ListObjectType2Output:
-        """ 列举 bucket 中所有 objects 信息
-
-        :param bucket: 桶名
-        :param prefix: 前缀
-        :param delimiter: 分组字符
-        :param start_after: 设置从 start_after 之后按字典序开始返回 Object
-        :param continuation_token: 指定list操作需要从此token开始
-        :param reverse: 是否反转
-        :param max_keys: 指定每次返回 object 的最大数量
-        :param encoding_type: 返回key编码类型
-        :param list_only_once: 是否只列举一次
-        :return: ListObjectType2Output
-        """
-        params = _get_list_object_v2_params(delimiter, start_after, continuation_token, reverse, max_keys,
-                                            encoding_type, prefix)
-
-        if list_only_once:
-            resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params)
-            return ListObjectType2Output(resp)
-
-        iterator = ListObjectsIterator(self._req, max_keys, bucket=bucket, method=HttpMethodType.Http_Method_Get.value,
-                                       params=params, func='list_objects_type2')
-        result_arr = []
-        for iterm in iterator:
-            result_arr.append(iterm)
-        return result_arr.pop(0).combine(result_arr)
+    # def list_objects_type2(self, bucket: str,
+    #                        prefix: str = None,
+    #                        delimiter: str = None,
+    #                        start_after: str = None,
+    #                        continuation_token: str = None,
+    #                        reverse: bool = None,
+    #                        max_keys: int = 1000,
+    #                        encoding_type: str = None,
+    #                        list_only_once: bool = False) -> ListObjectType2Output:
+    #     """ 列举 bucket 中所有 objects 信息
+    #
+    #     :param bucket: 桶名
+    #     :param prefix: 前缀
+    #     :param delimiter: 分组字符
+    #     :param start_after: 设置从 start_after 之后按字典序开始返回 Object
+    #     :param continuation_token: 指定list操作需要从此token开始
+    #     :param reverse: 是否反转
+    #     :param max_keys: 指定每次返回 object 的最大数量
+    #     :param encoding_type: 返回key编码类型
+    #     :param list_only_once: 是否只列举一次
+    #     :return: ListObjectType2Output
+    #     """
+    #     params = _get_list_object_v2_params(delimiter, start_after, continuation_token, reverse, max_keys,
+    #                                         encoding_type, prefix)
+    #
+    #     if list_only_once:
+    #         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params)
+    #         return ListObjectType2Output(resp)
+    #
+    #     iterator = ListObjectsIterator(self._req, max_keys, bucket=bucket, method=HttpMethodType.Http_Method_Get.value,
+    #                                    params=params, func='list_objects_type2')
+    #     result_arr = []
+    #     for iterm in iterator:
+    #         result_arr.append(iterm)
+    #     return result_arr.pop(0).combine(result_arr)
 
     def put_bucket_storage_class(self, bucket: str,
                                  storage_class: StorageClassType) -> PutBucketStorageClassOutput:
@@ -2606,6 +2600,10 @@ class TosClientV2(TosClient):
                       headers=headers)
         auth.sign_request(req)
 
+        # 对于使用流方式的对象, 删除header中的 host 元素
+        if isinstance(data, _IterableAdapter):
+            del headers['Host']
+
         if 'User-Agent' not in req.headers:
             req.headers['User-Agent'] = USER_AGENT
 
@@ -2863,4 +2861,4 @@ def _is_func_can_retry(method, fun_name,
 def _is_wrapper_data(data):
     if data is None:
         return False
-    return isinstance(data, _ReaderAdapter) or isinstance(data, SizeAdapter)
+    return isinstance(data, _ReaderAdapter) or isinstance(data, SizeAdapter) or isinstance(data, _IterableAdapter)

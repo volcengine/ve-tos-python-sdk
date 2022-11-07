@@ -12,6 +12,7 @@ from tos.models2 import PostSignatureCondition, ContentLengthRange
 
 class TestAuth(TosTestCase):
     maxDiff = None
+
     def test_generate_presigned_url(self):
         datetime_mock = mock.Mock(wraps=datetime.datetime)
         datetime_mock.utcnow.return_value = datetime.datetime(2021, 1, 1)
@@ -81,6 +82,11 @@ class TestAuth(TosTestCase):
                              'l=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Expires=36'
                              '00&X-Tos-SignedHeaders=host&X-Tos-Security-Token=sts&X-Tos-Signature=3041fb481e31ec25f'
                              'e7a1be44cafe25caf1cd97228710ee440b2ca1bd49bc563')
+            url = tos_cli.pre_signed_url(http_method=HttpMethodType.Http_Method_Put, bucket='bkt', key='key',
+                                         expires=1234, header={'contentLength': 1000})
+            self.assertTrue('1234' in url.signed_url)
+            self.assertTrue('contentlength' in url.signed_url)
+            url.signed_header['contentLength'] = 1000
 
     def test_pre_signed_post_signature(self):
         datetime_mock = mock.Mock(wraps=datetime.datetime)

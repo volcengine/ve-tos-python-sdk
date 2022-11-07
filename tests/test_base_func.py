@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
-
+import http
 import os
 import time
 import unittest
 from io import StringIO
-
+import http.client as httplib
 import requests
 from requests.exceptions import RetryError
 from urllib3.exceptions import NewConnectionError
 
 import tos
-from tos import DnsCacheService, RateLimiter, exceptions
+from tos import DnsCacheService, RateLimiter, exceptions, utils
 from tos.checkpoint import CancelHook
 from tos.clientv2 import _handler_retry_policy, _is_wrapper_data
 from tos.exceptions import TosServerError, CancelNotWithAbortError, CancelWithAbortError
@@ -141,6 +141,31 @@ class BaseFuncTestCase(unittest.TestCase):
         req = TestResponse(3, io)
         for content in req:
             print(content)
+
+    def test_with_endpint(self):
+        client = tos.TosClientV2(self.ak, self.sk, self.endpoint, self.region)
+        self.assertEqual(client.endpoint, "https://" + self.endpoint)
+        self.assertEqual(client.scheme, "https://")
+        self.assertEqual(client.host, self.endpoint)
+
+        client_2 = tos.TosClientV2(self.ak, self.sk, 'http://' + self.endpoint, self.region)
+        self.assertEqual(client_2.endpoint, "http://" + self.endpoint)
+        self.assertEqual(client_2.host, self.endpoint)
+        self.assertEqual(client_2.scheme, "http://")
+
+        client = tos.TosClientV2(self.ak, self.sk, "", "cn-beijing")
+        self.assertEqual(client.endpoint, 'https://' + 'tos-cn-beijing.volces.com')
+        self.assertEqual(client.host, 'tos-cn-beijing.volces.com')
+        self.assertEqual(client.scheme, 'https://')
+
+        client = tos.TosClientV2(self.ak, self.sk, "tos-cn-beijing.ivolces.com", "cn-beijing")
+        self.assertEqual(client.endpoint, 'https://' + 'tos-cn-beijing.ivolces.com')
+        self.assertEqual(client.host, 'tos-cn-beijing.ivolces.com')
+        self.assertEqual(client.scheme, 'https://')
+
+    def test_with_invalid_endpint(self):
+        with self.assertRaises(tos.exceptions.TosClientError):
+            tos.TosClientV2(self.ak, self.sk, 'tos-s3-cn-beijing.volces.com', self.region)
 
 
 class args(object):

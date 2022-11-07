@@ -81,7 +81,6 @@ class TestUploadAndDownload(TosTestBase):
     def test_threaded_larger_part_size(self):
         bucket_name = self.bucket_name + 'upload-threaded-larger-part-size'
         self.__test_normal(bucket_name, 50 * 1024 * 1023, thread_num=11)
-        time.sleep(10)
 
     def test_download_fail_fist_part(self):
         bucket_name = self.bucket_name + 'download-fail-fist-part'
@@ -106,6 +105,38 @@ class TestUploadAndDownload(TosTestBase):
         key, content, filename_upload, filename_download = self.__prepare(40 * 1024 * 1025)
         self.__test_resume_upload(bucket_name, key, filename_upload, 40 * 1024 * 1025, content, [2])
         self.__test_resume_download(bucket_name, key, filename_download, 40 * 1024 * 1025, content, [2])
+
+    def test_download(self):
+        bucket_name = self.bucket_name + 'download-dir'
+        cwd = os.getcwd()
+        key = self.random_key('.txt')
+        content = random_bytes(1024 * 1024 * 5)
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        file_name = self.random_filename()
+        with open(file_name, 'wb') as f:
+            f.write(content)
+        self.client.put_object_from_file(bucket_name, key, file_name)
+        self.client.download_file(bucket_name, key, cwd + '/test.txt')
+        self.assertFileContent(cwd + '/test.txt', content)
+
+        content = content + b'1'
+        self.client.put_object(bucket_name, key, content=content)
+        self.client.download_file(bucket_name, key, cwd + '/test.txt')
+        self.assertFileContent(cwd + '/test.txt', content)
+        os.remove(cwd + '/test.txt')
+
+        self.client.download_file(bucket_name, key, cwd + '/test/f1')
+        self.assertFileContent(cwd + '/test/f1', content)
+
+        self.client.download_file(bucket_name, key, cwd + '/dir1/')
+        self.assertFileContent(cwd + '/dir1/' + key, content)
+        os.remove(cwd + '/dir1/' + key)
+
+        key = key + '/'
+        self.client.put_object(bucket_name, key, content=content)
+        self.client.download_file(bucket_name, key, cwd + '/dir3/')
+        self.assertTrue(os.path.isdir(cwd + '/dir3/' + key))
 
     def __test_normal(self, bucket_name, file_size, part_size=5 * 1024 * 1024 + 1, thread_num=3):
         def percentage(consumed_bytes, total_bytes, rw_once_bytes,
