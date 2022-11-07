@@ -7,6 +7,7 @@ import os
 import random
 import re
 import string
+import time
 import unittest
 
 from requests.structures import CaseInsensitiveDict
@@ -60,6 +61,9 @@ class TosTestBase(unittest.TestCase):
         self.prefix = random_string(12)
         self.bucket_delete = []
         self.temp_files = []
+        self.sseKey = "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M="
+        self.sseKeyMd5 = "ACdH+Fu9K3HlXdIUBu8GdA=="
+        self.sseAlg = "AES256"
 
     def setUp(self):
         self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2)
@@ -167,7 +171,7 @@ def clean_and_delete_bucket(tos_client: tos.TosClientV2, bucket: str):
         truncated = rsp.is_truncated
 
         for obj in rsp.versions:
-            tos_client.delete_object(bucket=bucket, key=obj.key, version_id=obj.version_id)
+            tos_client.delete_object(bucket, obj.key, obj.version_id)
 
         for obj in rsp.delete_markers:
             tos_client.delete_object(bucket=bucket, key=obj.key, version_id=obj.version_id)
@@ -180,6 +184,7 @@ def clean_and_delete_bucket(tos_client: tos.TosClientV2, bucket: str):
         for upload in rsp.uploads:
             tos_client.abort_multipart_upload(bucket=bucket, key=upload.key, upload_id=upload.upload_id)
 
+    time.sleep(1)
     tos_client.delete_bucket(bucket=bucket)
 
 
