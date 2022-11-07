@@ -11,13 +11,14 @@ from urllib.parse import quote_plus, unquote_to_bytes
 import crcmod as crcmod
 import pytz
 import six
+from pytz import unicode
 
-from .exceptions import TosServerError, TosClientError
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
                      MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
                      CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT)
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
+from .exceptions import TosClientError
 from .mine_type import TYPES_MAP
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def generate_http_proxies(ip: str, port: int, user_name: str = None, password: s
         # 返回  "http": "http://{user_name}:{password}@{ip}:{port}/"
         proxy = "http://{0}:{1}@{2}:{3}/".format(user_name, password, ip, port)
 
-    return {'http': proxy, 'https': proxy}
+    return {'http': proxy}
 
 
 def _make_copy_source(src_bucket, src_key, src_version_id):
@@ -439,7 +440,7 @@ class _ReaderAdapter(object):
             return 0
 
     def reset(self):
-        if self.can_reset:
+        if self.can_reset and self.size != -1:
             self.offset = 0
             if self.crc_callback:
                 self.crc_callback = self.crc_callback.reset()
@@ -453,12 +454,64 @@ class _ReaderAdapter(object):
             return self.progress_callback
         elif isinstance(self.data, _ReaderAdapter):
             return self.data.get_progress()
-
         return None
 
 
+# 只对上传时会将网络流包装成 _IterableAdapter 适配器
+class _IterableAdapter(object):
+    def __init__(self, data, progress_callback=None, crc_callback=None, limiter_callback=None, download_operator=False,
+                 can_reset=False):
+        self.iter = iter(data)
+        self.progress_callback = progress_callback
+        self.crc_callback = crc_callback
+        self.limiter_callback = limiter_callback
+        self.download_operator = download_operator
+        self.can_reset = False
+        self.offset = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return self.next()
+
+    def next(self):
+        if self.offset == 0:
+            _cal_progress_callback(self.progress_callback, self.offset, -1, 0,
+                                   DataTransferType.Data_Transfer_Started)
+        try:
+            content = next(self.iter)
+        except Exception as e:
+            _cal_progress_callback(self.progress_callback, self.offset, self.offset, 0,
+                                   DataTransferType.Data_Transfer_Succeed)
+            raise
+        size = len(content)
+        _cal_progress_callback(self.progress_callback, self.offset, -1, size,
+                               DataTransferType.Data_Transfer_RW)
+
+        _cal_crc_callback(self.crc_callback, content)
+
+        _cal_rate_limiter_callback(self.limiter_callback, size)
+        self.offset = self.offset + size
+        return content
+
+    def get_progress(self):
+        if self.progress_callback:
+            return self.progress_callback
+        elif isinstance(self.iter, _ReaderAdapter):
+            return self.iter.get_progress()
+        return None
+
+    @property
+    def crc(self):
+        if self.crc_callback:
+            return self.crc_callback.crc
+        else:
+            return 0
+
+
 def init_content(data, can_reset=None, init_offset=None):
-    if isinstance(data, _ReaderAdapter):
+    if isinstance(data, _ReaderAdapter) or isinstance(data, _IterableAdapter):
         return data
 
     if can_reset is True:
@@ -476,58 +529,78 @@ def init_content(data, can_reset=None, init_offset=None):
     return add_Background_func(data, can_reset=False)
 
 
-def add_Background_func(data, size=None, can_reset=False, init_offset=None):
+def add_Background_func(data, can_reset=False, init_offset=None, size=None):
     data = to_bytes(data)
     if size is None:
         size = _get_size(data)
-    return _ReaderAdapter(data, size=size, can_reset=can_reset, init_offset=init_offset)
+    if size is None and hasattr(data, '__iter__'):
+        return _IterableAdapter(data, can_reset=False)
+    elif size:
+        return _ReaderAdapter(data, size=size, can_reset=can_reset, init_offset=init_offset)
+    raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
 
 
-def add_progress_listener_func(data, progress_callback, size=None, download_operator=False, can_reset=False,
-                               init_offset=None):
+def add_progress_listener_func(data, progress_callback, download_operator=False, can_reset=False,
+                               init_offset=None, size=None, is_response=False):
     """
     向data添加进度条监控功能，通过adapter模式实现
     """
     data = to_bytes(data)
-
     if size is None:
         size = _get_size(data)
+    if size is None and hasattr(data, '__iter__'):
+        return _IterableAdapter(data, progress_callback=progress_callback, can_reset=False)
+    elif size or is_response:
+        return _ReaderAdapter(data=data, progress_callback=progress_callback, size=size,
+                              download_operator=download_operator, can_reset=can_reset, init_offset=init_offset)
+    raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
 
-    return _ReaderAdapter(data=data, progress_callback=progress_callback, size=size,
-                          download_operator=download_operator, can_reset=can_reset, init_offset=init_offset)
 
-
-def add_rate_limiter_func(data, rate_limiter, can_reset=False, init_offset=None):
+def add_rate_limiter_func(data, rate_limiter, size=None, can_reset=False, init_offset=None, is_response=False):
     """
     返回一个适配器，从而在读取、上传 'data'时，能够通过令牌桶算法进行限速
     """
     data = to_bytes(data)
+    if size is None:
+        size = _get_size(data)
+    if size is None and hasattr(data, '__iter__'):
+        return _IterableAdapter(data, limiter_callback=rate_limiter, can_reset=False)
+    elif size or is_response:
+        return _ReaderAdapter(data=data, limiter_callback=rate_limiter, size=size, can_reset=can_reset,
+                              init_offset=init_offset)
+    raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
 
-    return _ReaderAdapter(data=data, limiter_callback=rate_limiter, size=_get_size(data), can_reset=can_reset,
-                          init_offset=init_offset)
 
-
-def add_crc_func(data, init_crc=0, discard=0, size=None, can_reset=False):
+def add_crc_func(data, init_crc=0, discard=0, size=None, can_reset=False, is_response=False):
     """
     向data中添加crc计算功能，实现上传和下载对象后得到本地对象crc计算值
     """
     data = to_bytes(data)
     if size is None:
         size = _get_size(data)
-
-    return _ReaderAdapter(data, size=size, crc_callback=Crc64(init_crc), can_reset=can_reset)
+    if size is None and hasattr(data, '__iter__'):
+        return _IterableAdapter(data, crc_callback=Crc64(init_crc), can_reset=False)
+    elif size or is_response:
+        return _ReaderAdapter(data, size=size, crc_callback=Crc64(init_crc), can_reset=can_reset)
+    raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
 
 
 def _get_size(data):
-    if hasattr(data, '__len__'):
-        return len(data)
+    if hasattr(data, '__len__') or hasattr(data, 'len') or (hasattr(data, 'seek') and hasattr(data, 'tell')) or hasattr(
+            data, 'read'):
+        if hasattr(data, '__len__'):
+            return len(data)
 
-    if hasattr(data, 'len'):
-        return data.len
+        if hasattr(data, 'len'):
+            return data.len
 
-    if hasattr(data, 'seek') and hasattr(data, 'tell'):
-        return file_bytes_to_read(data)
-
+        # 具备 seek 和 tell 方法有可能为文件，也可能为网络流， 因此需调用 file_byte_to_read 方法尝试读取长度
+        # 抛出异常说明为网络流
+        try:
+            if hasattr(data, 'seek') and hasattr(data, 'tell'):
+                return file_bytes_to_read(data)
+        except:
+            return None
     return None
 
 
@@ -959,4 +1032,3 @@ class MergeProcess(object):
                 self.count += 1
                 if self.count == self.taskNum:
                     self.process(self.consumed_bytes, self.totalBytes, 0, DataTransferType.Data_Transfer_Succeed)
-

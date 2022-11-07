@@ -16,7 +16,6 @@ from requests.adapters import HTTPAdapter
 from requests.structures import CaseInsensitiveDict
 
 from . import __version__
-
 from . import exceptions
 from .consts import (CONNECT_TIMEOUT, EMPTY_SHA256_HASH, GMT_DATE_FORMAT,
                      PAYLOAD_BUFFER)
@@ -130,8 +129,8 @@ class TosClient():
     def __init__(self, auth, endpoint, connect_timeout=None, connection_pool_size=10, recognize_content_type=True):
         self.auth = auth
         self.endpoint = _format_endpoint(_if_map(auth.region, endpoint))
-        self.host = _get_host(endpoint)
-        self.scheme = _get_scheme(endpoint)
+        self.host = _get_host(self.endpoint)
+        self.scheme = _get_scheme(self.endpoint)
         self.timeout = connect_timeout or CONNECT_TIMEOUT
         self.recognize_content_type = recognize_content_type
 

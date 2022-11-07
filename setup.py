@@ -15,10 +15,10 @@ AUTHOR = 'sunyushan'
 # 项目运行需要的依赖
 REQUIRES = [
     'Deprecated>=1.2.13,<2.0.0',
-    'pytz>=2013.6,<2022.1',
+    'pytz',
     "requests>=2.19.1,<2.26.0",
     'crcmod>=1.7',
-    'six==1.16.0',
+    'six',
 ]
 
 # 开发、测试过程中需要的依赖
@@ -56,6 +56,7 @@ setup(
         'Programming Language :: Python :: 3.6',
         'Programming Language :: Python :: 3.7',
         'Programming Language :: Python :: 3.8',
+        'Programming Language :: Python :: 3.9',
     ],
     keywords='boilerplate',
     packages=find_packages(exclude=['docs', 'tests']),
