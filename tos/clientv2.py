@@ -1801,7 +1801,9 @@ class TosClientV2(TosClient):
                                        task_num=task_num, parts_to_update=parts, upload_id=upload_id,
                                        record=record, datatransfer_listener=data_transfer_listener,
                                        upload_event_listener=upload_event_listener, cancel_hook=cancel_hook,
-                                       rate_limiter=rate_limiter, size=size)
+                                       rate_limiter=rate_limiter, size=size, ssec_algorithm=ssec_algorithm,
+                                       ssec_key=ssec_key, ssec_key_md5=ssec_key_md5,
+                                       server_side_encryption=server_side_encryption)
 
         result = uploader.upload()
 
@@ -1930,7 +1932,8 @@ class TosClientV2(TosClient):
                                            task_num=task_num, parts_to_download=parts, record=record, etag=result.etag,
                                            datatransfer_listener=data_transfer_listener,
                                            download_event_listener=download_event_listener, rate_limiter=rate_limiter,
-                                           cancel_hook=cancel_hook, size=result.content_length)
+                                           cancel_hook=cancel_hook, size=result.content_length,
+                                           ssec_algorithm=ssec_algorithm, ssec_key=ssec_key, ssec_key_md5=ssec_key_md5)
 
         downloader.download(result.hash_crc64_ecma)
 

@@ -1,7 +1,11 @@
 TOS SDK for Python 版本记录
 ===========================
 
-Version 2.4.0
+Version 2.4.2
+-------------
+- 增加：upload_file 和 download_file 支持加密
+- 增加：自定义域名预签名
+Version 2.4.1
 -------------
 - 增加：ListObjectsType2 接口
 - 增加：桶生命周期相关接口
