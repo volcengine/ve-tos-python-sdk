@@ -113,7 +113,9 @@ class _BreakpointUploader(object):
     def __init__(self, client, bucket, key, file_path: str, store: CheckPointStore, task_num: int,
                  parts_to_update, upload_id, record: Dict,
                  datatransfer_listener=None, upload_event_listener=None,
-                 rate_limiter=None, cancel_hook=None, size=None):
+                 rate_limiter=None, cancel_hook=None, size=None,
+                 ssec_algorithm=None, ssec_key=None, ssec_key_md5=None,
+                 server_side_encryption=None):
 
         self.client = client
         self.bucket = bucket
@@ -123,6 +125,10 @@ class _BreakpointUploader(object):
         self.cancel_hook = cancel_hook
         self.parts_to_update = parts_to_update
         self.datatransfer_listener = datatransfer_listener
+        self.ssec_algorithm = ssec_algorithm
+        self.ssec_key = ssec_key
+        self.ssec_key_md5 = ssec_key_md5
+        self.server_side_encryption = server_side_encryption
         need_bytes = 0
         for part in self.parts_to_update:
             need_bytes += part.size
@@ -208,7 +214,10 @@ class _BreakpointUploader(object):
                                                  content=SizeAdapter(f, part.size, init_offset=part.start,
                                                                      can_reset=True),
                                                  data_transfer_listener=self.datatransfer_listener,
-                                                 rate_limiter=self.rate_limiter)
+                                                 rate_limiter=self.rate_limiter,
+                                                 ssec_algorithm=self.ssec_algorithm,
+                                                 ssec_key=self.ssec_key,
+                                                 ssec_key_md5=self.ssec_key_md5)
 
             except (TosClientError, TosServerError) as e:
 
@@ -245,7 +254,8 @@ class _BreakpointDownloader(object):
     def __init__(self, client, bucket, key, file_path: str, store: CheckPointStore, task_num: int,
                  parts_to_download, record: Dict, etag,
                  datatransfer_listener=None, download_event_listener=None,
-                 rate_limiter=None, cancel_hook=None, version_id=None, size=None):
+                 rate_limiter=None, cancel_hook=None, version_id=None, size=None,
+                 ssec_algorithm=None, ssec_key=None, ssec_key_md5=None):
         self.client = client
         self.bucket = bucket
         self.key = key
@@ -256,6 +266,9 @@ class _BreakpointDownloader(object):
         self.datatransfer_listener = datatransfer_listener
         self.download_event_listener = download_event_listener
         self.rate_limiter = rate_limiter
+        self.ssec_algorithm = ssec_algorithm
+        self.ssec_key = ssec_key
+        self.ssec_key_md5 = ssec_key_md5
         self.cancel_hook = cancel_hook
         self.parts_to_download = parts_to_download
         need_bytes = 0
@@ -344,7 +357,10 @@ class _BreakpointDownloader(object):
                 content = self.client.get_object(bucket=self.bucket, key=self.key, range_start=part.start,
                                                  range_end=part.end - 1, if_match=self.etag,
                                                  data_transfer_listener=self.datatransfer_listener,
-                                                 rate_limiter=self.rate_limiter)
+                                                 rate_limiter=self.rate_limiter,
+                                                 ssec_algorithm=self.ssec_algorithm,
+                                                 ssec_key=self.ssec_key,
+                                                 ssec_key_md5=self.ssec_key_md5)
                 utils.copy_and_verify_length(content, f, part.end - part.start, request_id=content.request_id)
                 if self.client.enable_crc:
                     part.part_crc = content.content.crc

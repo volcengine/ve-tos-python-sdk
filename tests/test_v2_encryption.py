@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+import os
 import unittest
 
 from tests.common import TosTestBase, random_bytes
@@ -57,6 +57,26 @@ class TestEncryption(TosTestBase):
 
         self.client.put_object(bucket_name, key, content=content, server_side_encryption=self.sseAlg)
         out = self.client.get_object(bucket_name, key)
+
+    def test_upload_download_with_encryption(self):
+        bucket_name = self.bucket_name + '-upload-file-with-customer-encryption'
+        key = self.random_key('.js')
+        file_name = self.random_filename()
+        file_download = self.random_filename()
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name)
+        content = random_bytes(1024 * 1024 * 6)
+        with open(file_name, 'wb') as f:
+            f.write(content)
+
+        self.client.upload_file(bucket_name, key, file_name, ssec_algorithm=self.sseAlg, ssec_key=self.sseKey,
+                                ssec_key_md5=self.sseKeyMd5)
+        self.client.download_file(bucket_name, key, file_download, ssec_key=self.sseKey, ssec_algorithm=self.sseAlg,
+                                  ssec_key_md5=self.sseKeyMd5)
+        self.assertFileContent(file_download, content)
+
+        with self.assertRaises(TosServerError):
+            self.client.download_file(bucket_name, key, file_download)
 
 
 if __name__ == '__main__':
