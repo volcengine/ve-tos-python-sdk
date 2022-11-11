@@ -121,6 +121,8 @@ def _make_virtual_host_url(host, scheme, bucket=None, key=None):
         url = '{0}.{1}/{2}'.format(bucket, host, quote(key, '/~'))
     elif bucket and not key:
         url = '{0}.{1}'.format(bucket, host)
+    elif key:
+        url = '{0}/{1}'.format(host, quote(key, '/~'))
 
     return _format_endpoint(scheme + url)
 
