@@ -20,7 +20,7 @@ class StorageClassType(Enum):
     Storage_Class_Standard = "STANDARD"
     # 低频访问存储
     Storage_Class_Ia = "IA"
-
+    # 归档闪回存储
     Storage_Class_Archive_Fr = 'ARCHIVE_FR'
 
 
@@ -96,3 +96,34 @@ class RedirectType(Enum):
 class StatusType(Enum):
     Status_Enable = 'Enabled'
     Status_Disable = 'Disabled'
+
+
+class StorageClassInheritDirectiveType(Enum):
+    Storage_Class_ID_Destination_Bucket = 'DESTINATION_BUCKET'
+    Storage_Class_ID_Source_Object = 'SOURCE_OBJECT'
+
+
+class VersioningStatusType(Enum):
+    Versioning_Status_Enabled = 'Enabled'
+    Versioning_Status_Suspended = 'Suspended'
+
+
+class ProtocolType(Enum):
+    Protocol_Http = 'http'
+    Protocol_Https = 'https'
+
+
+class CertStatus(Enum):
+    Cert_Status_Bound = 'CertBound'
+    Cert_Status_Unbound = 'CertUnbound'
+    Cert_Status_Expired = 'CertExpired'
+
+
+class CopyEventType(Enum):
+    Copy_Event_Create_Multipart_Upload_Succeed = 1
+    Copy_Event_Create_Multipart_Upload_Failed = 2
+    Copy_Event_Create_Part_Copy_Succeed = 3
+    Copy_Event_Create_Part_Copy_Failed = 4
+    Copy_Event_Create_Part_Copy_Aborted = 5
+    Copy_Event_Completed_Multipart_Upload_Succeed = 6
+    Copy_Event_Completed_Multipart_Upload_Failed = 7

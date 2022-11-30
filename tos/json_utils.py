@@ -1,5 +1,6 @@
 from .consts import LAST_MODIFY_TIME_DATE_FORMAT
-from .models2 import Owner
+from .models2 import Owner, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, CustomDomainRule, \
+    RealTimeLogConfiguration
 from .utils import check_enum_type
 
 
@@ -77,8 +78,6 @@ def to_put_bucket_mirror_back(rules: []):
             info['Condition'] = {}
             if rule.condition.http_code:
                 info['Condition']['HttpCode'] = rule.condition.http_code
-            if rule.condition.object_key_prefix:
-                info['Condition']['ObjectKeyPrefix'] = rule.condition.object_key_prefix
         if rule.redirect:
             info['Redirect'] = {}
             if rule.redirect.redirect_type:
@@ -211,4 +210,165 @@ def to_fetch_object(url: str, object: str = None, ignore_same_key=None, content_
     if content_md5:
         info['ContentMD5'] = content_md5
 
+    return info
+
+
+def to_put_replication(role: str, rules: []):
+    info = {}
+    if role:
+        info['Role'] = role
+    r = []
+    for rule in rules:
+        data = {}
+        if rule.id:
+            data['ID'] = rule.id
+        if rule.status:
+            data['Status'] = rule.status.value
+        if rule.prefix_set:
+            data['PrefixSet'] = rule.prefix_set
+        if rule.destination:
+            data['Destination'] = {}
+            if rule.destination.bucket:
+                data['Destination']['Bucket'] = rule.destination.bucket
+            if rule.destination.location:
+                data['Destination']['Location'] = rule.destination.location
+            if rule.destination.storage_class:
+                data['Destination']['StorageClass'] = rule.destination.storage_class.value
+            if rule.destination.storage_class_inherit_directive:
+                data['Destination'][
+                    'StorageClassInheritDirective'] = rule.destination.storage_class_inherit_directive.value
+        if rule.historical_object_replication:
+            data['HistoricalObjectReplication'] = rule.historical_object_replication.value
+        if rule.progress:
+            data['Progress'] = {}
+            if rule.progress.historical_object:
+                data['Progress']['HistoricalObject'] = rule.progress.historical_object
+            if rule.progress.new_object:
+                data['Progress']['NewObject'] = rule.progress.new_object
+
+        r.append(data)
+    info['Rules'] = r
+    return info
+
+
+def to_put_bucket_website(redirect_all_requests_to: RedirectAllRequestsTo,
+                          index_document: IndexDocument, error_document: ErrorDocument, routing_rules: RoutingRules):
+    info = {}
+    if redirect_all_requests_to:
+        info['RedirectAllRequestsTo'] = {}
+        if redirect_all_requests_to.host_name:
+            info['RedirectAllRequestsTo']['HostName'] = redirect_all_requests_to.host_name
+        if redirect_all_requests_to.protocol:
+            info['RedirectAllRequestsTo']['Protocol'] = redirect_all_requests_to.protocol
+    if index_document:
+        info['IndexDocument'] = {}
+        if index_document.suffix:
+            info['IndexDocument']['Suffix'] = index_document.suffix
+        if index_document.forbidden_sub_dir:
+            info['IndexDocument']['ForbiddenSubDir'] = index_document.forbidden_sub_dir
+
+    if error_document:
+        info['ErrorDocument'] = {}
+        if error_document.key:
+            info['ErrorDocument']['Key'] = error_document.key
+
+    if routing_rules:
+        info['RoutingRules'] = []
+        if routing_rules.rules and len(routing_rules.rules) > 0:
+            for rule in routing_rules.rules:
+                rule_mp = {}
+                if rule.condition:
+                    rule_mp['Condition'] = {}
+                    if rule.condition.key_prefix_equals:
+                        rule_mp['Condition']['KeyPrefixEquals'] = rule.condition.key_prefix_equals
+                    if rule.condition.http_error_code_returned_equals:
+                        rule_mp['Condition'][
+                            'HttpErrorCodeReturnedEquals'] = rule.condition.http_error_code_returned_equals
+                if rule.redirect:
+                    rule_mp['Redirect'] = {}
+                    if rule.redirect.host_name:
+                        rule_mp['Redirect']['HostName'] = rule.redirect.host_name
+                    if rule.redirect.http_redirect_code:
+                        rule_mp['Redirect']['HttpRedirectCode'] = rule.redirect.http_redirect_code
+                    if rule.redirect.protocol:
+                        rule_mp['Redirect']['Protocol'] = rule.redirect.protocol.value
+                    if rule.redirect.replace_key_prefix_with:
+                        rule_mp['Redirect']['ReplaceKeyPrefixWith'] = rule.redirect.replace_key_prefix_with
+                    if rule.redirect.replace_key_with:
+                        rule_mp['Redirect']['ReplaceKeyWith'] = rule.redirect.replace_key_with
+
+                info['RoutingRules'].append(rule_mp)
+    return info
+
+
+def to_put_bucket_notification(cloudFunctionConfigurations: []):
+    info = {}
+    if cloudFunctionConfigurations:
+        info['CloudFunctionConfigurations'] = []
+        for cloudFunctionConfiguration in cloudFunctionConfigurations:
+            config = {}
+            if cloudFunctionConfiguration.events:
+                config['Events'] = cloudFunctionConfiguration.events
+            if cloudFunctionConfiguration.id:
+                config['RuleId'] = cloudFunctionConfiguration.id
+            if cloudFunctionConfiguration.cloud_function:
+                config['CloudFunction'] = cloudFunctionConfiguration.cloud_function
+            if cloudFunctionConfiguration.filter:
+                filter_mp = {}
+                if cloudFunctionConfiguration.filter.key:
+                    filter_mp['TOSKey'] = {}
+                    if cloudFunctionConfiguration.filter.key.rules and len(
+                            cloudFunctionConfiguration.filter.key.rules) >= 1:
+                        filter_mp['TOSKey']['FilterRules'] = []
+                        for rule in cloudFunctionConfiguration.filter.key.rules:
+                            rule_mp = {}
+                            if rule.name:
+                                rule_mp['Name'] = rule.name
+                            if rule.value:
+                                rule_mp['Value'] = rule.value
+                            filter_mp['TOSKey']['FilterRules'].append(rule_mp)
+
+                config['Filter'] = filter_mp
+            info['CloudFunctionConfigurations'].append(config)
+
+    return info
+
+
+def to_put_custom_domain(custom_domain_rule: CustomDomainRule):
+    info = {}
+    if custom_domain_rule:
+        info['CustomDomainRule'] = {}
+        if custom_domain_rule.domain:
+            info['CustomDomainRule']['Domain'] = custom_domain_rule.domain
+        if custom_domain_rule.cname:
+            info['CustomDomainRule']['Cname'] = custom_domain_rule.cname
+        if custom_domain_rule.cert_id:
+            info['CustomDomainRule']['CertId'] = custom_domain_rule.cert_id
+        if custom_domain_rule.cert_status:
+            info['CustomDomainRule']['CertStatus'] = custom_domain_rule.cert_status.value
+        if custom_domain_rule.forbidden:
+            info['CustomDomainRule']['Forbidden'] = custom_domain_rule.forbidden
+        if custom_domain_rule.forbidden_reason:
+            info['CustomDomainRule']['ForbiddenReason'] = custom_domain_rule.forbidden_reason
+
+    return info
+
+
+def to_put_bucket_real_time_log(configuation: RealTimeLogConfiguration):
+    info = {}
+    if configuation:
+        info['RealTimeLogConfiguration'] = {}
+        if configuation.role:
+            info['RealTimeLogConfiguration']['Role'] = configuation.role
+        if configuation.configuration:
+            info['RealTimeLogConfiguration']['AccessLogConfiguration'] = {}
+            if configuation.configuration.use_service_topic:
+                info['RealTimeLogConfiguration']['AccessLogConfiguration'][
+                    'UseServiceTopic'] = configuation.configuration.use_service_topic
+            if configuation.configuration.tls_topic_id:
+                info['RealTimeLogConfiguration']['AccessLogConfiguration'][
+                    'TLSTopicID'] = configuation.configuration.tls_topic_id
+            if configuation.configuration.tls_project_id:
+                info['RealTimeLogConfiguration']['AccessLogConfiguration'][
+                    'TLSProjectID'] = configuation.configuration.tls_project_id
     return info

@@ -1,12 +1,14 @@
 import datetime
 import errno
+import functools
 import logging
 import os.path
 import re
 import sys
 import threading
 import time
-from urllib.parse import quote_plus, unquote_to_bytes
+from hashlib import sha256
+from urllib.parse import quote_plus, unquote_to_bytes, quote
 
 import crcmod as crcmod
 import pytz
@@ -15,13 +17,16 @@ from pytz import unicode
 
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
                      MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
-                     CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT)
+                     CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT,
+                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER)
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
 from .exceptions import TosClientError
 from .mine_type import TYPES_MAP
 
 logger = logging.getLogger(__name__)
+REGION_MAP = {'cn-beijing': 'tos-cn-beijing.volces.com', 'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
+              'cn-shanghai': 'tos-cn-shanghai.volces.com'}
 
 
 def get_value(kv, key, handler=lambda x: x):
@@ -82,6 +87,16 @@ def try_make_file_dir(path: str):
     file_dir, file_name = os.path.split(path)
     if file_dir:
         os.makedirs(file_dir, exist_ok=True)
+
+
+def init_checkpoint_dir(checkpoint_file: str):
+    if os.path.isdir(checkpoint_file):
+        return checkpoint_file
+    file_dir, file_name = os.path.split(checkpoint_file)
+    if file_dir:
+        os.makedirs(file_dir, exist_ok=True)
+        return file_dir
+    raise TosClientError('checkpoint_file is invalid')
 
 
 def _make_range_string(start, last):
@@ -349,17 +364,15 @@ def _cal_crc_callback(crc_callback, content, discard=0):
         crc_callback(content[discard:])
 
 
-def _cal_upload_callback(upload_callback, upload_type, err, bucket, key, upload_id, checkpoint_file,
-                         upload_part_info):
-    if upload_callback:
-        upload_callback(upload_type, err, bucket, key, upload_id, checkpoint_file, upload_part_info)
+def BaseCallback(object):
+    def success():
+        pass
 
+    def fail():
+        pass
 
-def _cal_download_callback(download_callback, event_type, err, bucket, key, version_id, file_path, checkpoint_file,
-                           temp_filepath, download_part_info):
-    if download_callback:
-        download_callback(event_type, err, bucket, key, version_id, file_path, checkpoint_file, temp_filepath,
-                          download_part_info)
+    def abort():
+        pass
 
 
 class _ReaderAdapter(object):
@@ -457,7 +470,8 @@ class _ReaderAdapter(object):
         return None
 
 
-# 只对上传时会将网络流包装成 _IterableAdapter 适配器
+# 只对上传时会将网络流包或具备__iter__装成 _IterableAdapter 适配器
+# 不支持超时重试、进度条功能
 class _IterableAdapter(object):
     def __init__(self, data, progress_callback=None, crc_callback=None, limiter_callback=None, download_operator=False,
                  can_reset=False):
@@ -484,7 +498,7 @@ class _IterableAdapter(object):
         except Exception as e:
             _cal_progress_callback(self.progress_callback, self.offset, self.offset, 0,
                                    DataTransferType.Data_Transfer_Succeed)
-            raise
+            raise e
         size = len(content)
         _cal_progress_callback(self.progress_callback, self.offset, -1, size,
                                DataTransferType.Data_Transfer_RW)
@@ -511,25 +525,47 @@ class _IterableAdapter(object):
 
 
 def init_content(data, can_reset=None, init_offset=None):
+    """ 此方法用于将上传数据统一包装为 _ReaderAdapter 或 _IterableAdapter，方便后续统一方式处理超时重试
+
+    @param data: 待包装数据
+    @param can_reset: 是否可reset
+    @param init_offset: 初始数据偏移
+    @return:
+    """
+
+    # 说明为 put_object_from_file等方式，以及对流进行包装，调用put_object方式时，无需包装
     if isinstance(data, _ReaderAdapter) or isinstance(data, _IterableAdapter):
         return data
 
+    # 明确可以reset
     if can_reset is True:
         return add_Background_func(data, can_reset=True, init_offset=init_offset)
 
+    # 具备seek、tell方法, 初步判定可以 reset
     if hasattr(data, 'seek') and hasattr(data, 'tell') and init_offset is not None:
         return add_Background_func(data, can_reset=True, init_offset=init_offset)
 
+    # 为SizeAdapter及使用限制结束位的文件上传方式，可reset
     if isinstance(data, SizeAdapter):
         return add_Background_func(data, can_reset=True)
 
+    # 及为非IO对象，(str bytes)等初步判定可reset
     if not (hasattr(data, 'seek') and hasattr(data, 'tell')):
         return add_Background_func(data, can_reset=True)
 
+    # 兜底不可reset
     return add_Background_func(data, can_reset=False)
 
 
 def add_Background_func(data, can_reset=False, init_offset=None, size=None):
+    """
+    此方法根据数据的data类型，将date包装为 _IterableAdapter 或 _ReaderAdapter
+    1. 尝试将数据转化为bytes
+    2. 尝试获取数据的size(len、seek、tell)
+        1. 网络流具备seek、tell但未实现因此返回为None
+    3. size 为空 但具备 __iter__ 直接封装为_IterableAdapter、通过http chuck方式发送
+    4. size 不为空，直接封装为 _ReaderAdapter
+    """
     data = to_bytes(data)
     if size is None:
         size = _get_size(data)
@@ -683,13 +719,23 @@ def rename_file(src, dst):
     os.rename(src, dst)
 
 
-def cal_crc_from_parts(parts, init_crc=0):
+def cal_crc_from_download_parts(parts, init_crc=0):
     client_crc = 0
     crc_obj = Crc64(init_crc)
     for part in parts:
         if not part.part_crc or not part.size:
             return None
         client_crc = crc_obj.combine(client_crc, part.part_crc, part.size)
+    return client_crc
+
+
+def cal_crc_from_upload_parts(parts, init_crc=0):
+    client_crc = 0
+    crc_obj = Crc64(init_crc)
+    for part in parts:
+        if not part.hash_crc64_ecma or not part.part_size:
+            return None
+        client_crc = crc_obj.combine(client_crc, part.hash_crc64_ecma, part.part_size)
     return client_crc
 
 
@@ -1032,3 +1078,154 @@ class MergeProcess(object):
                 self.count += 1
                 if self.count == self.taskNum:
                     self.process(self.consumed_bytes, self.totalBytes, 0, DataTransferType.Data_Transfer_Succeed)
+
+
+class UploadEventHandler(object):
+    def __init__(self, cal_back_fuc, bucket, key, file_path, checkpoint_file, upload_id=None):
+        super(UploadEventHandler, self).__init__()
+        self.cal_back_fuc = cal_back_fuc
+        self.bucket = bucket
+        self.key = key
+        self.upload_id = upload_id
+        self.file_path = file_path
+        self.checkpoint_file = checkpoint_file
+
+    def _cal_back_event(self, event_type, e=None, part_info=None):
+        self.cal_back_fuc(event_type, e, self.bucket, self.key, self.upload_id, self.file_path,
+                          self.checkpoint_file, part_info)
+
+    def __call__(self, *args, **kwargs):
+        if self.cal_back_fuc:
+            self._cal_back_event(*args, **kwargs)
+
+
+class DownloadEventHandler(object):
+    def __init__(self, cal_back_fuc, bucket, key, version_id, file_path, checkpoint_file):
+        super(DownloadEventHandler, self).__init__()
+        self.cal_back_fuc = cal_back_fuc
+        self.bucket = bucket
+        self.key = key
+        self.version_id = version_id
+        self.file_path = file_path
+        self.checkpoint_file = checkpoint_file
+        self.temp_file_path = file_path + '.temp'
+
+    def _cal_back_event(self, event_type, e=None, part_info=None):
+        self.cal_back_fuc(event_type, e, self.bucket, self.key, self.version_id,
+                          self.file_path, self.checkpoint_file, self.temp_file_path, part_info)
+
+    def __call__(self, *args, **kwargs):
+        if self.cal_back_fuc:
+            self._cal_back_event(*args, **kwargs)
+
+
+class ResumableCopyObject(object):
+    def __init__(self, cal_back_fuc, bucket, key, src_bucket, src_key, src_version_id, checkpoint_file, upload_id=None):
+        super(ResumableCopyObject, self).__init__()
+        self.cal_back_fuc = cal_back_fuc
+        self.bucket = bucket
+        self.key = key
+        self.upload_id = upload_id
+        self.src_bucket = src_bucket
+        self.src_key = src_key
+        self.src_version_id = src_version_id
+        self.checkpoint_file = checkpoint_file
+
+    def _cal_back_event(self, event_type, e=None, part_info=None):
+        self.cal_back_fuc(event_type, e, self.bucket, self.key, self.upload_id,
+                          self.src_bucket, self.src_key, self.src_version_id, self.checkpoint_file, part_info)
+
+    def __call__(self, *args, **kwargs):
+        if self.cal_back_fuc:
+            self._cal_back_event(*args, **kwargs)
+
+
+def _param_to_quoted_query(k, v):
+    if v:
+        return quote(str(k), '') + '=' + quote(str(v), '')
+    else:
+        return quote(k, '/~')
+
+
+def _is_valid_region(region: str):
+    return region == 'cn-beijing' or region == 'cn-guangzhou' or region == 'cn-shanghai'
+
+
+def _if_map(region: str, endpoint: str):
+    if _is_valid_region(region) and not endpoint:
+        return REGION_MAP[region]
+    else:
+        return endpoint
+
+
+def _format_endpoint(endpoint):
+    if not endpoint.startswith('http://') and not endpoint.startswith('https://'):
+        return 'https://' + endpoint
+    else:
+        return endpoint
+
+
+def _make_uri(bucket=None, key=None):
+    if bucket and not key:
+        return '/{0}'.format(bucket)
+    if bucket and key:
+        return '/{0}/{1}'.format(bucket, key)
+    return '/'
+
+
+def _make_virtual_host_uri(key=None):
+    if key:
+        return '/{0}'.format(key)
+    return '/'
+
+
+def _get_host(endpoint):
+    if endpoint.startswith('http://'):
+        return endpoint[7:]
+    if endpoint.startswith('https://'):
+        return endpoint[8:]
+    return endpoint
+
+
+def _get_scheme(endpoint):
+    if endpoint.startswith('http://'):
+        return 'http://'
+    if endpoint.startswith('https://'):
+        return 'https://'
+    return 'https://'
+
+
+def _get_virtual_host(bucket, endpoint):
+    if bucket:
+        return bucket + '.' + _get_host(endpoint)
+    else:
+        return _get_host(endpoint)
+
+
+def _cal_content_sha256(data):
+    if data and hasattr(data, 'seek'):
+        position = data.tell()
+        read_chunksize = functools.partial(data.read,
+                                           PAYLOAD_BUFFER)
+        checksum = sha256()
+        for chunk in iter(read_chunksize, b''):
+            checksum.update(chunk)
+        hex_checksum = checksum.hexdigest()
+        data.seek(position)
+        return hex_checksum
+    elif data:
+        return sha256(data).hexdigest()
+    else:
+        return EMPTY_SHA256_HASH
+
+
+def _make_virtual_host_url(host, scheme, bucket=None, key=None):
+    url = host
+    if bucket and key:
+        url = '{0}.{1}/{2}'.format(bucket, host, quote(key, '/~'))
+    elif bucket and not key:
+        url = '{0}.{1}'.format(bucket, host)
+    elif key:
+        url = '{0}/{1}'.format(host, quote(key, '/~'))
+
+    return _format_endpoint(scheme + url)

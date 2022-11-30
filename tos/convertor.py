@@ -1,9 +1,6 @@
 import json
 
-from requests.structures import CaseInsensitiveDict
-
 from .enum import StorageClassType
-from .http import Response
 from .models import (BucketInfo, CommonPrefixInfo,
                      CompleteMultipartUploadResult, CopyObjectResult,
                      CreateMultipartUploadResult, DeletedErrInfo,
@@ -13,11 +10,9 @@ from .models import (BucketInfo, CommonPrefixInfo,
                      ListObjectVersionsResult, ListPartsResult,
                      MultipartUploadInfo, ObjectInfo, ObjectVersionInfo,
                      UploadPartCopyResult, UploadPartInfo, UserInfo)
-from .models2 import (GetObjectACLOutput, HeadObjectOutput, ListBucketsOutput,
-                      ListedBucket, ListedObjectVersion,
+from .models2 import (ListedObjectVersion,
                       ListObjectVersionsOutput, Owner)
-from .utils import (get_etag, get_value, parse_gmt_time_to_utc_datetime,
-                    parse_modify_time_to_utc_datetime)
+from .utils import (get_etag, get_value, parse_modify_time_to_utc_datetime)
 
 
 def convert_list_buckets_result(resp):

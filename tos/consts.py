@@ -17,10 +17,13 @@ SLEEP_BASE_TIME = 0.1
 
 WHITE_LIST_FUNCTION = ['create_bucket', 'delete_bucket', 'create_multipart_upload', 'complete_multipart_upload',
                        'abort_multipart_upload', 'set_object_meta', 'put_object_acl', 'delete_object', 'put_object',
-                       'upload_part']
-PUT_OBJECT_WHITE_FUNC = ['put_object_from_file']
-
-UPLOAD_PART_WHITE_FUNC = ['upload_part_from_file', '_upload_part']
+                       'upload_part', 'put_bucket_cors', 'delete_bucket_cors', 'put_bucket_storage_class',
+                       'put_bucket_lifecycle', 'delete_bucket_lifecycle', 'put_bucket_policy', 'delete_bucket_policy',
+                       'put_bucket_mirror_back', 'delete_bucket_mirror_back', 'put_object_tagging',
+                       'delete_object_tagging', 'put_bucket_acl', 'put_fetch_task', 'put_bucket_replication',
+                       'put_bucket_versioning', 'put_bucket_website', 'delete_bucket_website',
+                       'put_bucket_notification', 'put_bucket_custom_domain', 'delete_bucket_custom_domain',
+                       'put_bucket_real_time_log', 'delete_bucket_real_time_log']
 
 CLIENT_ENCRYPTION_ALGORITHM = ['AES256']
 SERVER_ENCRYPTION_ALGORITHM = ['AES256']
