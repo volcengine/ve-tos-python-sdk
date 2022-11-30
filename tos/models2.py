@@ -4,13 +4,14 @@ from datetime import datetime
 from requests.structures import CaseInsensitiveDict
 
 from . import utils
-from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType
+from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType, \
+    StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
 from .utils import (get_etag, get_value, meta_header_decode,
                     parse_gmt_time_to_utc_datetime,
-                    parse_modify_time_to_utc_datetime)
+                    parse_modify_time_to_utc_datetime, _param_to_quoted_query, _make_virtual_host_url)
 
 
 class ResponseInfo(object):
@@ -32,6 +33,7 @@ class HeadBucketOutput(ResponseInfo):
         super(HeadBucketOutput, self).__init__(resp)
         self.region = get_value(self.header, "x-tos-bucket-region")
         self.storage_class = get_value(self.header, "x-tos-storage-class", lambda x: StorageClassType(x))
+        self.az_redundancy = get_value(self.header, "x-tos-az-redundancy", lambda x: AzRedundancyType(x))
 
 
 class DeleteBucketOutput(ResponseInfo):
@@ -306,9 +308,9 @@ class ListObjectsIterator(object):
                             headers=self.headers, params=self.params)
             info = ListObjectType2Output(resp)
             self.is_truncated = info.is_truncated
-            self.number += len(info.contents)
+            self.number += len(info.contents) + len(info.common_prefixes)
             self.params['max-keys'] = self.new_max_key
-            self.params['continuation-toke'] = info.next_continuation_token
+            self.params['continuation-token'] = info.next_continuation_token
             return info
         else:
             raise StopIteration
@@ -324,7 +326,7 @@ class ListObjectType2Output(ResponseInfo):
         data = resp.json_read()
         self.name = get_value(data, 'Name')
         self.prefix = get_value(data, 'Prefix')
-        self.continuationToken = get_value(data, 'ContinuationToken')
+        self.continuation_token = get_value(data, 'ContinuationToken')
         self.key_count = get_value(data, 'KeyCount', int)
         self.max_keys = get_value(data, 'MaxKeys', int)
         self.delimiter = get_value(data, 'Delimiter')
@@ -370,8 +372,7 @@ class ListObjectType2Output(ResponseInfo):
         for output in listObjectType2Outputs:
             self.contents += output.contents
             for prefix in output.common_prefixes:
-                if prefix not in self.common_prefixes:
-                    self.common_prefixes.append(prefix)
+                self.common_prefixes.append(prefix)
         if len(listObjectType2Outputs) > 0:
             last = listObjectType2Outputs[len(listObjectType2Outputs) - 1]
             self.next_continuation_token = last.next_continuation_token
@@ -550,7 +551,8 @@ class GetObjectOutput(HeadObjectOutput):
                                                             size=self.content_length,
                                                             download_operator=True, is_response=True)
         if rate_limiter:
-            self.content = utils.add_rate_limiter_func(data=self.content, rate_limiter=rate_limiter, size=self.content_length,
+            self.content = utils.add_rate_limiter_func(data=self.content, rate_limiter=rate_limiter,
+                                                       size=self.content_length,
                                                        is_response=True)
 
         if enable_crc:
@@ -784,9 +786,8 @@ class DeleteBucketCorsOutput(ResponseInfo):
 
 
 class Condition(object):
-    def __init__(self, http_code: int = None, object_key_prefix: str = None):
+    def __init__(self, http_code: int = None):
         self.http_code = http_code
-        self.object_key_prefix = object_key_prefix
 
 
 class SourceEndpoint(object):
@@ -848,16 +849,6 @@ class PutBucketMirrorBackOutPut(ResponseInfo):
 class DeleteBucketMirrorBackOutPut(ResponseInfo):
     def __init__(self, resp):
         super(DeleteBucketMirrorBackOutPut, self).__init__(resp)
-
-
-class CustomDomainRule(object):
-    def __init__(self, domain: str, cname: str, forbidden: bool, forbiddenReason: str, cert_id: str, cert_status: str):
-        self.domain = domain
-        self.cname = cname
-        self.forbidden = forbidden
-        self.forbiddenReason = forbiddenReason
-        self.cert_id = cert_id
-        self.cert_status = cert_status
 
 
 class UploadedPart(object):
@@ -1136,8 +1127,7 @@ class GetBucketMirrorBackOutput(ResponseInfo):
             redirect = None
             if cond:
                 condition = Condition(
-                    http_code=get_value(cond, 'HttpCode', int),
-                    object_key_prefix=get_value(cond, 'ObjectKeyPrefix')
+                    http_code=get_value(cond, 'HttpCode', int)
                 )
             if red:
                 redirect = Redirect()
@@ -1241,6 +1231,12 @@ class PostSignatureCondition(object):
         self.value = value
         self.operator = operator
 
+class PolicySignatureCondition(object):
+    def __init__(self, key: str, value: str, operator=None):
+        self.key = key
+        self.value = value
+        self.operator = operator
+
 
 class ContentLengthRange(object):
     def __init__(self, range_start: int, range_end: int):
@@ -1263,3 +1259,358 @@ class PutFetchTaskOutput(ResponseInfo):
         super(PutFetchTaskOutput, self).__init__(resp)
         data = resp.json_read()
         self.task_id = get_value(data, 'TaskId')
+
+
+class PutBucketReplicationOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketReplicationOutput, self).__init__(resp)
+
+
+class Destination(object):
+    def __init__(self, bucket: str = None, location: str = None, storage_class: StorageClassType = None,
+                 storage_class_inherit_directive: StorageClassInheritDirectiveType = None):
+        self.bucket = bucket
+        self.location = location
+        self.storage_class = storage_class
+        self.storage_class_inherit_directive = storage_class_inherit_directive
+
+
+class Progress(object):
+    def __init__(self, historical_object: float, new_object: str):
+        self.historical_object = historical_object
+        self.new_object = new_object
+
+
+class ReplicationRule(object):
+    def __init__(self, id: str = None, status: StatusType = None, prefix_set: [] = None,
+                 destination: Destination = None,
+                 historical_object_replication: StatusType = None, progress: Progress = None):
+        self.id = id
+        self.status = status
+        self.prefix_set = prefix_set
+        self.destination = destination
+        self.historical_object_replication = historical_object_replication
+        self.progress = progress
+
+
+class GetBucketReplicationOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketReplicationOutput, self).__init__(resp)
+        self.rules = []
+        data = resp.json_read()
+        rules_json = get_value(data, 'Rules') or []
+        for rule_json in rules_json:
+            replication_rule = ReplicationRule()
+            replication_rule.id = get_value(rule_json, 'ID')
+            replication_rule.status = get_value(rule_json, 'Status', lambda x: StatusType(x))
+            replication_rule.prefix_set = get_value(rule_json, 'PrefixSet')
+            replication_rule.historical_object_replication = get_value(rule_json, 'HistoricalObjectReplication',
+                                                                       lambda x: StatusType(x))
+
+            destination_json = get_value(rule_json, 'Destination')
+            progress_json = get_value(rule_json, 'Progress')
+            if destination_json:
+                replication_rule.destination = Destination(
+                    bucket=get_value(destination_json, 'Bucket'),
+                    location=get_value(destination_json, 'Location'),
+                    storage_class=get_value(destination_json, 'StorageClass', lambda x: StorageClassType(x)),
+                    storage_class_inherit_directive=get_value(destination_json, 'StorageClassInheritDirective',
+                                                              lambda x: StorageClassInheritDirectiveType(x)))
+
+            if progress_json:
+                replication_rule.progress = Progress(
+                    historical_object=get_value(progress_json, 'HistoricalObject', lambda x: float(x)),
+                    new_object=get_value(progress_json, 'NewObject'))
+            self.rules.append(replication_rule)
+
+
+class DeleteBucketReplicationOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketReplicationOutput, self).__init__(resp)
+
+
+class PutBucketVersioningOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketVersioningOutput, self).__init__(resp)
+
+
+class GetBucketVersionOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketVersionOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.status = get_value(data, 'Status')
+        if self.status is not None:
+            self.status = VersioningStatusType(self.status)
+
+
+class RedirectAllRequestsTo(object):
+    def __init__(self, host_name, protocol):
+        self.host_name = host_name
+        self.protocol = protocol
+
+
+class IndexDocument(object):
+    def __init__(self, suffix: str = None, forbidden_sub_dir: bool = None):
+        self.suffix = suffix
+        self.forbidden_sub_dir = forbidden_sub_dir
+
+
+class ErrorDocument(object):
+    def __init__(self, key: str):
+        self.key = key
+
+
+class RoutingRuleCondition(object):
+    def __init__(self, key_prefix_equals=None, http_error_code_returned_equals=None):
+        self.key_prefix_equals = key_prefix_equals
+        self.http_error_code_returned_equals = http_error_code_returned_equals
+
+
+class RoutingRuleRedirect(object):
+    def __init__(self, protocol: ProtocolType = None, host_name: str = None, replace_key_prefix_with: str = None,
+                 replace_key_with: str = None,
+                 http_redirect_code: int = None):
+        self.protocol = protocol
+        self.host_name = host_name
+        self.replace_key_prefix_with = replace_key_prefix_with
+        self.replace_key_with = replace_key_with
+        self.http_redirect_code = http_redirect_code
+
+
+class RoutingRules(object):
+    def __init__(self, rules: []):
+        self.rules = rules
+
+
+class RoutingRule(object):
+    def __init__(self, condition: RoutingRuleCondition = None, redirect: RoutingRuleRedirect = None):
+        self.condition = condition
+        self.redirect = redirect
+
+
+class PutBucketWebsiteOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketWebsiteOutput, self).__init__(resp)
+
+
+class GetBucketWebsiteOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketWebsiteOutput, self).__init__(resp)
+        self.redirect_all_requests_to = None
+        self.index_document = None
+        self.error_document = None
+        self.routing_rules = []
+        data = resp.json_read()
+        redirect_all_requests_to = get_value(data, 'RedirectAllRequestsTo')
+        index_document = get_value(data, 'IndexDocument')
+        error_document = get_value(data, 'ErrorDocument')
+        routing_rules = get_value(data, 'RoutingRules') or []
+        if redirect_all_requests_to:
+            self.redirect_all_requests_to = RedirectAllRequestsTo(
+                host_name=get_value(redirect_all_requests_to, 'HostName'),
+                protocol=get_value(redirect_all_requests_to, 'Protocol'))
+        if index_document:
+            self.index_document = IndexDocument(suffix=get_value(index_document, 'Suffix'),
+                                                forbidden_sub_dir=get_value(index_document, 'ForbiddenSubDir'))
+
+        if error_document:
+            self.error_document = ErrorDocument(key=get_value(error_document, 'Key'))
+
+        for rule_json in routing_rules:
+            rule = RoutingRule()
+            condition = get_value(rule_json, 'Condition')
+            redirect = get_value(rule_json, 'Redirect')
+            if condition:
+                rule.condition = RoutingRuleCondition(
+                    http_error_code_returned_equals=get_value(condition, 'HttpErrorCodeReturnedEquals'),
+                    key_prefix_equals=get_value(condition, 'KeyPrefixEquals'))
+            if redirect:
+                rule.redirect = RoutingRuleRedirect(protocol=get_value(redirect, 'Protocol', lambda x: ProtocolType(x)),
+                                                    host_name=get_value(redirect, 'HostName'),
+                                                    replace_key_prefix_with=get_value(redirect, 'ReplaceKeyPrefixWith'),
+                                                    replace_key_with=get_value(redirect, 'ReplaceKeyWith'),
+                                                    http_redirect_code=get_value(redirect, 'HttpRedirectCode'))
+            self.routing_rules.append(rule)
+
+
+class FilterRule(object):
+    def __init__(self, name: str = None, value: str = None):
+        self.name = name
+        self.value = value
+
+
+class FilterKey(object):
+    def __init__(self, rules: [] = None):
+        self.rules = rules
+
+
+class Filter(object):
+    def __init__(self, key: FilterKey):
+        self.key = key
+
+
+class CloudFunctionConfiguration(object):
+    def __init__(self, id: str = None, events: [] = None, filter: Filter = None, cloud_function: str = None):
+        self.id = id
+        self.events = events
+        self.filter = filter
+        self.cloud_function = cloud_function
+
+
+class PutBucketNotificationOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketNotificationOutput, self).__init__(resp)
+
+
+class GetBucketNotificationOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketNotificationOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.cloud_function_configurations = []
+        cloud_functions = get_value(data, 'CloudFunctionConfigurations') or []
+        for function in cloud_functions:
+            config = CloudFunctionConfiguration()
+            config.id = get_value(function, 'RuleId')
+            config.events = get_value(function, 'Events')
+            config.cloud_function = get_value(function, 'CloudFunction')
+            filter_json = get_value(function, 'Filter')
+            if filter_json:
+                fileter_key = FilterKey([])
+                key_json = get_value(filter_json, 'TOSKey')
+                if key_json:
+                    filter_rules = get_value(key_json, 'FilterRules') or []
+                    for rule in filter_rules:
+                        fileter_key.rules.append(
+                            FilterRule(name=get_value(rule, 'Name'), value=get_value(rule, 'Value')))
+                    config.filter = Filter(fileter_key)
+            self.cloud_function_configurations.append(config)
+
+
+class CustomDomainRule(object):
+    def __init__(self, cert_id: str = None, cert_status: CertStatus = None, domain: str = None, cname: str = None,
+                 forbidden: bool = None, forbidden_reason: str = None):
+        self.cert_id = cert_id
+        self.cert_status = cert_status
+        self.domain = domain
+        self.cname = cname
+        self.forbidden = forbidden
+        self.forbidden_reason = forbidden_reason
+
+
+class PutBucketCustomDomainOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketCustomDomainOutput, self).__init__(resp)
+
+
+class ListBucketCustomDomainOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(ListBucketCustomDomainOutput, self).__init__(resp)
+        self.rules = []
+        data = resp.json_read()
+        custom_domain_rules = get_value(data, 'CustomDomainRules') or []
+        for custom_domain_rule in custom_domain_rules:
+            self.rules.append(
+                CustomDomainRule(cert_id=get_value(custom_domain_rule, 'CertId'),
+                                 domain=get_value(custom_domain_rule, 'Domain'),
+                                 cname=get_value(custom_domain_rule, 'Cname'),
+                                 forbidden=get_value(custom_domain_rule, 'Forbidden'),
+                                 forbidden_reason=get_value(custom_domain_rule, 'ForbiddenReason'),
+                                 cert_status=get_value(custom_domain_rule, 'CertStatus', lambda x: CertStatus(x))))
+
+
+class DeleteCustomDomainOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteCustomDomainOutput, self).__init__(resp)
+
+
+class AccessLogConfiguration(object):
+    def __init__(self, use_service_topic: bool = None, tls_project_id: str = None, tls_topic_id: str = None):
+        self.use_service_topic = use_service_topic
+        self.tls_project_id = tls_project_id
+        self.tls_topic_id = tls_topic_id
+
+
+class RealTimeLogConfiguration(object):
+    def __init__(self, role: str = None, configuration: AccessLogConfiguration = None):
+        self.role = role
+        self.configuration = configuration
+
+
+class PutBucketRealTimeLogOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketRealTimeLogOutput, self).__init__(resp)
+
+
+class GetBucketRealTimeLog(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketRealTimeLog, self).__init__(resp)
+        self.configuration = RealTimeLogConfiguration()
+        data = resp.json_read()
+        bucket_real_time_log = get_value(data, 'RealTimeLogConfiguration')
+        self.configuration.role = get_value(bucket_real_time_log, 'Role')
+        access_log = get_value(bucket_real_time_log, 'AccessLogConfiguration')
+        if access_log:
+            self.configuration.configuration = AccessLogConfiguration()
+            self.configuration.configuration.use_service_topic = get_value(access_log, 'UseServiceTopic')
+            self.configuration.configuration.tls_topic_id = get_value(access_log, 'TLSTopicID')
+            self.configuration.configuration.tls_project_id = get_value(access_log, 'TLSProjectID')
+
+
+class DeleteBucketRealTimeLog(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketRealTimeLog, self).__init__(resp)
+
+
+class ResumableCopyObjectOutput(object):
+    def __init__(self, resp: CompleteMultipartUploadOutput, ssec_algorithm, ssec_key_md5, encoding_type):
+        self.request_id = resp.request_id
+        self.id2 = resp.id2
+        self.status_code = resp.status_code
+        self.header = resp.header
+        self.bucket = resp.bucket
+        self.key = resp.key
+        self.upload_id = resp.request_id
+        self.etag = resp.etag
+        self.location = resp.location
+        self.version_id = resp.version_id
+        self.hash_crc64_ecma = resp.hash_crc64_ecma
+        self.ssec_algorithm = ssec_algorithm
+        self.ssec_key_md5 = ssec_key_md5
+        self.encoding_type = encoding_type
+
+
+class PreSignedPolicyURlInputOutput(object):
+    def __init__(self, signed_query, host, scheme, bucket=None):
+        self.signed_query = signed_query
+        self._host = host
+        self._scheme = scheme
+        self._bucket = bucket
+
+    def get_signed_url_for_list(self, additional_query=None) -> str:
+        if additional_query is None:
+            return _make_virtual_host_url(self._host, self._scheme, self._bucket, '') + '?' + self.signed_query
+
+        return _make_virtual_host_url(self._host, self._scheme, self._bucket, '') + '?' + self.signed_query + '&' + '&'.join(
+            _param_to_quoted_query(k, v) for k, v in additional_query.items())
+
+    def get_signed_url_for_get_or_head(self, key: str, additional_query=None) -> str:
+        if additional_query is None:
+            return _make_virtual_host_url(self._host, self._scheme, self._bucket, key) + '?' + self.signed_query
+
+        return _make_virtual_host_url(self._host, self._scheme, self._bucket, key) + '?' + self.signed_query + '&' + '&'.join(
+            _param_to_quoted_query(k, v) for k, v in additional_query.items())
+
+
+class CopyPartInfo(object):
+    def __init__(self, part_number, copy_source_range_start, copy_source_range_end, etag=None):
+        self.part_number = part_number
+        self.copy_source_range_start = copy_source_range_start
+        self.copy_source_range_end = copy_source_range_end
+        self.etag = etag
+
+    def __str__(self):
+        info = {'part_number': self.part_number,
+                'copy_source_range_start': self.copy_source_range_start,
+                'copy_source_range_end': self.copy_source_range_end,
+                'etag': self.etag}
+        return str(info)

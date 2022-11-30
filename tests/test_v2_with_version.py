@@ -2,7 +2,7 @@ import time
 
 import tos
 from tests.common import TosTestBase, random_bytes
-from tos.models2 import Tag
+from tos.models2 import Tag, ObjectTobeDeleted
 
 
 class TestWithVersion(TosTestBase):
@@ -30,7 +30,8 @@ class TestWithVersion(TosTestBase):
             key='1',
             value='2'
         ))
-        put_out = self.client.put_object_tagging(bucket=bucket_name, key=key, tag_set=tag_set, version_id=out_v1.version_id)
+        put_out = self.client.put_object_tagging(bucket=bucket_name, key=key, tag_set=tag_set,
+                                                 version_id=out_v1.version_id)
         out = self.client.get_object_tagging(bucket_name, key, version_id=out_v1.version_id)
         self.assertEqual(out.version_id, out_v1.version_id)
         self.assertIsNotNone(out.tag_set[0].key, '1')
@@ -47,7 +48,6 @@ class TestWithVersion(TosTestBase):
         self.assertEqual(out.version_id, out_v2.version_id)
         self.assertIsNotNone(out.tag_set[0].key, '2')
         self.assertIsNotNone(out.tag_set[0].value, '3')
-
 
         self.assertEqual(self.client.get_object(bucket_name, key, version_id=out_v1.version_id).read(), b'123')
         self.assertEqual(self.client.get_object(bucket_name, key, version_id=out_v2.version_id).read(), b'456')
@@ -108,3 +108,46 @@ class TestWithVersion(TosTestBase):
         out = self.client.list_object_versions(bucket_name, delimiter='/')
         self.assertTrue(len(out.common_prefixes), 3)
         self.assertFalse(out_2.is_truncated)
+
+    def test_download_copy_version(self):
+        bucket_name = self.bucket_name + '-with-download-copy-version'
+        dist_bucket = self.bucket_name + 'dist'
+        file_name = self.random_filename()
+        self.bucket_delete.append(bucket_name)
+        self.bucket_delete.append(dist_bucket)
+        content1 = random_bytes(1024)
+        content2 = random_bytes(1024)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket_name)
+        self.client.create_bucket(dist_bucket)
+        self.version_client.put_bucket_versioning(bucket_name, True)
+        self.version_client.put_bucket_versioning(dist_bucket, True)
+        time.sleep(20)
+        out = self.client.put_object(bucket_name, key, content=content1)
+        self.client.put_object(bucket_name, key, content=content2)
+        self.client.download_file(bucket_name, key, file_name, version_id=out.version_id)
+        self.assertFileContent(file_name, content1)
+
+        self.client.resumable_copy_object(dist_bucket, key, bucket_name, key, src_version_id=out.version_id)
+        self.assertObjectContent(dist_bucket, key, content1)
+
+    def test_delete_version(self):
+        bucket_name = self.bucket_name + '-with-download-copy-version'
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name)
+        self.version_client.put_bucket_versioning(bucket_name, True)
+        time.sleep(10)
+        delete = []
+        v1 = self.client.put_object(bucket_name, '1')
+        delete.append(ObjectTobeDeleted('1', v1.version_id))
+        v2 = self.client.put_object(bucket_name, '1')
+        delete.append(ObjectTobeDeleted('1', v2.version_id))
+        out = self.client.delete_multi_objects(bucket_name, delete)
+        self.assertTrue(len(out.deleted) == 2)
+
+        v1 = self.client.put_object(bucket_name, '1')
+        delete.append(ObjectTobeDeleted('1', v1.version_id))
+        v2 = self.client.put_object(bucket_name, '1')
+        delete.append(ObjectTobeDeleted('1', v2.version_id))
+        out = self.client.delete_multi_objects(bucket_name, delete, quiet=True)
+        self.assertTrue(len(out.deleted) == 0)

@@ -100,3 +100,25 @@ class CancelWithAbortError(CancelError):
 class CancelNotWithAbortError(CancelError):
     def __init__(self, message):
         super(CancelNotWithAbortError, self).__init__(message)
+
+
+class TaskCompleteMultipartError(Exception):
+    def __init__(self, cause):
+        self.cause = cause
+        self.message = 'failed to do complete multipart task '
+
+    def __str__(self):
+        error = {'message': self.message,
+                 'case': str(self.cause)}
+        return str(error)
+
+
+class RenameFileError(Exception):
+    def __init__(self, cause):
+        self.cause = cause
+        self.message = 'failed to do rename file task'
+
+    def __str__(self):
+        error = {'message': self.message,
+                 'case': str(self.cause)}
+        return str(error)
