@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
 import base64
-import functools
 import hashlib
 import json
 import logging
 import warnings
 from datetime import datetime
-from hashlib import sha256
 from typing import IO, Dict, Union
-from urllib.parse import quote
 
 import requests
 from deprecated import deprecated
@@ -17,8 +14,7 @@ from requests.structures import CaseInsensitiveDict
 
 from . import __version__
 from . import exceptions
-from .consts import (CONNECT_TIMEOUT, EMPTY_SHA256_HASH, GMT_DATE_FORMAT,
-                     PAYLOAD_BUFFER)
+from .consts import (CONNECT_TIMEOUT, GMT_DATE_FORMAT)
 from .convertor import (convert_complete_multipart_upload_result,
                         convert_copy_object_result,
                         convert_create_multipart_upload_result,
@@ -33,98 +29,13 @@ from .http import Request, Response
 from .models import (AppendObjectResult, CreateBucketResult, GetObjectResult,
                      HeadBucketResult, HeadObjectResult, PutObjectResult,
                      RequestResult)
-from .utils import get_content_type, get_value, to_bytes, to_str
+from .utils import get_content_type, get_value, to_bytes, to_str, _format_endpoint, _get_host, _get_scheme, _if_map, \
+    _make_virtual_host_uri, _get_virtual_host, _make_virtual_host_url, _cal_content_sha256
 
 logger = logging.getLogger(__name__)
 
 USER_AGENT = 'volc-tos-sdk-python/{0}'.format(__version__)
 
-REGION_MAP = {'cn-beijing': 'tos-cn-beijing.volces.com', 'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
-              'cn-shanghai': 'tos-cn-shanghai.volces.com'}
-
-
-def _is_valid_region(region: str):
-    return region == 'cn-beijing' or region == 'cn-guangzhou' or region == 'cn-shanghai'
-
-
-def _if_map(region: str, endpoint: str):
-    if _is_valid_region(region) and not endpoint:
-        return REGION_MAP[region]
-    else:
-        return endpoint
-
-
-def _format_endpoint(endpoint):
-    if not endpoint.startswith('http://') and not endpoint.startswith('https://'):
-        return 'https://' + endpoint
-    else:
-        return endpoint
-
-
-def _make_uri(bucket=None, key=None):
-    if bucket and not key:
-        return '/{0}'.format(bucket)
-    if bucket and key:
-        return '/{0}/{1}'.format(bucket, key)
-    return '/'
-
-
-def _make_virtual_host_uri(key=None):
-    if key:
-        return '/{0}'.format(key)
-    return '/'
-
-
-def _get_host(endpoint):
-    if endpoint.startswith('http://'):
-        return endpoint[7:]
-    if endpoint.startswith('https://'):
-        return endpoint[8:]
-    return endpoint
-
-
-def _get_scheme(endpoint):
-    if endpoint.startswith('http://'):
-        return 'http://'
-    if endpoint.startswith('https://'):
-        return 'https://'
-    return 'https://'
-
-
-def _get_virtual_host(bucket, endpoint):
-    if bucket:
-        return bucket + '.' + _get_host(endpoint)
-    else:
-        return _get_host(endpoint)
-
-
-def _cal_content_sha256(data):
-    if data and hasattr(data, 'seek'):
-        position = data.tell()
-        read_chunksize = functools.partial(data.read,
-                                           PAYLOAD_BUFFER)
-        checksum = sha256()
-        for chunk in iter(read_chunksize, b''):
-            checksum.update(chunk)
-        hex_checksum = checksum.hexdigest()
-        data.seek(position)
-        return hex_checksum
-    elif data:
-        return sha256(data).hexdigest()
-    else:
-        return EMPTY_SHA256_HASH
-
-
-def _make_virtual_host_url(host, scheme, bucket=None, key=None):
-    url = host
-    if bucket and key:
-        url = '{0}.{1}/{2}'.format(bucket, host, quote(key, '/~'))
-    elif bucket and not key:
-        url = '{0}.{1}'.format(bucket, host)
-    elif key:
-        url = '{0}/{1}'.format(host, quote(key, '/~'))
-
-    return _format_endpoint(scheme + url)
 
 
 class TosClient():

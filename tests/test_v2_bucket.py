@@ -1,25 +1,33 @@
 # -*- coding: utf-8 -*-
 import datetime
 import json
+import time
 import time as tim
 import unittest
 
 from pytz import UTC
 
 import tos
-from tests.common import TosTestBase
-from tos.enum import ACLType, StorageClassType, RedirectType, StatusType, PermissionType, CannedType, GranteeType
+from tests.common import TosTestBase, clean_and_delete_bucket
+from tos.checkpoint import TaskExecutor
+from tos.enum import ACLType, StorageClassType, RedirectType, StatusType, PermissionType, CannedType, GranteeType, \
+    VersioningStatusType, ProtocolType, AzRedundancyType, StorageClassInheritDirectiveType, CertStatus
 from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import CORSRule, Rule, Condition, Redirect, PublicSource, SourceEndpoint, MirrorHeader, \
     BucketLifeCycleRule, BucketLifeCycleExpiration, BucketLifeCycleNoCurrentVersionExpiration, \
     Tag, BucketLifeCycleTransition, \
-    BucketLifeCycleNonCurrentVersionTransition, BucketLifeCycleAbortInCompleteMultipartUpload
+    BucketLifeCycleNonCurrentVersionTransition, BucketLifeCycleAbortInCompleteMultipartUpload, ReplicationRule, \
+    Destination, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, RoutingRule, \
+    RoutingRuleCondition, RoutingRuleRedirect, CustomDomainRule, RealTimeLogConfiguration, AccessLogConfiguration, \
+    CloudFunctionConfiguration, Filter, FilterKey, FilterRule
+
+tos.set_logger()
 
 
 class TestBucket(TosTestBase):
 
     def test_ua(self):
-        assert 'v2.4.0' in tos.clientv2.USER_AGENT
+        assert 'v2.5.0' in tos.clientv2.USER_AGENT
 
     def test_bucket(self):
         bucket_name = self.bucket_name + "basic"
@@ -65,6 +73,9 @@ class TestBucket(TosTestBase):
         with self.assertRaises(TosServerError):
             self.client.head_bucket(bucket_name + "test")
 
+        self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
+        self.bucket_delete.append(bucket_name)
+
     def test_create_bucket_with_illegal_name(self):
         # 测试桶名在3-63个字符内
         with self.assertRaises(TosClientError):
@@ -104,7 +115,7 @@ class TestBucket(TosTestBase):
         self.assertIsNotNone(list_out.owner.id)
 
     def test_bucket_info(self):
-        bucket_name = self.bucket_name + "-info"
+        bucket_name = self.bucket_name + "-bucket-info"
         self.bucket_delete.append(bucket_name)
         with self.assertRaises(TosServerError):
             self.client.head_bucket(bucket_name)
@@ -208,7 +219,7 @@ class TestBucket(TosTestBase):
         rules = []
         rules.append(Rule(
             id='1',
-            condition=Condition(http_code=404, object_key_prefix="prefix"),
+            condition=Condition(http_code=404),
             redirect=Redirect(
                 redirect_type=RedirectType.Mirror,
                 fetch_source_on_redirect=True,
@@ -225,7 +236,6 @@ class TestBucket(TosTestBase):
         self.assertTrue(len(get_out.rules) == 1)
         self.assertEqual(get_out.rules[0].id, '1')
         self.assertEqual(get_out.rules[0].condition.http_code, 404)
-        self.assertEqual(get_out.rules[0].condition.object_key_prefix, 'prefix')
         self.assertEqual(get_out.rules[0].redirect.redirect_type, RedirectType.Mirror)
         self.assertEqual(get_out.rules[0].redirect.follow_redirect, True)
         self.assertEqual(get_out.rules[0].redirect.fetch_source_on_redirect, True)
@@ -237,12 +247,12 @@ class TestBucket(TosTestBase):
         rules = []
         rules.append(Rule(
             id='2',
-            condition=Condition(http_code=404, object_key_prefix="prefix2"),
+            condition=Condition(http_code=404),
             redirect=Redirect(
                 redirect_type=RedirectType.Async,
                 fetch_source_on_redirect=False,
-                public_source=PublicSource(SourceEndpoint(primary=['http://tosv.byted.org/obj/tostest2/'],
-                                                          follower=['http://tosv.byted.org/obj/tostest2/3'])),
+                public_source=PublicSource(SourceEndpoint(primary=['http://test.com/obj/tostest2/'],
+                                                          follower=['http://test.com/obj/tostest2/3'])),
                 pass_query=False,
                 follow_redirect=False,
                 mirror_header=MirrorHeader(pass_all=False, pass_headers=['aaa2', 'bbb2'], remove=['xxxx', 'xxxx'])
@@ -252,7 +262,6 @@ class TestBucket(TosTestBase):
         get_out = self.client.get_bucket_mirror_back(bucket=bucket_name)
         self.assertEqual(get_out.rules[0].id, '2')
         self.assertEqual(get_out.rules[0].condition.http_code, 404)
-        self.assertEqual(get_out.rules[0].condition.object_key_prefix, 'prefix2')
         self.assertEqual(get_out.rules[0].redirect.redirect_type, RedirectType.Async)
         self.assertEqual(get_out.rules[0].redirect.follow_redirect, None)
         self.assertEqual(get_out.rules[0].redirect.fetch_source_on_redirect, None)
@@ -260,9 +269,9 @@ class TestBucket(TosTestBase):
         self.assertEqual(get_out.rules[0].redirect.mirror_header.pass_headers, ['aaa2', 'bbb2'])
         self.assertEqual(get_out.rules[0].redirect.mirror_header.remove, ['xxxx', 'xxxx'])
         self.assertEqual(get_out.rules[0].redirect.public_source.source_endpoint.primary,
-                         ['http://tosv.byted.org/obj/tostest2/'])
+                         ['http://test.com/obj/tostest2/'])
         self.assertEqual(get_out.rules[0].redirect.public_source.source_endpoint.follower,
-                         ['http://tosv.byted.org/obj/tostest2/3'])
+                         ['http://test.com/obj/tostest2/3'])
 
         delete_out = self.client.delete_bucket_mirror_back(bucket=bucket_name)
         self.assertIsNotNone(delete_out.request_id)
@@ -465,6 +474,200 @@ class TestBucket(TosTestBase):
 
         self.client.delete_bucket(bucket=bucket_name)
 
+    def test_put_bucket_replication(self):
+        bucket_name_src = self.bucket_name + 'replication'
+        bucket_name_crr = self.bucket_name + '-crr'
+        bucket_name_crr_2 = self.bucket_name + '-crr2'
+        self.client.create_bucket(bucket_name_src)
+        self.client2.create_bucket(bucket_name_crr)
+        self.client2.create_bucket(bucket_name_crr_2)
+        self.bucket_delete.append(bucket_name_src)
+        self.bucket_delete.append(bucket_name_crr)
+        self.bucket_delete.append(bucket_name_crr_2)
+        rules = []
+        rules.append(ReplicationRule(id='1',
+                                     status=StatusType.Status_Enable,
+                                     prefix_set=['prefix1', 'prefix2'],
+                                     destination=Destination(bucket=bucket_name_crr, location=self.region2,
+                                                             storage_class=StorageClassType.Storage_Class_Ia,
+                                                             storage_class_inherit_directive=StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object),
+                                     historical_object_replication=StatusType.Status_Enable))
+
+        rules.append(ReplicationRule(id='2',
+                                     status=StatusType.Status_Enable,
+                                     prefix_set=['prefix3', 'prefix4'],
+                                     destination=Destination(bucket=bucket_name_crr_2, location=self.region2,
+                                                             storage_class=StorageClassType.Storage_Class_Standard,
+                                                             storage_class_inherit_directive=StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object),
+                                     historical_object_replication=StatusType.Status_Disable))
+
+        put_out = self.client.put_bucket_replication(bucket_name_src, role='ServiceRoleforReplicationAccessTOS',
+                                                     rules=rules)
+        self.assertIsNotNone(put_out.request_id)
+        out = self.client.get_bucket_replication(bucket_name_src, '1')
+        self.assertIsNotNone(out.request_id)
+        self.assertTrue(len(out.rules) == 1)
+        self.assertEqual(out.rules[0].id, '1')
+        self.assertEqual(out.rules[0].prefix_set, ['prefix1', 'prefix2'])
+        self.assertEqual(out.rules[0].destination.bucket, bucket_name_crr)
+        self.assertEqual(out.rules[0].destination.location, self.region2)
+        self.assertEqual(out.rules[0].destination.storage_class, StorageClassType.Storage_Class_Ia)
+        self.assertEqual(out.rules[0].destination.storage_class_inherit_directive,
+                         StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object)
+        self.assertEqual(out.rules[0].historical_object_replication, StatusType.Status_Enable)
+        self.assertIsNotNone(out.rules[0].progress)
+        self.assertEqual(out.rules[0].progress.historical_object, 0.0)
+        out = self.client.get_bucket_replication(bucket_name_src, '2')
+        self.assertIsNotNone(out.request_id)
+        self.assertTrue(len(out.rules) == 1)
+        self.assertEqual(out.rules[0].id, '2')
+        self.assertEqual(out.rules[0].prefix_set, ['prefix3', 'prefix4'])
+        self.assertEqual(out.rules[0].destination.bucket, bucket_name_crr_2)
+        self.assertEqual(out.rules[0].destination.location, self.region2)
+        self.assertEqual(out.rules[0].destination.storage_class, StorageClassType.Storage_Class_Standard)
+        self.assertEqual(out.rules[0].destination.storage_class_inherit_directive,
+                         StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object)
+        self.assertEqual(out.rules[0].historical_object_replication, StatusType.Status_Disable)
+        self.assertIsNotNone(out.rules[0].progress)
+        self.assertEqual(out.rules[0].progress.historical_object, 0.0)
+
+        out = self.client.get_bucket_replication(bucket_name_src)
+        self.assertEqual(len(out.rules), 2)
+
+        out = self.client.delete_bucket_replication(bucket_name_src)
+        self.assertIsNotNone(out.request_id)
+
+        with self.assertRaises(TosServerError):
+            self.client.get_bucket_replication(bucket_name_src)
+
+    def test_bucket_version(self):
+        bucket_name = self.bucket_name + 'version'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        out = self.client.put_bucket_versioning(bucket_name, VersioningStatusType.Versioning_Status_Enabled)
+        self.assertIsNotNone(out.request_id)
+        out = self.client.get_bucket_version(bucket_name)
+        self.assertIsNotNone(out.request_id)
+        self.assertEqual(VersioningStatusType.Versioning_Status_Enabled, out.status)
+        time.sleep(20)
+        self.client.put_bucket_versioning(bucket_name, VersioningStatusType.Versioning_Status_Suspended)
+        out = self.client.get_bucket_version(bucket_name)
+        self.assertEqual(out.status, VersioningStatusType.Versioning_Status_Suspended)
+
+    def test_bucket_website(self):
+        bucket_name = self.bucket_name + 'website'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        rule1 = RoutingRule(condition=RoutingRuleCondition(key_prefix_equals='prefix'),
+                            redirect=RoutingRuleRedirect(protocol=ProtocolType.Protocol_Http, host_name='test2.name',
+                                                         replace_key_with='replace_key_with',
+                                                         http_redirect_code=302))
+        rule2 = RoutingRule(condition=RoutingRuleCondition(http_error_code_returned_equals=403),
+                            redirect=RoutingRuleRedirect(protocol=ProtocolType.Protocol_Https, host_name='test3.name',
+                                                         replace_key_prefix_with='replace_prefix2',
+                                                         http_redirect_code=301))
+        redirect_all = RedirectAllRequestsTo('test.com', 'http')
+        index_document = IndexDocument('index.html', forbidden_sub_dir=True)
+        error_document = ErrorDocument('error.html')
+        routing_rules = RoutingRules([rule1, rule2])
+        out = self.client.put_bucket_website(bucket=bucket_name, redirect_all_requests_to=redirect_all)
+        self.assertIsNotNone(out.request_id)
+        out = self.client.get_bucket_website(bucket=bucket_name)
+        self.assertEqual(out.redirect_all_requests_to.protocol, 'http')
+        self.assertEqual(out.redirect_all_requests_to.host_name, 'test.com')
+
+        self.client.put_bucket_website(bucket_name, index_document=index_document, error_document=error_document,
+                                       routing_rules=routing_rules)
+
+        out = self.client.get_bucket_website(bucket_name)
+        self.assertEqual(out.index_document.suffix, 'index.html')
+        self.assertEqual(out.index_document.forbidden_sub_dir, True)
+
+        self.assertEqual(out.error_document.key, 'error.html')
+        self.assertEqual(len(out.routing_rules), 2)
+        self.assertEqual(out.routing_rules[0].condition.key_prefix_equals, 'prefix')
+        self.assertEqual(out.routing_rules[0].condition.http_error_code_returned_equals, None)
+        self.assertEqual(out.routing_rules[0].redirect.host_name, 'test2.name')
+        self.assertEqual(out.routing_rules[0].redirect.protocol, ProtocolType.Protocol_Http)
+        self.assertEqual(out.routing_rules[0].redirect.http_redirect_code, 302)
+        self.assertEqual(out.routing_rules[0].redirect.replace_key_with, 'replace_key_with')
+
+        self.assertEqual(out.routing_rules[1].condition.http_error_code_returned_equals, 403)
+        self.assertEqual(out.routing_rules[1].condition.key_prefix_equals, None)
+        self.assertEqual(out.routing_rules[1].redirect.host_name, 'test3.name')
+        self.assertEqual(out.routing_rules[1].redirect.protocol, ProtocolType.Protocol_Https)
+        self.assertEqual(out.routing_rules[1].redirect.http_redirect_code, 301)
+        self.assertEqual(out.routing_rules[1].redirect.replace_key_prefix_with, 'replace_prefix2')
+
+        delete_out = self.client.delete_bucket_website(bucket_name)
+        self.assertIsNotNone(delete_out.request_id)
+        with self.assertRaises(TosServerError):
+            out = self.client.get_bucket_website(bucket_name)
+
+    # def test_put_bucket_custom_domain(self):
+    #     bucket_name = self.bucket_name + '-custom-domain1'
+    #     self.client2.create_bucket(bucket_name)
+    #     self.bucket_delete.append(bucket_name)
+    #     domain = CustomDomainRule(domain='example22.test.com', forbidden=True, forbidden_reason='test')
+    #     domain2 = CustomDomainRule(domain='example33.test.com', forbidden=False, forbidden_reason='test2',
+    #                                cert_status=CertStatus.Cert_Status_Bound)
+    #     self.client2.put_bucket_custom_domain(bucket_name, domain)
+    #     self.client2.put_bucket_custom_domain(bucket_name, domain2)
+    #
+    #     list_out = self.client2.List_bucket_custom_domain(bucket_name)
+    #     self.assertEqual(list_out.rules[0].domain, 'example2.test.com')
+    #     self.assertEqual(list_out.rules[1].domain, 'example3.test.com')
+    #     out = self.client2.delete_bucket_custom_domain(bucket_name, domain='example2.test.com')
+    #     self.assertIsNotNone(out.request_id)
+    #     list_out = self.client2.List_bucket_custom_domain(bucket_name)
+    #     self.assertEqual(len(list_out.rules), 1)
+    #     self.client2.delete_bucket_custom_domain(bucket_name, domain='example3.test.com')
+    #     with self.assertRaises(TosServerError):
+    #         self.client2.List_bucket_custom_domain(bucket_name)
+
+    def test_put_bucket_notification(self):
+        bucket_name = self.bucket_name + '-notification'
+        self.client2.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        config = CloudFunctionConfiguration(
+            id='1',
+            events=['tos:ObjectCreated:Put', 'tos:ObjectCreated:Post'],
+            filter=Filter(
+                key=FilterKey(
+                    rules=[FilterRule(name='prefix', value='object')]
+                )),
+            cloud_function='zkru2tzw'
+        )
+        out = self.client2.put_bucket_notification(bucket_name, [config])
+        self.assertIsNotNone(out.request_id)
+        get_out = self.client2.get_bucket_notification(bucket_name)
+        self.assertEqual(get_out.cloud_function_configurations[0].id, '1')
+        self.assertEqual(get_out.cloud_function_configurations[0].events,
+                         ['tos:ObjectCreated:Put', 'tos:ObjectCreated:Post'])
+        self.assertEqual(get_out.cloud_function_configurations[0].cloud_function, 'zkru2tzw')
+        self.assertEqual(get_out.cloud_function_configurations[0].filter.key.rules[0].name, 'prefix')
+        self.assertEqual(get_out.cloud_function_configurations[0].filter.key.rules[0].value, 'object')
+
+    def test_put_bucket_real_time_log(self):
+        bucket_name = self.bucket_name + '-notification'
+        self.client2.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        config = RealTimeLogConfiguration(role='TOSLogArchiveTLSRole',
+                                          configuration=AccessLogConfiguration(use_service_topic=True))
+        out = self.client2.put_bucket_real_time_log(bucket_name, config)
+        self.assertIsNotNone(out.request_id)
+        get_out = self.client2.get_bucket_real_time_log(bucket_name)
+        self.assertIsNotNone(get_out.request_id)
+        self.assertEqual(get_out.configuration.role, 'TOSLogArchiveTLSRole')
+        self.assertEqual(get_out.configuration.configuration.use_service_topic, True)
+        self.assertIsNotNone(get_out.configuration.configuration.use_service_topic)
+        self.assertIsNotNone(get_out.configuration.configuration.tls_project_id)
+        delete_out = self.client2.delete_bucket_real_time_log(bucket_name)
+        self.assertIsNotNone(delete_out.request_id)
+        with self.assertRaises(TosServerError):
+            self.client2.get_bucket_real_time_log(bucket_name)
+
     def retry_assert(self, func):
         for i in range(5):
             if func():
@@ -473,6 +676,17 @@ class TestBucket(TosTestBase):
                 tim.sleep(i + 2)
 
         self.assertTrue(False)
+
+    def test_delete_all(self):
+        out = self.client2.list_buckets()
+        task = TaskExecutor(15, clean_and_delete_bucket, None)
+        for bucket in out.buckets:
+            if bucket.name.startswith('sun'):
+                if bucket.extranet_endpoint == self.endpoint2:
+                    task.submit(self.client2, bucket.name)
+                if bucket.extranet_endpoint == self.endpoint:
+                    task.submit(self.client, bucket.name)
+        task.run()
 
 
 if __name__ == "__main__":

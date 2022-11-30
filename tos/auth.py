@@ -13,7 +13,7 @@ from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD, LAST_MODIFY_TIME_DATE_FORMAT
 from .credential import FederationCredentials, StaticCredentials
 from .exceptions import TosClientError
 from .models2 import PreSignedPostSignatureOutPut, ContentLengthRange
-from .utils import to_bytes
+from .utils import to_bytes, _param_to_quoted_query
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +59,9 @@ def _canonical_request(req):
     return '\n'.join(cr)
 
 
-def _param_to_quoted_query(k, v):
-    if v:
-        return quote(str(k), '') + '=' + quote(str(v), '')
-    else:
-        return quote(k, '/~')
+def _x_tos_policy_canonical_request(params):
+    cr = [_canonical_query_string_params(params), UNSIGNED_PAYLOAD]
+    return '\n'.join(cr)
 
 
 def _sign(key, msg, hex=False):
@@ -103,6 +101,19 @@ def _get_post_policy(date: str, expire: int, algorithm, credential, bucket, obje
 
     post_policy["conditions"] = cond
     return post_policy
+
+
+def _get_policy(conditions: []):
+    policy = {}
+    cond = []
+    for c in conditions:
+        _check_policy_key(c.key)
+        if c.operator:
+            cond.append([c.operator, "${}".format(c.key), c.value])
+            continue
+        cond.append({c.key: c.value})
+    policy['conditions'] = cond
+    return policy
 
 
 class AuthBase():
@@ -159,11 +170,37 @@ class AuthBase():
 
         return sign
 
+    def x_tos_post_sign(self, expires: int, conditions: []):
+        if expires is None:
+            expires = 60 * 60
+        date = datetime.datetime.utcnow().strftime(DATE_FORMAT)
+        self.credential = self.credentials_provider.get_credentials()
+        params = {}
+        params['X-Tos-Algorithm'] = 'TOS4-HMAC-SHA256'
+        params['X-Tos-Credential'] = self._credential(date)
+        params['X-Tos-Date'] = date
+        params['X-Tos-Expires'] = expires
+        if self.credential.get_security_token():
+            params["X-Tos-Security-Token"] = self.credential.get_security_token()
+        params['X-Tos-Policy'] = base64.b64encode(json.dumps(_get_policy(conditions)).encode('utf-8')).decode('utf-8')
+        params['X-Tos-Signature'] = self._make_x_tos_policy_signature(date=date, params=params)
+
+        return '&'.join(_param_to_quoted_query(k, v) for k, v in params.items())
+
     def _make_signature(self, date, req=None, string_to_sign=None):
         if not string_to_sign:
             canonical_request = _canonical_request(req)
             logger.debug("pre-request: canonical_request:\n%s", canonical_request)
             string_to_sign = self._string_to_sign(canonical_request, date)
+        logger.debug("pre-request: string_to_sign:\n%s", string_to_sign)
+        signature = self._signature(string_to_sign, date)
+        logger.debug("pre-request: signature:\n%s", signature)
+        return signature
+
+    def _make_x_tos_policy_signature(self, date, params):
+        canonical_request = _x_tos_policy_canonical_request(params)
+        logger.debug("pre-request: canonical_request:\n%s", canonical_request)
+        string_to_sign = self._string_to_sign(canonical_request, date)
         logger.debug("pre-request: string_to_sign:\n%s", string_to_sign)
         signature = self._signature(string_to_sign, date)
         logger.debug("pre-request: signature:\n%s", signature)

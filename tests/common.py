@@ -55,7 +55,9 @@ class TosTestBase(unittest.TestCase):
         self.ak = os.getenv('AK')
         self.sk = os.getenv('SK')
         self.endpoint = os.getenv('Endpoint')
+        self.endpoint2 = os.getenv('Endpoint2')
         self.region = os.getenv('Region')
+        self.region2 = os.getenv('Region2')
         self.bucket_name = "sun-" + random_string(10)
         self.object_name = "test_object" + random_string(10)
         self.prefix = random_string(12)
@@ -67,8 +69,9 @@ class TosTestBase(unittest.TestCase):
 
     def setUp(self):
         self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2)
-        self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True,
+        self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region, enable_crc=False,
                                           max_retry_count=2)
+        self.client2 = TosClientV2(self.ak, self.sk, self.endpoint2, self.region2, enable_crc=True, max_retry_count=2)
 
     def tearDown(self):
         for file in self.temp_files:
@@ -79,6 +82,10 @@ class TosTestBase(unittest.TestCase):
                     raise
         for bkt in self.bucket_delete:
             clean_and_delete_bucket(self.client, bkt)
+            clean_and_delete_bucket(self.client2, bkt)
+
+        self.client.close()
+        self.client2.close()
 
     def assertFileContent(self, filename, content):
         with open(filename, 'rb') as f:
@@ -184,7 +191,6 @@ def clean_and_delete_bucket(tos_client: tos.TosClientV2, bucket: str):
         for upload in rsp.uploads:
             tos_client.abort_multipart_upload(bucket=bucket, key=upload.key, upload_id=upload.upload_id)
 
-    time.sleep(1)
     tos_client.delete_bucket(bucket=bucket)
 
 
