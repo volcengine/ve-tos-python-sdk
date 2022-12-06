@@ -181,7 +181,6 @@ class TestObject(TosTestBase):
         key = '/+'
         self.client.put_object(bucket_name, key, content=content)
 
-
         key = '.'
         with self.assertRaises(TosClientError):
             self.client.put_object(bucket_name, key, content=content)
@@ -1047,15 +1046,20 @@ class TestObject(TosTestBase):
         get_out = requests.get(get_url)
         self.assertEqual(b'1', get_out.content)
 
-        out_1 = self.client.pre_signed_policy_url(bucket_name, conditions, alternative_endpoint='tos-cn-beijing.volces.com')
+        out_1 = self.client.pre_signed_policy_url(bucket_name, conditions,
+                                                  alternative_endpoint='tos-cn-beijing.volces.com')
         self.assertEqual(out_1._host, 'tos-cn-beijing.volces.com')
         self.assertEqual(out_1._scheme, 'https://')
-        out_11 = self.client.pre_signed_policy_url(bucket_name, conditions, alternative_endpoint='tos-cn-beijing.volces.com', is_custom_domain=True)
+        out_11 = self.client.pre_signed_policy_url(bucket_name, conditions,
+                                                   alternative_endpoint='tos-cn-beijing.volces.com',
+                                                   is_custom_domain=True)
         self.assertIsNone(out_11._bucket)
-        out_2 = self.client.pre_signed_policy_url(bucket_name, conditions, alternative_endpoint='http://tos-cn-beijing.volces.com')
+        out_2 = self.client.pre_signed_policy_url(bucket_name, conditions,
+                                                  alternative_endpoint='http://tos-cn-beijing.volces.com')
         self.assertEqual(out_2._host, 'tos-cn-beijing.volces.com')
         self.assertEqual(out_2._scheme, 'http://')
-        out_3 = self.client.pre_signed_policy_url(bucket_name, conditions, alternative_endpoint='https://tos-cn-beijing.volces.com')
+        out_3 = self.client.pre_signed_policy_url(bucket_name, conditions,
+                                                  alternative_endpoint='https://tos-cn-beijing.volces.com')
         self.assertEqual(out_3._host, 'tos-cn-beijing.volces.com')
         self.assertEqual(out_3._scheme, 'https://')
 
@@ -1131,6 +1135,35 @@ class TestObject(TosTestBase):
 
         out = self.client.get_object(bucket=save_bucket_name, key=key)
         self.assertEqual(out.read(), content[0:101])
+
+    def test_non_file(self):
+        bucket_name = self.bucket_name + 'non-file'
+        key = self.random_key('.js')
+        file_name = self.random_filename()
+        download_file_1 = self.random_filename()
+        download_file_2 = self.random_filename()
+        with open(file_name, 'wb+') as f:
+            pass
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object_from_file(bucket_name, key, file_name)
+        self.client.head_object(bucket_name, key)
+        self.client.get_object_to_file(bucket_name, key, download_file_1)
+
+        self.client.delete_object(bucket_name, key)
+        self.client.upload_file(bucket_name, key, file_name)
+
+        self.client.head_object(bucket_name, key)
+        self.client.download_file(bucket_name, key, download_file_2)
+        with self.assertRaises(TosClientError):
+            self.client.resumable_copy_object(bucket_name, key + '1', bucket_name, key)
+        self.client.copy_object(bucket_name, key + '1', bucket_name, key)
+
+        out = self.client.create_multipart_upload(bucket_name, key + '2')
+        part = self.client.upload_part_from_file(bucket_name, key + '2', upload_id=out.upload_id, part_number=1,
+                                                 file_path=file_name)
+        self.client.complete_multipart_upload(bucket_name, key + '2', upload_id=out.upload_id, parts=[part])
+        self.client.head_object(bucket_name, key + '2')
 
     def wrapper_socket_io(self, init, crc, use_data_transfer_listener, ues_limiter, bucket_name):
         def progress(consumed_bytes, total_bytes, rw_once_bytes,

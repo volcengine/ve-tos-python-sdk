@@ -27,7 +27,7 @@ tos.set_logger()
 class TestBucket(TosTestBase):
 
     def test_ua(self):
-        assert 'v2.5.0' in tos.clientv2.USER_AGENT
+        assert 'v' in tos.clientv2.USER_AGENT
 
     def test_bucket(self):
         bucket_name = self.bucket_name + "basic"
