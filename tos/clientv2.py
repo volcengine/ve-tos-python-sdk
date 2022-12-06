@@ -1364,8 +1364,12 @@ class TosClientV2(TosClient):
         if not os.path.exists(file_path) or (os.path.isdir(file_path)):
             raise TosClientError('invalid file path, the file does not exist')
 
+        size = os.path.getsize(to_unicode(file_path))
         with open(to_unicode(file_path), 'rb') as f:
-            f = init_content(f, can_reset=True, init_offset=0)
+            if size == 0:
+                f = None
+            else:
+                f = init_content(f, can_reset=True, init_offset=0)
             return self.put_object(bucket, key, content_length, content_md5, content_sha256, cache_control,
                                    content_disposition, content_encoding, content_language,
                                    content_type, expires, acl, grant_full_control, grant_read, grant_read_acp,
@@ -1820,8 +1824,10 @@ class TosClientV2(TosClient):
                     part_updated.append(
                         PartInfo(p['part_number'], p['part_size'], p['offset'], p['etag'], p['hash_crc64ecma'],
                                  p['is_completed']))
-            parts = _get_parts_to_upload(size, part_size, part_updated)
-
+            if size == 0:
+                parts.append(_PartToDo(part_number=1, start=0, end=0))
+            else:
+                parts = _get_parts_to_upload(size, part_size, part_updated)
         else:
             # 否则创建分段任务, parts等信息
             create_mult_upload = None
@@ -1869,8 +1875,10 @@ class TosClientV2(TosClient):
             }
 
             store.put(bucket, key, record)
-
-            parts = _get_parts_to_upload(size, part_size, [])
+            if size == 0:
+                parts.append(_PartToDo(part_number=1, start=0, end=0))
+            else:
+                parts = _get_parts_to_upload(size, part_size, [])
 
         uploader = _BreakpointUploader(self, bucket=bucket, key=key, file_path=file_path, store=store,
                                        task_num=task_num, parts_to_update=parts, upload_id=upload_id,
@@ -1979,6 +1987,9 @@ class TosClientV2(TosClient):
 
         size = head_out.content_length
 
+        if size == 0:
+            raise TosClientError('object size is 0, please use copy_object')
+
         check_part_number(size, part_size)
 
         if checkpoint_file:
@@ -2012,7 +2023,10 @@ class TosClientV2(TosClient):
                     part_updated.append(
                         PartInfo(p['part_number'], p['part_size'], p['offset'], p['etag'], p['hash_crc64ecma'],
                                  p['is_completed']))
-            parts = _get_parts_to_upload(size, part_size, part_updated)
+            if size == 0:
+                parts.append(_PartToDo(part_number=1, start=0, end=0))
+            else:
+                parts = _get_parts_to_upload(size, part_size, part_updated)
 
         else:
             # 否则创建分段任务, parts等信息
@@ -2062,8 +2076,10 @@ class TosClientV2(TosClient):
             }
 
             store.put(bucket, key, record, src_bucket=src_bucket, src_key=src_key, version_id=src_version_id)
-
-            parts = _get_parts_to_upload(size, part_size, [])
+            if size == 0:
+                parts.append(_PartToDo(part_number=1, start=0, end=0))
+            else:
+                parts = _get_parts_to_upload(size, part_size, [])
 
         uploader = _BreakpointResumableCopyObject(self, bucket=bucket, key=key, store=store,
                                                   src_bucket=src_bucket, src_object=src_key,
@@ -2332,7 +2348,7 @@ class TosClientV2(TosClient):
                                     ssec_key=ssec_key,
                                     ssec_key_md5=ssec_key_md5,
                                     server_side_encryption=server_side_encryption,
-                                    content=content,
+                                    content=content if size != 0 else None,
                                     data_transfer_listener=data_transfer_listener,
                                     rate_limiter=rate_limiter
                                     )
