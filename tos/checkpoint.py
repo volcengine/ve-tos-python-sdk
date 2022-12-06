@@ -62,7 +62,10 @@ class CheckPointStore(object):
 
     def delete(self, bucket, key, src_bucket=None, src_key=None, version_id=None):
         pathname = self.path(bucket, key, src_bucket=src_bucket, src_key=src_key, versionId=version_id)
-        os.remove(pathname)
+        try:
+            os.remove(pathname)
+        except Exception:
+            return
 
     def path(self, bucket, key, src_bucket=None, src_key=None, versionId=None):
         encode_str = ''
@@ -75,11 +78,9 @@ class CheckPointStore(object):
             encode_str += bucket + '.' + key
             if versionId:
                 encode_str += '.' + versionId
-        encoding_data = urllib.parse.quote(hashlib.md5(to_bytes(encode_str)).digest(), safe='')
-        if self.file_name:
-            name = "{0}.{1}.{2}".format(self.file_name, encoding_data, self.suffix)
-        else:
-            name = "{0}.{1}".format(encoding_data, self.suffix)
+        encoding_data = urllib.parse.quote(hashlib.md5(to_bytes(self.file_name + encode_str)).digest(), safe='')
+
+        name = "{0}.{1}".format(encoding_data, self.suffix)
         return os.path.join(self.dir, name)
 
 
@@ -261,7 +262,7 @@ class _BreakpointUploader(BreakpointBase):
                 result = self.client.upload_part(bucket=self.bucket, key=self.key, upload_id=self.upload_id,
                                                  part_number=part.part_number,
                                                  content=SizeAdapter(f, part.size, init_offset=part.start,
-                                                                     can_reset=True),
+                                                                     can_reset=True) if part.size != 0 else None,
                                                  data_transfer_listener=self.datatransfer_listener,
                                                  rate_limiter=self.rate_limiter,
                                                  ssec_algorithm=self.ssec_algorithm,
@@ -285,7 +286,7 @@ class _BreakpointUploader(BreakpointBase):
         try:
             parts = _cover_to_uploaded_parts(self.finished_parts)
             result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts)
-            if self.client.enable_crc:
+            if self.client.enable_crc and not (len(self.finished_parts) == 1 and self.finished_parts[0].part_size == 0):
                 parts = sorted(self.finished_parts, key=lambda p: p.part_number)
                 download_crc = cal_crc_from_upload_parts(parts)
                 check_crc("upload_file", download_crc, result.hash_crc64_ecma, result.request_id)
