@@ -1364,12 +1364,8 @@ class TosClientV2(TosClient):
         if not os.path.exists(file_path) or (os.path.isdir(file_path)):
             raise TosClientError('invalid file path, the file does not exist')
 
-        size = os.path.getsize(to_unicode(file_path))
         with open(to_unicode(file_path), 'rb') as f:
-            if size == 0:
-                f = None
-            else:
-                f = init_content(f, can_reset=True, init_offset=0)
+            f = init_content(f, can_reset=True, init_offset=0)
             return self.put_object(bucket, key, content_length, content_md5, content_sha256, cache_control,
                                    content_disposition, content_encoding, content_language,
                                    content_type, expires, acl, grant_full_control, grant_read, grant_read_acp,
@@ -1439,6 +1435,8 @@ class TosClientV2(TosClient):
 
         if content:
             content = init_content(content)
+            if isinstance(content, _ReaderAdapter) and content.size == 0:
+                raise TosClientError('Your proposed append content is smaller than the minimum allowed size')
 
             if data_transfer_listener:
                 content = utils.add_progress_listener_func(content, data_transfer_listener)
@@ -2023,10 +2021,7 @@ class TosClientV2(TosClient):
                     part_updated.append(
                         PartInfo(p['part_number'], p['part_size'], p['offset'], p['etag'], p['hash_crc64ecma'],
                                  p['is_completed']))
-            if size == 0:
-                parts.append(_PartToDo(part_number=1, start=0, end=0))
-            else:
-                parts = _get_parts_to_upload(size, part_size, part_updated)
+            parts = _get_parts_to_upload(size, part_size, part_updated)
 
         else:
             # 否则创建分段任务, parts等信息
@@ -2076,10 +2071,8 @@ class TosClientV2(TosClient):
             }
 
             store.put(bucket, key, record, src_bucket=src_bucket, src_key=src_key, version_id=src_version_id)
-            if size == 0:
-                parts.append(_PartToDo(part_number=1, start=0, end=0))
-            else:
-                parts = _get_parts_to_upload(size, part_size, [])
+
+            parts = _get_parts_to_upload(size, part_size, [])
 
         uploader = _BreakpointResumableCopyObject(self, bucket=bucket, key=key, store=store,
                                                   src_bucket=src_bucket, src_object=src_key,
@@ -2348,7 +2341,7 @@ class TosClientV2(TosClient):
                                     ssec_key=ssec_key,
                                     ssec_key_md5=ssec_key_md5,
                                     server_side_encryption=server_side_encryption,
-                                    content=content if size != 0 else None,
+                                    content=content,
                                     data_transfer_listener=data_transfer_listener,
                                     rate_limiter=rate_limiter
                                     )
@@ -3096,7 +3089,8 @@ class TosClientV2(TosClient):
             auth.sign_request(req)
 
         # 对于网络流的对象, 删除header中的 host 元素
-        if isinstance(data, _IterableAdapter):
+        # 对于能获取大小的流对象，但size==0, 删除header中的 host 元素
+        if isinstance(data, _IterableAdapter) or (isinstance(data, _ReaderAdapter) and data.size == 0):
             del headers['Host']
 
         if 'User-Agent' not in req.headers:
