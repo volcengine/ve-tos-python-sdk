@@ -455,7 +455,7 @@ class TestBucket(TosTestBase):
         self.assertEqual(rule1.non_current_version_transitions[0].storage_class, StorageClassType.Storage_Class_Ia)
 
     def test_put_bucket_acl(self):
-        bucket_name = self.bucket_name + 'acl'
+        bucket_name = self.bucket_name + '-acl'
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
         put_out = self.client.put_bucket_acl(bucket=bucket_name, grant_write='id={}'.format(2))
@@ -650,7 +650,7 @@ class TestBucket(TosTestBase):
         self.assertEqual(get_out.cloud_function_configurations[0].filter.key.rules[0].value, 'object')
 
     def test_put_bucket_real_time_log(self):
-        bucket_name = self.bucket_name + '-notification'
+        bucket_name = self.bucket_name + '-real_time_log'
         self.client2.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
         config = RealTimeLogConfiguration(role='TOSLogArchiveTLSRole',
