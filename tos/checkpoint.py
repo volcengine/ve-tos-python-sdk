@@ -262,7 +262,7 @@ class _BreakpointUploader(BreakpointBase):
                 result = self.client.upload_part(bucket=self.bucket, key=self.key, upload_id=self.upload_id,
                                                  part_number=part.part_number,
                                                  content=SizeAdapter(f, part.size, init_offset=part.start,
-                                                                     can_reset=True) if part.size != 0 else None,
+                                                                     can_reset=True),
                                                  data_transfer_listener=self.datatransfer_listener,
                                                  rate_limiter=self.rate_limiter,
                                                  ssec_algorithm=self.ssec_algorithm,
@@ -286,7 +286,7 @@ class _BreakpointUploader(BreakpointBase):
         try:
             parts = _cover_to_uploaded_parts(self.finished_parts)
             result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts)
-            if self.client.enable_crc and not (len(self.finished_parts) == 1 and self.finished_parts[0].part_size == 0):
+            if self.client.enable_crc:
                 parts = sorted(self.finished_parts, key=lambda p: p.part_number)
                 download_crc = cal_crc_from_upload_parts(parts)
                 check_crc("upload_file", download_crc, result.hash_crc64_ecma, result.request_id)

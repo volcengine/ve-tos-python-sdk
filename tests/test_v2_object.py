@@ -627,6 +627,54 @@ class TestObject(TosTestBase):
         self.client.put_object(bucket_name, 'test/test')
         out = self.client.list_objects(bucket_name, prefix='test/', max_keys=1)
 
+    def test_empty(self):
+        bucket_name = self.bucket_name + '-test-empty'
+        file_name = self.random_filename()
+        self.client.create_bucket(bucket_name, acl=tos.ACLType.ACL_Public_Read_Write)
+        self.bucket_delete.append(bucket_name)
+
+        def percentage(consumed_bytes, total_bytes, rw_once_bytes,
+                       type: DataTransferType):
+            if total_bytes:
+                rate = int(100 * float(consumed_bytes) / float(total_bytes))
+                print("rate:{}, consumed_bytes:{},total_bytes{}, rw_once_bytes:{}, type:{}".format(rate, consumed_bytes,
+                                                                                                   total_bytes,
+                                                                                                   rw_once_bytes, type))
+
+        rate_limiter = RateLimiter(rate=5 * 1024 * 1024, capacity=10 * 1024 * 1024)
+
+        with open(file_name, 'wb+') as f:
+            pass
+
+        with open(file_name, 'rb+') as f:
+            self.client.put_object(bucket_name, 'test', content=f, data_transfer_listener=percentage,
+                                   rate_limiter=rate_limiter)
+            self.assertEqual(self.client.get_object(bucket_name, 'test').read(), b'')
+
+        rate_limiter = RateLimiter(rate=5 * 1024 * 1024, capacity=10 * 1024 * 1024)
+        self.client.put_object(bucket_name, 'test123', content=StringIO(""))
+        self.assertEqual(self.client.get_object(bucket_name, 'test123').read(), b'')
+        self.client.put_object(bucket_name, 'test', content=BytesIO(b""))
+        self.assertEqual(self.client.get_object(bucket_name, 'test').read(), b'')
+        self.client.put_object(bucket_name, 'test', content="")
+        self.assertEqual(self.client.get_object(bucket_name, 'test').read(), b'')
+        self.client.put_object(bucket_name, 'test', content=b'')
+        self.assertEqual(self.client.get_object(bucket_name, 'test').read(), b'')
+        self.client.put_object_from_file(bucket_name, 'test', file_name, data_transfer_listener=percentage,
+                                         rate_limiter=rate_limiter)
+        self.assertEqual(self.client.get_object(bucket_name, 'test').read(), b'')
+        self.client.upload_file(bucket_name, 'test', file_name, data_transfer_listener=percentage,
+                                rate_limiter=rate_limiter)
+        self.assertEqual(self.client.get_object(bucket_name, 'test').read(), b'')
+        with self.assertRaises(TosClientError):
+            out = self.client.append_object(bucket_name, 'test456', 0, StringIO(""))
+
+        create_out = self.client.create_multipart_upload(bucket_name, 'test789')
+        self.client.upload_part(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1, content=StringIO(''))
+        self.client.upload_part(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1,
+                                content=BytesIO(b''))
+        self.client.upload_part_from_file(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1, file_path=file_name)
+
     def test_list_object_with_case(self):
         bucket_name = self.bucket_name + '-test-list-object-with-case'
         self.client.create_bucket(bucket_name)
