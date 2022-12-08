@@ -69,7 +69,7 @@ class TosTestBase(unittest.TestCase):
 
     def setUp(self):
         self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2)
-        self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region, enable_crc=False,
+        self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region,
                                           max_retry_count=2)
         self.client2 = TosClientV2(self.ak, self.sk, self.endpoint2, self.region2, enable_crc=True, max_retry_count=2)
 

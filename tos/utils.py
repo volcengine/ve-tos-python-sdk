@@ -571,7 +571,7 @@ def add_Background_func(data, can_reset=False, init_offset=None, size=None):
         size = _get_size(data)
     if size is None and hasattr(data, '__iter__'):
         return _IterableAdapter(data, can_reset=False)
-    elif size:
+    elif size is not None:
         return _ReaderAdapter(data, size=size, can_reset=can_reset, init_offset=init_offset)
     raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
 
@@ -586,7 +586,7 @@ def add_progress_listener_func(data, progress_callback, download_operator=False,
         size = _get_size(data)
     if size is None and hasattr(data, '__iter__'):
         return _IterableAdapter(data, progress_callback=progress_callback, can_reset=False)
-    elif size or is_response:
+    elif size is not None or is_response:
         return _ReaderAdapter(data=data, progress_callback=progress_callback, size=size,
                               download_operator=download_operator, can_reset=can_reset, init_offset=init_offset)
     raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
@@ -601,7 +601,7 @@ def add_rate_limiter_func(data, rate_limiter, size=None, can_reset=False, init_o
         size = _get_size(data)
     if size is None and hasattr(data, '__iter__'):
         return _IterableAdapter(data, limiter_callback=rate_limiter, can_reset=False)
-    elif size or is_response:
+    elif size is not None or is_response:
         return _ReaderAdapter(data=data, limiter_callback=rate_limiter, size=size, can_reset=can_reset,
                               init_offset=init_offset)
     raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
@@ -616,7 +616,7 @@ def add_crc_func(data, init_crc=0, discard=0, size=None, can_reset=False, is_res
         size = _get_size(data)
     if size is None and hasattr(data, '__iter__'):
         return _IterableAdapter(data, crc_callback=Crc64(init_crc), can_reset=False)
-    elif size or is_response:
+    elif size is not None or is_response:
         return _ReaderAdapter(data, size=size, crc_callback=Crc64(init_crc), can_reset=can_reset)
     raise TosClientError('{0} is not a file object, nor an iterator'.format(data.__class__.__name__))
 
@@ -733,8 +733,6 @@ def cal_crc_from_upload_parts(parts, init_crc=0):
     client_crc = 0
     crc_obj = Crc64(init_crc)
     for part in parts:
-        if not part.hash_crc64_ecma or not part.part_size:
-            return None
         client_crc = crc_obj.combine(client_crc, part.hash_crc64_ecma, part.part_size)
     return client_crc
 

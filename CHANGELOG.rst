@@ -1,6 +1,10 @@
 TOS SDK for Python 版本记录
 ===========================
 
+Version 2.5.3
+-------------
+- 修复：上传对象时不支持大小为0的流
+
 Version 2.5.2
 -------------
 - 修复：upload_file和put_object_from_file不支持空文件问题
