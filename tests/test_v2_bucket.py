@@ -650,7 +650,7 @@ class TestBucket(TosTestBase):
         self.assertEqual(get_out.cloud_function_configurations[0].filter.key.rules[0].value, 'object')
 
     def test_put_bucket_real_time_log(self):
-        bucket_name = self.bucket_name + '-real_time_log'
+        bucket_name = self.bucket_name + '-real-time-log'
         self.client2.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
         config = RealTimeLogConfiguration(role='TOSLogArchiveTLSRole',
