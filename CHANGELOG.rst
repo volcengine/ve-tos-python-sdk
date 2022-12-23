@@ -1,6 +1,10 @@
 TOS SDK for Python 版本记录
 ===========================
 
+Version 2.5.4
+-------------
+- 修复：删除resumable_copy_object中etag校验
+
 Version 2.5.3
 -------------
 - 修复：上传对象时不支持大小为0的流

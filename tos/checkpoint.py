@@ -384,10 +384,7 @@ class _BreakpointResumableCopyObject(BreakpointBase):
     def _last_task(self, **kwargs):
         try:
             parts = _cover_to_uploaded_parts(self.finished_parts)
-            tos_crc = kwargs.get('tos_crc')
             result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts)
-            if self.client.enable_crc:
-                check_crc("resumable_copy_object", result.hash_crc64_ecma, tos_crc, result.request_id)
             return result
         except Exception as e:
             raise TaskCompleteMultipartError(e)
