@@ -1,6 +1,10 @@
 TOS SDK for Python 版本记录
 ===========================
 
+Version 2.5.5
+-------------
+- 修复：不支持枚举类型，添加默认unknown枚举值
+
 Version 2.5.4
 -------------
 - 修复：删除resumable_copy_object中etag校验
