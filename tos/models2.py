@@ -5,7 +5,10 @@ from requests.structures import CaseInsensitiveDict
 
 from . import utils
 from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType, \
-    StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType
+    StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, \
+    convert_storage_class_type, convert_az_redundancy_type, convert_permission_type, convert_grantee_type, \
+    convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
+    convert_protocol_type, convert_cert_status
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
@@ -32,8 +35,8 @@ class HeadBucketOutput(ResponseInfo):
     def __init__(self, resp):
         super(HeadBucketOutput, self).__init__(resp)
         self.region = get_value(self.header, "x-tos-bucket-region")
-        self.storage_class = get_value(self.header, "x-tos-storage-class", lambda x: StorageClassType(x))
-        self.az_redundancy = get_value(self.header, "x-tos-az-redundancy", lambda x: AzRedundancyType(x))
+        self.storage_class = get_value(self.header, "x-tos-storage-class", lambda x: convert_storage_class_type(x))
+        self.az_redundancy = get_value(self.header, "x-tos-az-redundancy", lambda x: convert_az_redundancy_type(x))
 
 
 class DeleteBucketOutput(ResponseInfo):
@@ -196,7 +199,7 @@ class HeadObjectOutput(ResponseInfo):
         self.sse_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-MD5")
         self.website_redirect_location = get_value(resp.headers, "x-tos-website-redirect-location")
         self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
-        self.storage_class = StorageClassType(get_value(resp.headers, "x-tos-storage-class"))
+        self.storage_class = get_value(resp.headers, "x-tos-storage-class", lambda x: convert_storage_class_type(x))
         self.meta = CaseInsensitiveDict()
         self.object_type = get_value(resp.headers, "x-tos-object-type")
         if not self.object_type:
@@ -269,7 +272,7 @@ class ListObjectsOutput(ResponseInfo):
                 last_modified=last_modified,
                 etag=get_etag(object),
                 size=get_value(object, 'Size', int),
-                storage_class=get_value(object, 'StorageClass', lambda x: StorageClassType(x)),
+                storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
             )
             owner_info = get_value(object, 'Owner')
@@ -357,7 +360,7 @@ class ListObjectType2Output(ResponseInfo):
                 last_modified=last_modified,
                 etag=get_etag(object),
                 size=get_value(object, 'Size', int),
-                storage_class=StorageClassType(get_value(object, 'StorageClass', lambda x: StorageClassType(x))),
+                storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
             )
             owner_info = get_value(object, 'Owner')
@@ -464,7 +467,7 @@ class ListObjectVersionsOutput(ResponseInfo):
                 last_modified=last_modified,
                 etag=get_etag(object),
                 size=get_value(object, 'Size', lambda x: int(x)),
-                storage_class=StorageClassType(get_value(object, 'StorageClass')),
+                storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 version_id=get_value(object, 'VersionId'),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
                 is_latest=get_value(object, "IsLatest", lambda x: bool(x))
@@ -528,10 +531,10 @@ class GetObjectACLOutput(ResponseInfo):
             g = Grantee(
                 id=get_value(grant['Grantee'], 'ID'),
                 display_name=get_value(grant['Grantee'], 'DisplayName'),
-                type=get_value(grant['Grantee'], 'Type', lambda x: GranteeType(x)),
-                canned=get_value(grant['Grantee'], 'Canned', lambda x: CannedType(x)),
+                type=get_value(grant['Grantee'], 'Type', lambda x: convert_grantee_type(x)),
+                canned=get_value(grant['Grantee'], 'Canned', lambda x: convert_canned_type(x)),
             )
-            permission = get_value(grant, 'Permission', lambda x: PermissionType(x))
+            permission = get_value(grant, 'Permission', lambda x: convert_permission_type(x))
             self.grants.append(Grant(g, permission))
 
 
@@ -699,7 +702,7 @@ class ListMultipartUploadsOutput(ResponseInfo):
             multipart_upload_info = ListedUpload(
                 get_value(upload, 'Key'),
                 get_value(upload, 'UploadId'),
-                StorageClassType(get_value(upload, 'StorageClass')),
+                get_value(upload, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 initiated,
             )
 
@@ -728,7 +731,7 @@ class ListPartsOutput(ResponseInfo):
         self.part_number_marker = get_value(data, 'PartNumberMarker', lambda x: int(x))
         self.next_part_number_marker = get_value(data, 'NextPartNumberMarker', int)
         self.max_parts = get_value(data, 'MaxParts', lambda x: int(x))
-        self.storage_class = StorageClassType(get_value(data, 'StorageClass'))
+        self.storage_class = get_value(data, 'StorageClass', lambda x: convert_storage_class_type(x))
         self.parts = []
         if get_value(data, 'EncodingType'):
             self.encoding_type = get_value(data, 'EncodingType')
@@ -1037,7 +1040,7 @@ class GetBucketLifecycleOutput(ResponseInfo):
             rule.id = get_value(rule_json, 'ID')
             rule.prefix = get_value(rule_json, 'Prefix')
             if get_value(rule_json, 'Status'):
-                rule.status = get_value(rule_json, 'Status', lambda x: StatusType(x))
+                rule.status = get_value(rule_json, 'Status', lambda x: convert_status_type(x))
 
             expiration_json = get_value(rule_json, 'Expiration')
             non_current_version_expiration_json = get_value(rule_json, 'NoncurrentVersionExpiration')
@@ -1057,7 +1060,7 @@ class GetBucketLifecycleOutput(ResponseInfo):
                 rule.non_current_version_transitions = []
                 for vt in non_current_version_transitions_json:
                     tr = BucketLifeCycleNonCurrentVersionTransition()
-                    tr.storage_class = get_value(vt, 'StorageClass', lambda x: StorageClassType(x))
+                    tr.storage_class = get_value(vt, 'StorageClass', lambda x: convert_storage_class_type(x))
                     tr.non_current_days = get_value(vt, 'NoncurrentDays', int)
                     rule.non_current_version_transitions.append(tr)
 
@@ -1065,7 +1068,7 @@ class GetBucketLifecycleOutput(ResponseInfo):
                 rule.transitions = []
                 for transition_json in transitions_json:
                     ts = BucketLifeCycleTransition()
-                    ts.storage_class = get_value(transition_json, 'StorageClass', lambda x: StorageClassType(x))
+                    ts.storage_class = get_value(transition_json, 'StorageClass', lambda x: convert_storage_class_type(x))
                     ts.days = get_value(transition_json, 'Days', int)
                     if get_value(transition_json, 'Date'):
                         ts.date = parse_modify_time_to_utc_datetime(get_value(transition_json, 'Date'))
@@ -1131,7 +1134,7 @@ class GetBucketMirrorBackOutput(ResponseInfo):
                 )
             if red:
                 redirect = Redirect()
-                redirect.redirect_type = get_value(red, 'RedirectType', lambda x: RedirectType(x))
+                redirect.redirect_type = get_value(red, 'RedirectType', lambda x: convert_redirect_type(x))
                 redirect.fetch_source_on_redirect = get_value(red, 'FetchSourceOnRedirect', lambda x: bool(x))
 
                 if get_value(red, 'PublicSource') and get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'):
@@ -1208,10 +1211,10 @@ class GetBucketACLOutput(ResponseInfo):
             g = Grantee(
                 id=get_value(grant['Grantee'], 'ID'),
                 display_name=get_value(grant['Grantee'], 'DisplayName'),
-                type=get_value(grant['Grantee'], 'Type', lambda x: GranteeType(x)),
-                canned=get_value(grant['Grantee'], 'Canned', lambda x: CannedType(x)),
+                type=get_value(grant['Grantee'], 'Type', lambda x: convert_grantee_type(x)),
+                canned=get_value(grant['Grantee'], 'Canned', lambda x: convert_canned_type(x)),
             )
-            permission = PermissionType(get_value(grant, 'Permission'))
+            permission = get_value(grant, 'Permission', lambda x: convert_permission_type(x))
             self.grants.append(Grant(g, permission))
 
 
@@ -1230,6 +1233,7 @@ class PostSignatureCondition(object):
         self.key = key
         self.value = value
         self.operator = operator
+
 
 class PolicySignatureCondition(object):
     def __init__(self, key: str, value: str, operator=None):
@@ -1302,10 +1306,10 @@ class GetBucketReplicationOutput(ResponseInfo):
         for rule_json in rules_json:
             replication_rule = ReplicationRule()
             replication_rule.id = get_value(rule_json, 'ID')
-            replication_rule.status = get_value(rule_json, 'Status', lambda x: StatusType(x))
+            replication_rule.status = get_value(rule_json, 'Status', lambda x: convert_status_type(x))
             replication_rule.prefix_set = get_value(rule_json, 'PrefixSet')
             replication_rule.historical_object_replication = get_value(rule_json, 'HistoricalObjectReplication',
-                                                                       lambda x: StatusType(x))
+                                                                       lambda x: convert_status_type(x))
 
             destination_json = get_value(rule_json, 'Destination')
             progress_json = get_value(rule_json, 'Progress')
@@ -1313,7 +1317,7 @@ class GetBucketReplicationOutput(ResponseInfo):
                 replication_rule.destination = Destination(
                     bucket=get_value(destination_json, 'Bucket'),
                     location=get_value(destination_json, 'Location'),
-                    storage_class=get_value(destination_json, 'StorageClass', lambda x: StorageClassType(x)),
+                    storage_class=get_value(destination_json, 'StorageClass', lambda x: convert_storage_class_type(x)),
                     storage_class_inherit_directive=get_value(destination_json, 'StorageClassInheritDirective',
                                                               lambda x: StorageClassInheritDirectiveType(x)))
 
@@ -1338,9 +1342,7 @@ class GetBucketVersionOutput(ResponseInfo):
     def __init__(self, resp):
         super(GetBucketVersionOutput, self).__init__(resp)
         data = resp.json_read()
-        self.status = get_value(data, 'Status')
-        if self.status is not None:
-            self.status = VersioningStatusType(self.status)
+        self.status = get_value(data, 'Status', lambda x: convert_versioning_status_type(x))
 
 
 class RedirectAllRequestsTo(object):
@@ -1425,7 +1427,7 @@ class GetBucketWebsiteOutput(ResponseInfo):
                     http_error_code_returned_equals=get_value(condition, 'HttpErrorCodeReturnedEquals'),
                     key_prefix_equals=get_value(condition, 'KeyPrefixEquals'))
             if redirect:
-                rule.redirect = RoutingRuleRedirect(protocol=get_value(redirect, 'Protocol', lambda x: ProtocolType(x)),
+                rule.redirect = RoutingRuleRedirect(protocol=get_value(redirect, 'Protocol', lambda x: convert_protocol_type(x)),
                                                     host_name=get_value(redirect, 'HostName'),
                                                     replace_key_prefix_with=get_value(redirect, 'ReplaceKeyPrefixWith'),
                                                     replace_key_with=get_value(redirect, 'ReplaceKeyWith'),
@@ -1515,7 +1517,7 @@ class ListBucketCustomDomainOutput(ResponseInfo):
                                  cname=get_value(custom_domain_rule, 'Cname'),
                                  forbidden=get_value(custom_domain_rule, 'Forbidden'),
                                  forbidden_reason=get_value(custom_domain_rule, 'ForbiddenReason'),
-                                 cert_status=get_value(custom_domain_rule, 'CertStatus', lambda x: CertStatus(x))))
+                                 cert_status=get_value(custom_domain_rule, 'CertStatus', lambda x: convert_cert_status(x))))
 
 
 class DeleteCustomDomainOutput(ResponseInfo):

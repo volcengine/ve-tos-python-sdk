@@ -10,7 +10,12 @@ from requests.exceptions import RetryError
 from urllib3.exceptions import NewConnectionError
 
 import tos
-from tos import DnsCacheService, RateLimiter, exceptions, utils
+from tos import DnsCacheService, RateLimiter, exceptions, utils, convert_storage_class_type, ACLType, convert_acl_type, \
+    StorageClassType, MetadataDirectiveType, convert_metadata_directive_type, AzRedundancyType, \
+    convert_az_redundancy_type, PermissionType, convert_permission_type, GranteeType, convert_grantee_type, \
+    convert_canned_type, CannedType, RedirectType, convert_redirect_type, StatusType, convert_status_type, \
+    StorageClassInheritDirectiveType, convert_storage_class_inherit_directive_type, VersioningStatusType, \
+    convert_versioning_status_type, ProtocolType, convert_protocol_type, CertStatus, convert_cert_status
 from tos.checkpoint import CancelHook
 from tos.clientv2 import _handler_retry_policy, _is_wrapper_data
 from tos.exceptions import TosServerError, CancelNotWithAbortError, CancelWithAbortError
@@ -166,6 +171,60 @@ class BaseFuncTestCase(unittest.TestCase):
     def test_with_invalid_endpint(self):
         with self.assertRaises(tos.exceptions.TosClientError):
             tos.TosClientV2(self.ak, self.sk, 'tos-s3-cn-beijing.volces.com', self.region)
+
+    def test_convert_enum_type(self):
+        for t in ACLType:
+            assert t == convert_acl_type(t.value)
+        assert ACLType.ACL_Unknown == convert_acl_type('test')
+
+        for t in StorageClassType:
+            assert t == convert_storage_class_type(t.value)
+        assert StorageClassType.Storage_Unknown == convert_storage_class_type('test')
+
+        for t in MetadataDirectiveType:
+            assert t == convert_metadata_directive_type(t.value)
+        assert MetadataDirectiveType.Metadata_Directive_Unknown == convert_metadata_directive_type('test')
+
+        for t in AzRedundancyType:
+            assert t == convert_az_redundancy_type(t.value)
+        assert AzRedundancyType.Az_Redundancy_Unknown == convert_az_redundancy_type('test')
+
+        for t in PermissionType:
+            assert t == convert_permission_type(t.value)
+        assert PermissionType.Permission_Unknown == convert_permission_type('test')
+
+        for t in GranteeType:
+            assert t == convert_grantee_type(t.value)
+        assert GranteeType.Grantee_Unknown == convert_grantee_type('test')
+
+        for t in CannedType:
+            assert t == convert_canned_type(t.value)
+        assert CannedType.Canned_Unknown == convert_canned_type('test')
+
+        for t in RedirectType:
+            assert t == convert_redirect_type(t.value)
+        assert RedirectType.Unknown == convert_redirect_type('test')
+
+        for t in StatusType:
+            assert t == convert_status_type(t.value)
+        assert StatusType.Status_Unknown == convert_status_type('test')
+
+        for t in StorageClassInheritDirectiveType:
+            assert t == convert_storage_class_inherit_directive_type(t.value)
+        assert StorageClassInheritDirectiveType.Storage_Class_Unknown == convert_storage_class_inherit_directive_type(
+            'test')
+
+        for t in VersioningStatusType:
+            assert t == convert_versioning_status_type(t.value)
+        assert VersioningStatusType.Versioning_Unknown == convert_versioning_status_type('test')
+
+        for t in ProtocolType:
+            assert t == convert_protocol_type(t.value)
+        assert ProtocolType.Protocol_Unknown == convert_protocol_type('test')
+
+        for t in CertStatus:
+            assert t == convert_cert_status(t.value)
+        assert CertStatus.Cert_Unknown == convert_cert_status('test')
 
 
 class args(object):

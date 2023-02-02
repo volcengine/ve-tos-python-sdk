@@ -3016,6 +3016,15 @@ class TosClientV2(TosClient):
                          headers=headers, data=data)
         return PutBucketCustomDomainOutput(resp)
 
+    def list_bucket_custom_domain(self, bucket: str) -> ListBucketCustomDomainOutput:
+        """ 列举自定义域名
+
+        :param: bucket: 桶名
+        :return: ListBucketCustomDomainOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'customdomain': ''})
+        return ListBucketCustomDomainOutput(resp)
+
     def List_bucket_custom_domain(self, bucket: str) -> ListBucketCustomDomainOutput:
         """ 列举自定义域名
 
