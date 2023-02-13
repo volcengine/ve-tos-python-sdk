@@ -216,7 +216,7 @@ def _get_list_object_version_params(Delimiter, EncodingType, KeyMarker, MaxKeys,
 
 
 def _get_list_object_v2_params(Delimiter, Start_After, ContinueToken, Reverse, MaxKeys, EncodingType, Prefix):
-    params = {'list-type': '2'}
+    params = {'list-type': '2', "fetch-owner": "true"}
     if Delimiter:
         params['delimiter'] = Delimiter
     if EncodingType:

@@ -670,10 +670,12 @@ class TestObject(TosTestBase):
             out = self.client.append_object(bucket_name, 'test456', 0, StringIO(""))
 
         create_out = self.client.create_multipart_upload(bucket_name, 'test789')
-        self.client.upload_part(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1, content=StringIO(''))
+        self.client.upload_part(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1,
+                                content=StringIO(''))
         self.client.upload_part(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1,
                                 content=BytesIO(b''))
-        self.client.upload_part_from_file(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1, file_path=file_name)
+        self.client.upload_part_from_file(bucket_name, 'test789', upload_id=create_out.upload_id, part_number=1,
+                                          file_path=file_name)
 
     def test_list_object_with_case(self):
         bucket_name = self.bucket_name + '-test-list-object-with-case'
@@ -959,6 +961,10 @@ class TestObject(TosTestBase):
             continuation_token = out.next_continuation_token
             keycount = len(out.contents) + len(out.common_prefixes)
             self.assertEqual(keycount, out.key_count)
+            self.assertIsNotNone(out.contents)
+            for c in out.contents:
+                self.assertTrue(c.owner.id)
+                self.assertTrue(c.owner.display_name)
             count += keycount
             if is_truncated:
                 self.assertIsNotNone(continuation_token)
