@@ -778,8 +778,8 @@ class TosClientV2(TosClient):
         :param alternative_endpoint: 签名url:如果该参数不为空，则声称的 signed url 使用该参数作为域名，而不是使用 TOS Client 初始化参数中的 endpoint
         :return
         """
-        if not _is_valid_expires(expires):
-            raise TosClientError('expires invalid')
+        # if not _is_valid_expires(expires):
+        #     raise TosClientError('expires invalid')
         key = to_str(key)
         params = query or {}
         header = header or {}
@@ -811,7 +811,7 @@ class TosClientV2(TosClient):
         :param content_length_range: body长度范围
         :return: PreSignedPostSignatureOutPut
         """
-        _is_valid_expires(expires)
+        # _is_valid_expires(expires)
         if content_length_range:
             start = content_length_range.start
             end = content_length_range.end
@@ -835,8 +835,8 @@ class TosClientV2(TosClient):
         """
         if conditions is None:
             conditions = []
-        if not _is_valid_expires(expires):
-            raise TosClientError('expires invalid')
+        # if not _is_valid_expires(expires):
+        #     raise TosClientError('expires invalid')
         endpoint = alternative_endpoint or self.endpoint
         conditions.append(PolicySignatureCondition(key='bucket', value=bucket))
         signed_query = self.auth.x_tos_post_sign(expires, conditions)

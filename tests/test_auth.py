@@ -47,13 +47,10 @@ class TestAuth(TosTestCase):
         with mock.patch('datetime.datetime', new=datetime_mock):
             tos_cli = tos.TosClientV2(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com', region='beijing')
             url = tos_cli.pre_signed_url(http_method=HttpMethodType.Http_Method_Get, bucket='bkt', key='key',
-                                         expires=86400)
+                                         expires=704800)
             print(url.signed_url)
             self.assertEqual(url.signed_url,
-                             'https://bkt.tos-cn-beijing.volces.com/key?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Creden'
-                             'tial=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Expires=8'
-                             '6400&X-Tos-SignedHeaders=host&X-Tos-Signature=b87788cb98d1a5a91a046d20eb212ffc22cf7cd'
-                             '4c1d4e9bd2d15a989afb97d2f')
+                             'https://bkt.tos-cn-beijing.volces.com/key?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Expires=704800&X-Tos-SignedHeaders=host&X-Tos-Signature=087f3eb174b6accb37178630ba5890d7d8bc8a33495e25959dc359dc4b0f1170')
             'https://bkt.tos-cn-beijing.volces.com/key?X-Tos-Expires=86400&X-Tos-SignedHeaders=host&X-Tos-Credential=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Signature=b87788cb98d1a5a91a046d20eb212ffc22cf7cd4c1d4e9bd2d15a989afb97d2f&X-Tos-Algorithm=TOS4-HMAC-SHA256'
 
             tos_cli = tos.TosClientV2(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com1', region='beijing')
@@ -98,7 +95,7 @@ class TestAuth(TosTestCase):
             # conditions.append(PostSignatureCondition(key="key", value="example", operator="starts-with"))
             content_length_range = ContentLengthRange(range_start=1023, range_end=10000)
             out = tos_cli.pre_signed_post_signature(bucket='testBucket', key='test_object', conditions=conditions,
-                                                    expires=60 * 60 * 12, content_length_range=content_length_range)
+                                                    expires=704800, content_length_range=content_length_range)
             print(out)
 
     def test_pre_signed_policy_url(self):
@@ -111,11 +108,13 @@ class TestAuth(TosTestCase):
                           PostSignatureCondition(key='key', value='aaa/abc/', operator='starts-with'),
                           PostSignatureCondition(key='key', value='exampleobject', operator='eq'),
                           PostSignatureCondition(key='key', value='exampleobject1', operator='eq')]
-            out = tos_cli.pre_signed_policy_url(bucket='test', conditions=conditions)
+            out = tos_cli.pre_signed_policy_url(bucket='test', conditions=conditions, expires=704800)
             list_1 = out.get_signed_url_for_list({'k1': 'v1', 'k2': 'v2'})
-            self.assertEqual(list_1, 'https://test.tos-cn-beijing.volces.com?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=ak%2F20220101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20220101T000000Z&X-Tos-Expires=3600&X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In1dfQ%3D%3D&X-Tos-Signature=28ff45b2618b3295d224ea09e621821bd689a575340bfa50679bd52b0742c549&k1=v1&k2=v2')
+            self.assertEqual(list_1,
+                             'https://test.tos-cn-beijing.volces.com?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=ak%2F20220101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20220101T000000Z&X-Tos-Expires=704800&X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In1dfQ%3D%3D&X-Tos-Signature=869b9e678a6a69ce4a1cd02c7c0e333cb8e7a312a1078563dd2619d3daa9f5ee&k1=v1&k2=v2')
             get = out.get_signed_url_for_get_or_head(key='exampleobject', additional_query={'k1': 'v1', 'k2': 'v2'})
-            self.assertEqual(get, 'https://test.tos-cn-beijing.volces.com/exampleobject?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=ak%2F20220101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20220101T000000Z&X-Tos-Expires=3600&X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In1dfQ%3D%3D&X-Tos-Signature=28ff45b2618b3295d224ea09e621821bd689a575340bfa50679bd52b0742c549&k1=v1&k2=v2')
+            self.assertEqual(get,
+                             'https://test.tos-cn-beijing.volces.com/exampleobject?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=ak%2F20220101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20220101T000000Z&X-Tos-Expires=704800&X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In1dfQ%3D%3D&X-Tos-Signature=869b9e678a6a69ce4a1cd02c7c0e333cb8e7a312a1078563dd2619d3daa9f5ee&k1=v1&k2=v2')
 
 
 if __name__ == '__main__':
