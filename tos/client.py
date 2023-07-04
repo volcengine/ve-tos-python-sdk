@@ -49,9 +49,9 @@ class TosClient():
 
         self.session = requests.Session()
         self.session.mount('http://', HTTPAdapter(pool_connections=connection_pool_size,
-                                                  pool_maxsize=connection_pool_size))
+                                                  pool_maxsize=connection_pool_size, max_retries=3))
         self.session.mount('https://', HTTPAdapter(pool_connections=connection_pool_size,
-                                                   pool_maxsize=connection_pool_size))
+                                                   pool_maxsize=connection_pool_size, max_retries=3))
 
     @deprecated(version='2.1.0', reason="please use TosClientV2")
     def generate_presigned_url(self, Method: str, Bucket: str = None, Key: str = None, Params: Dict = None,

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-
+import base64
 import datetime
 import http
 import http.client as httplib
@@ -12,12 +12,14 @@ import requests
 
 import tos
 from tests.common import TosTestBase, random_string, random_bytes, calculate_md5
+from tos import TosClientV2
+from tos.consts import MIN_TRAFFIC_LIMIT
 from tos.enum import (ACLType, AzRedundancyType, DataTransferType,
                       GranteeType, MetadataDirectiveType, PermissionType,
-                      StorageClassType, VersioningStatusType)
+                      StorageClassType, VersioningStatusType, TierType, CopyEventType, HttpMethodType)
 from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import Deleted, Grant, Grantee, ListObjectsOutput, Owner, ObjectTobeDeleted, Tag, \
-    PostSignatureCondition, UploadedPart, PolicySignatureCondition
+    PostSignatureCondition, UploadedPart, PolicySignatureCondition, RestoreJobParameters
 from tos.utils import RateLimiter
 
 
@@ -26,6 +28,14 @@ def get_socket_io():
     conn.request('GET', '/')
     content = conn.getresponse()
     return content
+
+
+def _get_host_schema(endpoint):
+    if endpoint.startswith('http://'):
+        return 'http://', endpoint[7:]
+    if endpoint.startswith('https://'):
+        return 'https://', endpoint[8:]
+    return 'http://', endpoint
 
 
 class TestObject(TosTestBase):
@@ -72,8 +82,8 @@ class TestObject(TosTestBase):
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
         for i in range(2):
-            meta = {'name': '张三', 'age': '12'}
-            self.client.put_object(bucket_name, key, content=b'')
+            raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
+            meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
             self.client.put_object(bucket_name, key=key,
                                    content=content,
                                    meta=meta
@@ -82,6 +92,8 @@ class TestObject(TosTestBase):
             m = get_object_out.meta
             self.assertEqual(m['name'], meta['name'])
             self.assertEqual(m['age'], meta['age'])
+            self.assertEqual(m['special'], meta['special'])
+            self.assertEqual(m[raw], meta[raw])
 
             meta['name'] = '李四'
             self.client.set_object_meta(bucket_name, key, meta=meta)
@@ -89,6 +101,8 @@ class TestObject(TosTestBase):
             m = head_out.meta
             self.assertEqual(m['name'], meta['name'])
             self.assertEqual(m['age'], meta['age'])
+            self.assertEqual(m['special'], meta['special'])
+            self.assertEqual(m[raw], meta[raw])
             key = '李四.txt'
             content = content_io
 
@@ -318,7 +332,10 @@ class TestObject(TosTestBase):
             yield y
             yield z
 
+        self.client.close()
         self.client.put_object(bucket_name, key, content=generator())
+        out = self.client.create_multipart_upload(bucket_name, key)
+        self.client.upload_part(bucket_name, key, content=generator(), upload_id=out.upload_id, part_number=1)
         out = self.client.get_object(bucket_name, key)
         buf = b''
         for i in generator():
@@ -847,8 +864,43 @@ class TestObject(TosTestBase):
         # self.client.get_object_acl(bucket_name, key)
         self.client.put_object_acl(bucket_name, key, owner=Owner("123", "test"), grants=grants)
 
-        out = self.client.get_object_acl(bucket_name, key)
-        print(out)
+    def test_put_with_chunked_invalid_length(self):
+        bucket_name = self.bucket_name + '-put-with-chunked-invalid-length'
+        key = self.random_key('.js')
+        data = random_bytes(5)
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object(bucket_name, key, content=data)
+
+        get_out = self.client.get_object(bucket_name, key)
+        key2 = self.random_key('.js')
+        self.client.put_object(bucket_name, key2, content=get_out.content)
+
+        get_out = self.client.get_object(bucket_name, key)
+        self.client.put_object(bucket_name, key2, content=get_out.content, content_length=get_out.content_length)
+
+        get_out = self.client.get_object(bucket_name, key2)
+        self.assertEqual(get_out.read(), data)
+
+        get_out = self.client.get_object(bucket_name, key2)
+        create_out = self.client.create_multipart_upload(bucket_name, key2)
+        self.client.upload_part(bucket_name, key2, upload_id=create_out.upload_id, part_number=1,
+                                content=get_out.content, content_length=get_out.content_length)
+
+        get_out = self.client.get_object(bucket_name, key2)
+        self.client.upload_part(bucket_name, key2, upload_id=create_out.upload_id, part_number=2,
+                                content=get_out.content)
+
+    def test_anonymous(self):
+        bucket_name = self.bucket_name + '-anonymous'
+        key = self.random_key('.js')
+        data = random_bytes(5)
+        self.client.create_bucket(bucket_name, acl=ACLType.ACL_Public_Read_Write)
+        self.client.put_object(bucket_name, key, acl=ACLType.ACL_Public_Read_Write, content=data)
+
+        client = TosClientV2("", "", self.endpoint, self.region)
+        out = client.get_object(bucket_name, key)
+        self.assertEqual(out.read(), data)
 
     def test_put_with_md5(self):
         bucket_name = self.bucket_name + '-put-with-md5'
@@ -1209,8 +1261,18 @@ class TestObject(TosTestBase):
 
         self.client.head_object(bucket_name, key)
         self.client.download_file(bucket_name, key, download_file_2)
-        with self.assertRaises(TosClientError):
-            self.client.resumable_copy_object(bucket_name, key + '1', bucket_name, key)
+
+        # 创建 TosClientV2 对象，对桶和对象的操作都通过 TosClientV2 实现
+        def copy_event(copy_event_type: CopyEventType, err, bucket, key, upload_id, src_bucket, src_key, src_version_id,
+                       checkpoint, copy_part):
+            print(copy_event_type, err, bucket, key, upload_id, src_bucket, src_key, src_version_id, checkpoint,
+                  copy_part)
+
+        resumable_copy_object = self.client.resumable_copy_object(bucket_name, key + '1', bucket_name, key,
+                                                                  copy_event_listener=copy_event)
+        head_out = self.client.head_object(bucket=bucket_name, key=key + '1')
+        get_out = self.client.get_object(bucket=bucket_name, key=key + '1')
+        assert get_out.read() == b''
         self.client.copy_object(bucket_name, key + '1', bucket_name, key)
 
         out = self.client.create_multipart_upload(bucket_name, key + '2')
@@ -1218,6 +1280,118 @@ class TestObject(TosTestBase):
                                                  file_path=file_name)
         self.client.complete_multipart_upload(bucket_name, key + '2', upload_id=out.upload_id, parts=[part])
         self.client.head_object(bucket_name, key + '2')
+
+    def test_restore_object(self):
+        bucket_name = self.bucket_name + 'coldarchive'
+        content = random_bytes(1024)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket=bucket_name, storage_class=StorageClassType.Storage_Class_Cold_Archive)
+        self.bucket_delete.append(bucket_name)
+
+        head_cold = self.client.head_bucket(bucket_name)
+        self.assertEqual(head_cold.storage_class, StorageClassType.Storage_Class_Cold_Archive)
+
+        obj = self.client.put_object(bucket=bucket_name, key=key)
+        head_1 = self.client.head_object(bucket=bucket_name, key=key)
+        self.assertEqual(head_1.storage_class, StorageClassType.Storage_Class_Cold_Archive)
+
+        self.client.put_object(bucket=bucket_name, key=key, content=content)
+        resp = self.client.restore_object(bucket=bucket_name, key=key, days=1,
+                                          restore_job_parameters=RestoreJobParameters(TierType.Tier_Expedited))
+
+        head_2 = self.client.head_object(bucket=bucket_name, key=key)
+        self.assertEqual(head_2.storage_class, StorageClassType.Storage_Class_Cold_Archive)
+        head_2.restore = 'ongoing-request="true"'
+        head_2.restore_tier = TierType.Tier_Standard
+        head_2.restore_expiry_days = 1
+        time.sleep(60 * 5)
+
+        out = self.client.get_object(bucket=bucket_name, key=key)
+        self.assertEqual(out.read(), content)
+        assert 'ongoing-request="false"' in out.restore
+
+        self.client.put_object(bucket_name, key, storage_class=StorageClassType.Storage_Class_Archive)
+        head_out = self.client.head_object(bucket_name, key)
+        assert head_out.storage_class == StorageClassType.Storage_Class_Archive
+
+    def test_traffic_limit(self):
+        bucket_name = self.bucket_name + 'test-traffic-limit'
+        content = random_bytes(MIN_TRAFFIC_LIMIT * 5)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket_name)
+        start = time.time()
+        self.client.put_object(bucket_name, key, content=content, traffic_limit=MIN_TRAFFIC_LIMIT)
+        end = time.time()
+        assert end - start > 5
+
+    def test_rename_object(self):
+        bucket_name = self.bucket_name + '-rename'
+        content = random_bytes(1024)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket=bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        self.client.put_bucket_rename(bucket=bucket_name, rename_enable=True)
+        bucket_rename_output = self.client.get_bucket_rename(bucket=bucket_name)
+        self.assertEqual(bucket_rename_output.rename_enable, True)
+
+        new_key = self.random_key('.js')
+        self.client.put_object(bucket=bucket_name, key=key, content=content)
+        self.client.rename_object(bucket=bucket_name, key=key, new_key=new_key)
+        with self.assertRaises(TosServerError) as cm:
+            self.client.get_object(bucket=bucket_name, key=key)
+        self.assertEqual(cm.exception.status_code, 404)
+
+        get_object_out = self.client.get_object(bucket=bucket_name, key=new_key)
+        self.assertEqual(get_object_out.read(), content)
+
+        self.client.delete_bucket_rename(bucket=bucket_name)
+        bucket_rename_output = self.client.get_bucket_rename(bucket=bucket_name)
+        self.assertEqual(bucket_rename_output.rename_enable, False)
+
+    def test_callback(self):
+        bucket_name = self.bucket_name + '-callback'
+        content = random_bytes(1024)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket=bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        callback_url = '{"callbackUrl" : "http://www.test.xxx.com"}'
+        callback = base64.b64encode(callback_url.encode('utf-8')).decode('utf-8')
+        with self.assertRaises(TosServerError) as cm:
+            self.client.put_object(bucket=bucket_name, key=key, content=content, callback=callback)
+        self.assertEqual(cm.exception.status_code, 203)
+
+        callback = base64.b64encode(self.callback.encode('utf-8')).decode('utf-8')
+        callback_var = base64.b64encode(self.callback_var.encode('utf-8')).decode('utf-8')
+        out = self.client.put_object(bucket=bucket_name, key=key, content=content, callback=callback,
+                                     callback_var=callback_var)
+        self.assertEqual(out.callback_result, '{"msg":"ok"}')
+
+    def test_custom_domain(self):
+        bucket_name = self.bucket_name + '-custom-domain'
+        self.client.create_bucket(bucket=bucket_name)
+        self.bucket_delete.append(bucket_name)
+        content = random_bytes(100)
+        key = self.random_key('.js')
+        schema, host = _get_host_schema(self.endpoint)
+        endpoint = schema + bucket_name + '.' + host
+
+        client = TosClientV2(self.ak, self.sk, endpoint, self.region, enable_crc=True, max_retry_count=2,
+                             is_custom_domain=True)
+        client.put_object(bucket=bucket_name, key=key, content=content)
+        get_out = self.client.get_object(bucket=bucket_name, key=key)
+        self.assertTrue(get_out.read(), content)
+
+        signed_url_out = client.pre_signed_url(HttpMethodType.Http_Method_Get, bucket=bucket_name, key=key)
+        rsp = requests.get(signed_url_out.signed_url)
+        self.assertEqual(rsp.content, content)
+
+        client = TosClientV2(self.ak, self.sk, endpoint, self.region, enable_crc=True, max_retry_count=2)
+        signed_url_out = client.pre_signed_url(HttpMethodType.Http_Method_Get, bucket=bucket_name, key=key,
+                                               is_custom_domain=True)
+        rsp = requests.get(signed_url_out.signed_url)
+        self.assertEqual(rsp.content, content)
 
     def wrapper_socket_io(self, init, crc, use_data_transfer_listener, ues_limiter, bucket_name):
         def progress(consumed_bytes, total_bytes, rw_once_bytes,

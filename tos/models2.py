@@ -8,7 +8,7 @@ from .enum import CannedType, GranteeType, PermissionType, StorageClassType, Red
     StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, \
     convert_storage_class_type, convert_az_redundancy_type, convert_permission_type, convert_grantee_type, \
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
-    convert_protocol_type, convert_cert_status
+    convert_protocol_type, convert_cert_status, TierType, convert_tier_type
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
@@ -91,13 +91,15 @@ class ListBucketsOutput(ResponseInfo):
 
 
 class PutObjectOutput(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, callback=None):
         super(PutObjectOutput, self).__init__(resp)
         self.etag = get_etag(resp.headers)
         self.ssec_algorithm = get_value(resp.headers, "x-tos-server-side-encryption-customer-algorithm")
         self.ssec_key_md5 = get_value(resp.headers, "x-tos-server-side-encryption-customer-key-md5")
         self.version_id = get_value(resp.headers, "x-tos-version-id")
         self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
+        if callback:
+            self.callback_result = resp.read().decode("utf-8")
 
 
 class CopyObjectOutput(ResponseInfo):
@@ -200,6 +202,9 @@ class HeadObjectOutput(ResponseInfo):
         self.website_redirect_location = get_value(resp.headers, "x-tos-website-redirect-location")
         self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
         self.storage_class = get_value(resp.headers, "x-tos-storage-class", lambda x: convert_storage_class_type(x))
+        self.restore = get_value(resp.headers, "x-tos-restore")
+        self.restore_expiry_days = get_value(resp.headers, "x-tos-restore-expiry-days", lambda x: int(x))
+        self.restore_tier = get_value(resp.headers, "x-tos-restore-tier", lambda x: convert_tier_type(x))
         self.meta = CaseInsensitiveDict()
         self.object_type = get_value(resp.headers, "x-tos-object-type")
         if not self.object_type:
@@ -627,16 +632,37 @@ class UploadPartOutput(ResponseInfo):
         self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma', lambda x: int(x))
 
 
+class CompletePart(object):
+    def __init__(self, etag, part_number):
+        self.etag = etag
+        self.part_number = part_number
+
+
 class CompleteMultipartUploadOutput(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, callback: str = None):
         super(CompleteMultipartUploadOutput, self).__init__(resp)
-        data = resp.json_read()
-        self.bucket = get_value(data, 'Bucket')
-        self.key = get_value(data, 'Key')
-        self.etag = get_etag(data)
-        self.location = get_value(data, 'Location')
+        self.bucket = None
+        self.key = None
+        self.complete_parts = []
+        self.callback_result = None
         self.version_id = get_value(resp.headers, 'x-tos-version-id')
         self.hash_crc64_ecma = get_value(resp.headers, 'x-tos-hash-crc64ecma', lambda x: int(x))
+        if not callback:
+            data = resp.json_read()
+            self.bucket = get_value(data, 'Bucket')
+            self.key = get_value(data, 'Key')
+            self.etag = get_etag(data)
+            self.location = get_value(data, 'Location')
+            complete_part_info = get_value(data, 'CompletedParts') or []
+            for part in complete_part_info:
+                self.complete_parts.append(CompletePart(
+                    etag=get_value(part, 'ETag'),
+                    part_number=get_value(part, 'PartNumber')
+                ))
+        else:
+            self.callback_result = resp.read().decode('utf-8')
+            self.etag = get_etag(resp.headers)
+            self.location = get_value(resp.headers, 'Location')
 
 
 class AbortMultipartUpload(ResponseInfo):
@@ -789,8 +815,24 @@ class DeleteBucketCorsOutput(ResponseInfo):
 
 
 class Condition(object):
-    def __init__(self, http_code: int = None):
+    def __init__(self, http_code: int = None, key_prefix: str = None, key_suffix: str = None):
         self.http_code = http_code
+        self.key_prefix = key_prefix
+        self.key_suffix = key_suffix
+
+
+class ReplaceKeyPrefix(object):
+    def __init__(self, key_prefix: str = None, replace_with: str = None):
+        self.key_prefix = key_prefix
+        self.replace_with = replace_with
+
+
+class Transform(object):
+    def __init__(self, with_key_prefix: str = None, with_key_suffix: str = None,
+                 replace_key_prefix: ReplaceKeyPrefix = None):
+        self.with_key_prefix = with_key_prefix
+        self.with_key_suffix = with_key_suffix
+        self.replace_key_prefix = replace_key_prefix
 
 
 class SourceEndpoint(object):
@@ -800,8 +842,9 @@ class SourceEndpoint(object):
 
 
 class PublicSource(object):
-    def __init__(self, source_endpoint: SourceEndpoint):
+    def __init__(self, source_endpoint: SourceEndpoint = None, fixed_endpoint: bool = None):
         self.source_endpoint = source_endpoint
+        self.fixed_endpoint = fixed_endpoint
 
 
 class MirrorHeader(object):
@@ -814,13 +857,14 @@ class MirrorHeader(object):
 class Redirect(object):
     def __init__(self, redirect_type: RedirectType = None, public_source: PublicSource = None,
                  fetch_source_on_redirect: bool = None, pass_query: bool = None, follow_redirect: bool = None,
-                 mirror_header: MirrorHeader = None):
+                 mirror_header: MirrorHeader = None, transform: Transform = None):
         self.redirect_type = redirect_type
         self.fetch_source_on_redirect = fetch_source_on_redirect
         self.public_source = public_source
         self.pass_query = pass_query
         self.follow_redirect = follow_redirect
         self.mirror_header = mirror_header
+        self.transform = transform
 
 
 class Rule(object):
@@ -1068,7 +1112,8 @@ class GetBucketLifecycleOutput(ResponseInfo):
                 rule.transitions = []
                 for transition_json in transitions_json:
                     ts = BucketLifeCycleTransition()
-                    ts.storage_class = get_value(transition_json, 'StorageClass', lambda x: convert_storage_class_type(x))
+                    ts.storage_class = get_value(transition_json, 'StorageClass',
+                                                 lambda x: convert_storage_class_type(x))
                     ts.days = get_value(transition_json, 'Days', int)
                     if get_value(transition_json, 'Date'):
                         ts.date = parse_modify_time_to_utc_datetime(get_value(transition_json, 'Date'))
@@ -1130,19 +1175,23 @@ class GetBucketMirrorBackOutput(ResponseInfo):
             redirect = None
             if cond:
                 condition = Condition(
-                    http_code=get_value(cond, 'HttpCode', int)
+                    http_code=get_value(cond, 'HttpCode', int),
+                    key_prefix=get_value(cond, 'KeyPrefix', str),
+                    key_suffix=get_value(cond, 'KeySuffix', str)
                 )
             if red:
                 redirect = Redirect()
                 redirect.redirect_type = get_value(red, 'RedirectType', lambda x: convert_redirect_type(x))
                 redirect.fetch_source_on_redirect = get_value(red, 'FetchSourceOnRedirect', lambda x: bool(x))
 
-                if get_value(red, 'PublicSource') and get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'):
-                    redirect.public_source = PublicSource(SourceEndpoint(
-                        primary=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Primary'),
-                        follower=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Follower')
-                    ))
-
+                if get_value(red, 'PublicSource'):
+                    redirect.public_source = PublicSource(
+                        fixed_endpoint=get_value(get_value(red, 'PublicSource'), 'FixedEndpoint', lambda x: bool(x)))
+                    if get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'):
+                        redirect.public_source.source_endpoint = SourceEndpoint(
+                            primary=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Primary'),
+                            follower=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Follower')
+                        )
                 redirect.pass_query = get_value(red, 'PassQuery', lambda x: bool(x))
                 redirect.follow_redirect = get_value(red, 'FollowRedirect', lambda x: bool(x))
                 if get_value(red, 'MirrorHeader'):
@@ -1151,6 +1200,18 @@ class GetBucketMirrorBackOutput(ResponseInfo):
                         pass_headers=get_value(get_value(red, 'MirrorHeader'), 'Pass'),
                         remove=get_value(get_value(red, 'MirrorHeader'), 'Remove')
                     )
+                if get_value(red, 'Transform'):
+                    redirect.transform = Transform(
+                        with_key_prefix=get_value(get_value(red, 'Transform'), 'WithKeyPrefix'),
+                        with_key_suffix=get_value(get_value(red, 'Transform'), 'WithKeySuffix'),
+                    )
+                    if get_value(get_value(red, 'Transform'), 'ReplaceKeyPrefix'):
+                        redirect.transform.replace_key_prefix = ReplaceKeyPrefix(
+                            key_prefix=get_value(get_value(get_value(red, 'Transform'), 'ReplaceKeyPrefix'),
+                                                 'KeyPrefix'),
+                            replace_with=get_value(get_value(get_value(red, 'Transform'), 'ReplaceKeyPrefix'),
+                                                   'ReplaceWith')
+                        )
                 r = Rule(id=id, condition=condition, redirect=redirect)
                 self.rules.append(r)
 
@@ -1427,11 +1488,12 @@ class GetBucketWebsiteOutput(ResponseInfo):
                     http_error_code_returned_equals=get_value(condition, 'HttpErrorCodeReturnedEquals'),
                     key_prefix_equals=get_value(condition, 'KeyPrefixEquals'))
             if redirect:
-                rule.redirect = RoutingRuleRedirect(protocol=get_value(redirect, 'Protocol', lambda x: convert_protocol_type(x)),
-                                                    host_name=get_value(redirect, 'HostName'),
-                                                    replace_key_prefix_with=get_value(redirect, 'ReplaceKeyPrefixWith'),
-                                                    replace_key_with=get_value(redirect, 'ReplaceKeyWith'),
-                                                    http_redirect_code=get_value(redirect, 'HttpRedirectCode'))
+                rule.redirect = RoutingRuleRedirect(
+                    protocol=get_value(redirect, 'Protocol', lambda x: convert_protocol_type(x)),
+                    host_name=get_value(redirect, 'HostName'),
+                    replace_key_prefix_with=get_value(redirect, 'ReplaceKeyPrefixWith'),
+                    replace_key_with=get_value(redirect, 'ReplaceKeyWith'),
+                    http_redirect_code=get_value(redirect, 'HttpRedirectCode'))
             self.routing_rules.append(rule)
 
 
@@ -1451,12 +1513,29 @@ class Filter(object):
         self.key = key
 
 
+class RocketMQConf(object):
+    def __init__(self, instance_id: str = None, topic: str = None, access_key_id: str = None):
+        self.instance_id = instance_id
+        self.topic = topic
+        self.access_key_id = access_key_id
+
+
 class CloudFunctionConfiguration(object):
     def __init__(self, id: str = None, events: [] = None, filter: Filter = None, cloud_function: str = None):
         self.id = id
         self.events = events
         self.filter = filter
         self.cloud_function = cloud_function
+
+
+class RocketMQConfiguration(object):
+    def __init__(self, id: str = None, events: [] = None, filter: Filter = None, role: str = None,
+                 rocket_mq: RocketMQConf = None):
+        self.id = id
+        self.events = events
+        self.filter = filter
+        self.role = role
+        self.rocket_mq = rocket_mq
 
 
 class PutBucketNotificationOutput(ResponseInfo):
@@ -1469,7 +1548,9 @@ class GetBucketNotificationOutput(ResponseInfo):
         super(GetBucketNotificationOutput, self).__init__(resp)
         data = resp.json_read()
         self.cloud_function_configurations = []
+        self.rocket_mq_configurations = []
         cloud_functions = get_value(data, 'CloudFunctionConfigurations') or []
+        rocket_mq_confs = get_value(data, 'RocketMQConfigurations') or []
         for function in cloud_functions:
             config = CloudFunctionConfiguration()
             config.id = get_value(function, 'RuleId')
@@ -1477,15 +1558,37 @@ class GetBucketNotificationOutput(ResponseInfo):
             config.cloud_function = get_value(function, 'CloudFunction')
             filter_json = get_value(function, 'Filter')
             if filter_json:
-                fileter_key = FilterKey([])
-                key_json = get_value(filter_json, 'TOSKey')
-                if key_json:
-                    filter_rules = get_value(key_json, 'FilterRules') or []
-                    for rule in filter_rules:
-                        fileter_key.rules.append(
-                            FilterRule(name=get_value(rule, 'Name'), value=get_value(rule, 'Value')))
-                    config.filter = Filter(fileter_key)
+                config.filter = self._get_filter(filter_json)
             self.cloud_function_configurations.append(config)
+
+        for rocket_mq_conf in rocket_mq_confs:
+            config = RocketMQConfiguration()
+            config.id = get_value(rocket_mq_conf, 'RuleId')
+            config.events = get_value(rocket_mq_conf, 'Events')
+            config.role = get_value(rocket_mq_conf, 'Role')
+            rocket_mq_json = get_value(rocket_mq_conf, 'RocketMQ')
+            if rocket_mq_json:
+                rocket_mq = RocketMQConf(
+                    instance_id=get_value(rocket_mq_json, 'InstanceId'),
+                    topic=get_value(rocket_mq_json, 'Topic'),
+                    access_key_id=get_value(rocket_mq_json, 'AccessKeyId'),
+                )
+                config.rocket_mq = rocket_mq
+            filter_json = get_value(rocket_mq_conf, 'Filter')
+            if filter_json:
+                config.filter = self._get_filter(filter_json)
+            self.rocket_mq_configurations.append(config)
+
+    @staticmethod
+    def _get_filter(filter_json):
+        filter_key = FilterKey([])
+        key_json = get_value(filter_json, 'TOSKey')
+        if key_json:
+            filter_rules = get_value(key_json, 'FilterRules') or []
+            for rule in filter_rules:
+                filter_key.rules.append(
+                    FilterRule(name=get_value(rule, 'Name'), value=get_value(rule, 'Value')))
+        return Filter(filter_key)
 
 
 class CustomDomainRule(object):
@@ -1517,7 +1620,8 @@ class ListBucketCustomDomainOutput(ResponseInfo):
                                  cname=get_value(custom_domain_rule, 'Cname'),
                                  forbidden=get_value(custom_domain_rule, 'Forbidden'),
                                  forbidden_reason=get_value(custom_domain_rule, 'ForbiddenReason'),
-                                 cert_status=get_value(custom_domain_rule, 'CertStatus', lambda x: convert_cert_status(x))))
+                                 cert_status=get_value(custom_domain_rule, 'CertStatus',
+                                                       lambda x: convert_cert_status(x))))
 
 
 class DeleteCustomDomainOutput(ResponseInfo):
@@ -1592,14 +1696,16 @@ class PreSignedPolicyURlInputOutput(object):
         if additional_query is None:
             return _make_virtual_host_url(self._host, self._scheme, self._bucket, '') + '?' + self.signed_query
 
-        return _make_virtual_host_url(self._host, self._scheme, self._bucket, '') + '?' + self.signed_query + '&' + '&'.join(
+        return _make_virtual_host_url(self._host, self._scheme, self._bucket,
+                                      '') + '?' + self.signed_query + '&' + '&'.join(
             _param_to_quoted_query(k, v) for k, v in additional_query.items())
 
     def get_signed_url_for_get_or_head(self, key: str, additional_query=None) -> str:
         if additional_query is None:
             return _make_virtual_host_url(self._host, self._scheme, self._bucket, key) + '?' + self.signed_query
 
-        return _make_virtual_host_url(self._host, self._scheme, self._bucket, key) + '?' + self.signed_query + '&' + '&'.join(
+        return _make_virtual_host_url(self._host, self._scheme, self._bucket,
+                                      key) + '?' + self.signed_query + '&' + '&'.join(
             _param_to_quoted_query(k, v) for k, v in additional_query.items())
 
 
@@ -1616,3 +1722,35 @@ class CopyPartInfo(object):
                 'copy_source_range_end': self.copy_source_range_end,
                 'etag': self.etag}
         return str(info)
+
+
+class RestoreJobParameters(object):
+    def __init__(self, tier: TierType):
+        self.tier = tier
+
+
+class RestoreObjectOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(RestoreObjectOutput, self).__init__(resp)
+
+
+class RenameObjectOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(RenameObjectOutput, self).__init__(resp)
+
+
+class GetBucketRenameOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketRenameOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.rename_enable = get_value(data, 'RenameEnable', bool)
+
+
+class PutBucketRenameOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketRenameOutput, self).__init__(resp)
+
+
+class DeleteBucketRenameOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketRenameOutput, self).__init__(resp)

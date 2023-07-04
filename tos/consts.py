@@ -23,8 +23,10 @@ WHITE_LIST_FUNCTION = ['create_bucket', 'delete_bucket', 'create_multipart_uploa
                        'delete_object_tagging', 'put_bucket_acl', 'put_fetch_task', 'put_bucket_replication',
                        'put_bucket_versioning', 'put_bucket_website', 'delete_bucket_website',
                        'put_bucket_notification', 'put_bucket_custom_domain', 'delete_bucket_custom_domain',
-                       'put_bucket_real_time_log', 'delete_bucket_real_time_log']
+                       'put_bucket_real_time_log', 'delete_bucket_real_time_log', 'restore_object', 'rename_object',
+                       'put_bucket_rename', 'delete_bucket_rename']
 
+CALLBACK_FUNCTION = ['put_object', 'complete_multipart_upload']
 CLIENT_ENCRYPTION_ALGORITHM = ['AES256']
 SERVER_ENCRYPTION_ALGORITHM = ['AES256']
 
@@ -32,3 +34,6 @@ MAX_PART_NUMBER = 10000
 
 MIN_PART_SIZE = 5242880
 MAX_PART_SIZE = 5368709120
+
+MIN_TRAFFIC_LIMIT = 819200
+MAX_TRAFFIC_LIMIT = 838860800

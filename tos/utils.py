@@ -18,7 +18,7 @@ from pytz import unicode
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
                      MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
                      CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT,
-                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER)
+                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER, MIN_TRAFFIC_LIMIT, MAX_TRAFFIC_LIMIT)
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
 from .exceptions import TosClientError
@@ -236,7 +236,7 @@ class SizeAdapter(object):
 
 
 def meta_header_encode(query, doseq=False, safe='', encoding=None, errors=None,
-                       quote_via=quote_plus):
+                       quote_via=quote):
     headers = {}
     if hasattr(query, "items"):
         query = query.items()

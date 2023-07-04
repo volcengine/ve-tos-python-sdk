@@ -1,6 +1,6 @@
 from .consts import LAST_MODIFY_TIME_DATE_FORMAT
 from .models2 import Owner, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, CustomDomainRule, \
-    RealTimeLogConfiguration
+    RealTimeLogConfiguration, RestoreJobParameters
 from .utils import check_enum_type
 
 
@@ -78,6 +78,10 @@ def to_put_bucket_mirror_back(rules: []):
             info['Condition'] = {}
             if rule.condition.http_code:
                 info['Condition']['HttpCode'] = rule.condition.http_code
+            if rule.condition.key_prefix:
+                info['Condition']['KeyPrefix'] = rule.condition.key_prefix
+            if rule.condition.key_suffix:
+                info['Condition']['KeySuffix'] = rule.condition.key_suffix
         if rule.redirect:
             info['Redirect'] = {}
             if rule.redirect.redirect_type:
@@ -94,6 +98,8 @@ def to_put_bucket_mirror_back(rules: []):
                     if rule.redirect.public_source.source_endpoint.follower:
                         info['Redirect']['PublicSource']['SourceEndpoint'][
                             'Follower'] = rule.redirect.public_source.source_endpoint.follower
+                if rule.redirect.public_source.fixed_endpoint is not None:
+                    info['Redirect']['PublicSource']['FixedEndpoint'] = rule.redirect.public_source.fixed_endpoint
             if rule.redirect.pass_query is not None:
                 info['Redirect']['PassQuery'] = rule.redirect.pass_query
             if rule.redirect.follow_redirect is not None:
@@ -106,6 +112,21 @@ def to_put_bucket_mirror_back(rules: []):
                     info['Redirect']['MirrorHeader']['Pass'] = rule.redirect.mirror_header.pass_headers
                 if rule.redirect.mirror_header.remove:
                     info['Redirect']['MirrorHeader']['Remove'] = rule.redirect.mirror_header.remove
+            if rule.redirect.transform:
+                info['Redirect']['Transform'] = {}
+                if rule.redirect.transform.with_key_prefix:
+                    info['Redirect']['Transform']['WithKeyPrefix'] = rule.redirect.transform.with_key_prefix
+                if rule.redirect.transform.with_key_suffix:
+                    info['Redirect']['Transform']['WithKeySuffix'] = rule.redirect.transform.with_key_suffix
+                if rule.redirect.transform.replace_key_prefix:
+                    info['Redirect']['Transform']['ReplaceKeyPrefix'] = {}
+                    if rule.redirect.transform.replace_key_prefix.key_prefix:
+                        info['Redirect']['Transform']['ReplaceKeyPrefix'][
+                            'KeyPrefix'] = rule.redirect.transform.replace_key_prefix.key_prefix
+                    if rule.redirect.transform.replace_key_prefix.replace_with:
+                        info['Redirect']['Transform']['ReplaceKeyPrefix'][
+                            'ReplaceWith'] = rule.redirect.transform.replace_key_prefix.replace_with
+
         arr.append(info)
 
     data['Rules'] = arr
@@ -301,7 +322,7 @@ def to_put_bucket_website(redirect_all_requests_to: RedirectAllRequestsTo,
     return info
 
 
-def to_put_bucket_notification(cloudFunctionConfigurations: []):
+def to_put_bucket_notification(cloudFunctionConfigurations: [], rocketMQConfigurations: []):
     info = {}
     if cloudFunctionConfigurations:
         info['CloudFunctionConfigurations'] = []
@@ -314,24 +335,47 @@ def to_put_bucket_notification(cloudFunctionConfigurations: []):
             if cloudFunctionConfiguration.cloud_function:
                 config['CloudFunction'] = cloudFunctionConfiguration.cloud_function
             if cloudFunctionConfiguration.filter:
-                filter_mp = {}
-                if cloudFunctionConfiguration.filter.key:
-                    filter_mp['TOSKey'] = {}
-                    if cloudFunctionConfiguration.filter.key.rules and len(
-                            cloudFunctionConfiguration.filter.key.rules) >= 1:
-                        filter_mp['TOSKey']['FilterRules'] = []
-                        for rule in cloudFunctionConfiguration.filter.key.rules:
-                            rule_mp = {}
-                            if rule.name:
-                                rule_mp['Name'] = rule.name
-                            if rule.value:
-                                rule_mp['Value'] = rule.value
-                            filter_mp['TOSKey']['FilterRules'].append(rule_mp)
-
-                config['Filter'] = filter_mp
+                config['Filter'] = _get_bucket_notification_filter_map(cloudFunctionConfiguration.filter)
             info['CloudFunctionConfigurations'].append(config)
 
+    if rocketMQConfigurations:
+        info['RocketMQConfigurations'] = []
+        for rocketMQConfiguration in rocketMQConfigurations:
+            config = {}
+            if rocketMQConfiguration.events:
+                config['Events'] = rocketMQConfiguration.events
+            if rocketMQConfiguration.id:
+                config['RuleId'] = rocketMQConfiguration.id
+            if rocketMQConfiguration.role:
+                config['Role'] = rocketMQConfiguration.role
+            if rocketMQConfiguration.rocket_mq:
+                config['RocketMQ'] = {}
+                if rocketMQConfiguration.rocket_mq.topic:
+                    config['RocketMQ']['Topic'] = rocketMQConfiguration.rocket_mq.topic
+                if rocketMQConfiguration.rocket_mq.access_key_id:
+                    config['RocketMQ']['AccessKeyId'] = rocketMQConfiguration.rocket_mq.access_key_id
+                if rocketMQConfiguration.rocket_mq.instance_id:
+                    config['RocketMQ']['InstanceID'] = rocketMQConfiguration.rocket_mq.instance_id
+            if rocketMQConfiguration.filter:
+                config['Filter'] = _get_bucket_notification_filter_map(rocketMQConfiguration.filter)
+            info['RocketMQConfigurations'].append(config)
     return info
+
+
+def _get_bucket_notification_filter_map(filter: {}):
+    filter_mp = {}
+    if filter.key:
+        filter_mp['TOSKey'] = {}
+        if filter.key.rules and len(filter.key.rules) >= 1:
+            filter_mp['TOSKey']['FilterRules'] = []
+            for rule in filter.key.rules:
+                rule_mp = {}
+                if rule.name:
+                    rule_mp['Name'] = rule.name
+                if rule.value:
+                    rule_mp['Value'] = rule.value
+                filter_mp['TOSKey']['FilterRules'].append(rule_mp)
+    return filter_mp
 
 
 def to_put_custom_domain(custom_domain_rule: CustomDomainRule):
@@ -371,4 +415,14 @@ def to_put_bucket_real_time_log(configuation: RealTimeLogConfiguration):
             if configuation.configuration.tls_project_id:
                 info['RealTimeLogConfiguration']['AccessLogConfiguration'][
                     'TLSProjectID'] = configuation.configuration.tls_project_id
+    return info
+
+
+def to_restore_object(days: int, tier: RestoreJobParameters):
+    info = {}
+    if days:
+        info['Days'] = days
+    if tier and tier.tier:
+        info['RestoreJobParameters'] = {"Tier": tier.tier.value}
+
     return info

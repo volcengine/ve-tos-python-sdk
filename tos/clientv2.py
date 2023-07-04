@@ -25,12 +25,12 @@ from urllib3.util.connection import allowed_gai_family, _set_socket_options
 from . import TosClient
 from . import __version__
 from . import exceptions, utils
-from .auth import Auth
+from .auth import Auth, AnonymousAuth
 from .checkpoint import (CheckPointStore, _BreakpointDownloader,
                          _BreakpointUploader, _BreakpointResumableCopyObject)
 from .client import _make_virtual_host_url, _make_virtual_host_uri, _get_virtual_host, _get_host, _get_scheme
 from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
-                     WHITE_LIST_FUNCTION)
+                     WHITE_LIST_FUNCTION, CALLBACK_FUNCTION)
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType, VersioningStatusType, CopyEventType)
 from .exceptions import TosClientError, TosServerError, TosError
@@ -39,7 +39,7 @@ from .json_utils import (to_complete_multipart_upload_request,
                          to_put_acl_request, to_delete_multi_objects_request, to_put_bucket_cors_request,
                          to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_object_tagging, to_fetch_object,
                          to_put_replication, to_put_bucket_website, to_put_bucket_notification, to_put_custom_domain,
-                         to_put_bucket_real_time_log)
+                         to_put_bucket_real_time_log, to_restore_object)
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       CompleteMultipartUploadOutput, CopyObjectOutput,
                       CreateBucketOutput, CreateMultipartUploadOutput,
@@ -66,7 +66,8 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       PutBucketRealTimeLogOutput, RealTimeLogConfiguration,
                       DeleteBucketRealTimeLog, GetBucketWebsiteOutput, ResumableCopyObjectOutput,
                       PreSignedPolicyURlInputOutput, ListObjectType2Output, ListObjectsIterator, GetBucketRealTimeLog,
-                      PolicySignatureCondition)
+                      PolicySignatureCondition, RestoreObjectOutput, RestoreJobParameters, RenameObjectOutput,
+                      PutBucketRenameOutput, DeleteBucketRenameOutput, GetBucketRenameOutput)
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
                     _ReaderAdapter, generate_http_proxies, get_content_type,
@@ -79,8 +80,8 @@ from .utils import (SizeAdapter, _make_copy_source,
 
 logger = logging.getLogger(__name__)
 _dns_cache = DnsCacheService()
-USER_AGENT = 'tos-python-sdk/{0}({1}/{2};{3})'.format(__version__.__version__, sys.platform, platform.machine(),
-                                                      platform.python_version())
+USER_AGENT = 've-tos-python-sdk/{0}({1}/{2};{3})'.format(__version__.__version__, sys.platform, platform.machine(),
+                                                         platform.python_version())
 
 BASE_RETRY_DELAY_TIME = 500
 
@@ -114,7 +115,7 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
                              GrantRead, GrantReadACP, GrantWriteACP, Metadata, MetadataDirective,
                              SSECustomerAlgorithm, SSECustomerKey, SSECustomerKeyMD5, server_side_encryption,
                              website_redirect_location, storage_class: StorageClassType,
-                             SSECAlgorithm, SSECKey, SSECKeyMD5):
+                             SSECAlgorithm, SSECKey, SSECKeyMD5, TrafficLimit):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -177,6 +178,8 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
         headers['x-tos-server-side-encryption-customer-key'] = SSECKey
     if SSECKeyMD5:
         headers['x-tos-server-side-encryption-customer-key-MD5'] = SSECKeyMD5
+    if TrafficLimit:
+        headers['x-tos-traffic-limit'] = str(TrafficLimit)
     return headers
 
 
@@ -262,10 +265,21 @@ def _get_list_parts_params(MaxParts, PartNumberMarker, UploadId):
     return params
 
 
+def _get_complete_upload_part_headers(CompleteAll, Callback, CallbackVar):
+    headers = {}
+    if CompleteAll:
+        headers['x-tos-complete-all'] = 'yes'
+    if Callback:
+        headers['x-tos-callback'] = Callback
+    if CallbackVar:
+        headers['x-tos-callback-var'] = CallbackVar
+    return headers
+
+
 def _get_upload_part_copy_headers(CopySource, CopySourceIfMatch, CopySourceIfModifiedSince,
                                   CopySourceIfNoneMatch, CopySourceIfUnmodifiedSince, CopySourceRange,
                                   CopySourceSSECAlgorithm, CopySourceSSECKey, CopySourceSSECKeyMD5,
-                                  SSECAlgorithm, SSECKey, SSECKeyMD5):
+                                  SSECAlgorithm, SSECKey, SSECKeyMD5, TrafficLimit):
     headers = {}
     if isinstance(CopySource, str):
         headers['x-tos-copy-source'] = CopySource
@@ -298,6 +312,8 @@ def _get_upload_part_copy_headers(CopySource, CopySourceIfMatch, CopySourceIfMod
         headers['x-tos-server-side-encryption-customer-key'] = SSECKey
     if SSECKeyMD5:
         headers['x-tos-server-side-encryption-customer-key-MD5'] = SSECKeyMD5
+    if TrafficLimit:
+        headers['x-tos-traffic-limit'] = str(TrafficLimit)
     return headers
 
 
@@ -306,7 +322,7 @@ def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDi
                             ContentLength, ContentMD5, ContentSha256, ContentType, Expires, GrantFullControl,
                             GrantRead, GrantReadACP, GrantWriteACP, Key, Metadata, SSECustomerAlgorithm,
                             SSECustomerKey, SSECustomerKeyMD5, ServerSideEncryption, StorageClass,
-                            WebsiteRedirectLocation):
+                            WebsiteRedirectLocation, TrafficLimit, Callback, CallbackVar):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -354,11 +370,17 @@ def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDi
         headers['x-tos-server-side-encryption'] = ServerSideEncryption
     if ContentSha256:
         headers['x-tos-content-sha256'] = ContentSha256
+    if TrafficLimit:
+        headers['x-tos-traffic-limit'] = str(TrafficLimit)
+    if Callback:
+        headers['x-tos-callback'] = Callback
+    if CallbackVar:
+        headers['x-tos-callback-var'] = CallbackVar
     return headers
 
 
 def _get_object_headers(IfMatch, IfModifiedSince, IfNoneMatch, IfUnmodifiedSince, Range, SSECustomerAlgorithm,
-                        SSECustomerKey, SSECustomerKeyMD5):
+                        SSECustomerKey, SSECustomerKeyMD5, TrafficLimit):
     headers = {}
     if IfMatch:
         headers['If-Match'] = IfMatch
@@ -376,12 +398,14 @@ def _get_object_headers(IfMatch, IfModifiedSince, IfNoneMatch, IfUnmodifiedSince
         headers['x-tos-server-side-encryption-customer-key-md5'] = SSECustomerKeyMD5
     if Range:
         headers['Range'] = Range
+    if TrafficLimit:
+        headers['x-tos-traffic-limit'] = str(TrafficLimit)
 
     return headers
 
 
 def _get_object_params(ResponseCacheControl, ResponseContentDisposition, ResponseContentEncoding,
-                       ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId):
+                       ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId, Process):
     params = {}
     if VersionId:
         params['versionId'] = VersionId
@@ -397,6 +421,8 @@ def _get_object_params(ResponseCacheControl, ResponseContentDisposition, Respons
         params['response-content-type'] = ResponseContentType
     if ResponseExpires:
         params['response-expires'] = ResponseExpires.strftime(GMT_DATE_FORMAT)
+    if Process:
+        params['x-tos-process'] = Process
 
     return params
 
@@ -405,7 +431,7 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
                                       ContentEncoding, ContentLanguage,
                                       ContentLength, ContentType, Expires, GrantFullControl, GrantRead,
                                       GrantReadACP, GrantWriteACP, Key, Metadata, StorageClass,
-                                      WebsiteRedirectLocation):
+                                      WebsiteRedirectLocation, TrafficLimit):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -441,6 +467,8 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
         headers['x-tos-storage-class'] = StorageClass.value
     if ContentLength:
         headers['Content-Length'] = str(ContentLength)
+    if TrafficLimit:
+        headers['x-tos-traffic-limit'] = str(TrafficLimit)
     return headers
 
 
@@ -546,7 +574,7 @@ def _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWr
 
 
 def _get_upload_part_headers(content_length, content_md5, server_side_encryption, ssec_algorithm, ssec_key,
-                             ssec_key_md5):
+                             ssec_key_md5, traffic_limit):
     headers = {}
     if content_length:
         headers['Content-Length'] = str(content_length)
@@ -560,6 +588,8 @@ def _get_upload_part_headers(content_length, content_md5, server_side_encryption
         headers['x-tos-server-side-encryption-customer-key-md5'] = ssec_key_md5
     if server_side_encryption:
         headers['x-tos-server-side-encryption'] = server_side_encryption
+    if traffic_limit:
+        headers['x-tos-traffic-limit'] = str(traffic_limit)
 
     return headers
 
@@ -659,7 +689,7 @@ class TosClientV2(TosClient):
                  security_token=None,
                  auto_recognize_content_type=True,
                  max_retry_count=3,
-                 request_timeout=60,
+                 request_timeout=120,
                  max_connections=1024,
                  enable_crc=True,
                  connection_time=10,
@@ -669,7 +699,8 @@ class TosClientV2(TosClient):
                  proxy_port: int = None,
                  proxy_username: str = None,
                  proxy_password: str = None,
-                 auth=None):
+                 auth=None,
+                 is_custom_domain: bool = False):
 
         """创建client
 
@@ -680,8 +711,9 @@ class TosClientV2(TosClient):
         :param region: TOS 服务端所在区域
         :param auto_recognize_content_type: 使用自动识别 MIME 类型，默认为 true，代表开启自动识别 MIME 类型能力
         :param max_retry_count: 请求失败后最大的重试次数。默认3次
-        :param request_timeout: 一次 HTTP 请求总超时时间，单位：毫秒，默认 60000 毫秒
-        :param connection_time: 建立连接超时时间，单位：毫秒，默认 10000 毫秒
+        :param request_timeout: socket收到一次响应的超时时间，单位：秒，默认 120 秒，
+                                参考: https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts
+        :param connection_time: 建立连接超时时间，单位：秒，默认 10 秒
         :param max_connections: 连接池中允许打开的最大 HTTP 连接数，默认 1024
         :param enable_crc: 是否开启上传后客户端 CRC 校验，默认为 true
         :param enable_verify_ssl: 是否开启 SSL 证书校验，默认为 true
@@ -691,6 +723,7 @@ class TosClientV2(TosClient):
         :param proxy_username: 连接代理服务器时使用的用户名
         :param proxy_password: 代理服务使用的密码
         :param auth: 用户自定义auth
+        :param is_custom_domain: 是否使用自定义域名，默认为False
         :return TosClientV2:
         """
 
@@ -699,6 +732,12 @@ class TosClientV2(TosClient):
 
         if auth:
             super(TosClientV2, self).__init__(auth=auth,
+                                              endpoint=endpoint,
+                                              recognize_content_type=auto_recognize_content_type,
+                                              connection_pool_size=max_connections,
+                                              connect_timeout=connection_time)
+        elif ak == "" and sk == "":
+            super(TosClientV2, self).__init__(auth=AnonymousAuth(ak, sk, region, sts=security_token),
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
@@ -720,6 +759,7 @@ class TosClientV2(TosClient):
         self.proxy_password = proxy_password
         self.enable_crc = enable_crc
         self.proxies = generate_http_proxies(proxy_host, proxy_port, proxy_username, proxy_password)
+        self.is_custom_domain = is_custom_domain
 
         # 控制动态调整初始参数
         self.lock = threading.RLock()
@@ -766,7 +806,8 @@ class TosClientV2(TosClient):
                        expires: int = 3600,
                        header: Dict = None,
                        query: Dict = None,
-                       alternative_endpoint: str = None):
+                       alternative_endpoint: str = None,
+                       is_custom_domain: bool = None):
         """生成签名url
 
         :param http_method: http方法
@@ -776,6 +817,7 @@ class TosClientV2(TosClient):
         :param header: 需要签名的头部信息
         :param query: 需要签名的http查询参数
         :param alternative_endpoint: 签名url:如果该参数不为空，则声称的 signed url 使用该参数作为域名，而不是使用 TOS Client 初始化参数中的 endpoint
+        :param is_custom_domain: 是否使用自定义域名，默认为None
         :return
         """
         # if not _is_valid_expires(expires):
@@ -784,11 +826,14 @@ class TosClientV2(TosClient):
         params = query or {}
         header = header or {}
         endpoint = alternative_endpoint or self.endpoint
+        req_bucket = None if self.is_custom_domain is True else bucket
+        if is_custom_domain is not None:
+            req_bucket = None if is_custom_domain is True else bucket
         req = Request(
             http_method.value,
-            _make_virtual_host_url(_get_host(endpoint), _get_scheme(endpoint), bucket, key),
+            _make_virtual_host_url(_get_host(endpoint), _get_scheme(endpoint), req_bucket, key),
             _make_virtual_host_uri(key),
-            _get_virtual_host(bucket, endpoint),
+            _get_virtual_host(req_bucket, endpoint),
             params=params,
             headers=header
         )
@@ -947,7 +992,8 @@ class TosClientV2(TosClient):
                     storage_class: StorageClassType = None,
                     ssec_algorithm: str = None,
                     ssec_key: str = None,
-                    ssec_key_md5: str = None):
+                    ssec_key_md5: str = None,
+                    traffic_limit: int = None):
         """拷贝对象
 
         此接口用于在同一地域下同一个桶或者不同桶之间对象的拷贝操作。桶开启多版本场景，如果需要恢复对象的早期版本为当前版本，
@@ -985,6 +1031,7 @@ class TosClientV2(TosClient):
         :param ssec_algorithm: 目标对象的加密方式
         :param ssec_key: 目标对象的加密 key
         :param ssec_key_md5: 目标对象加密key的md5值
+        :param traffic_limit: 单链接限速
         :return: CopyObjectOutput
         """
         check_enum_type(acl=acl, metadata_directive=metadata_directive, storage_class=storage_class)
@@ -1004,7 +1051,7 @@ class TosClientV2(TosClient):
                                            grant_full_control, grant_read, grant_read_acp, grant_write_acp, meta,
                                            metadata_directive, copy_source_ssec_algorithm, copy_source_ssec_key,
                                            copy_source_ssec_key_md5, server_side_encryption, website_redirect_location,
-                                           storage_class, ssec_algorithm, ssec_key, ssec_key_md5)
+                                           storage_class, ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, headers=headers)
 
@@ -1096,7 +1143,7 @@ class TosClientV2(TosClient):
         check_client_encryption_algorithm(ssec_algorithm)
 
         headers = _get_object_headers(if_match, if_modified_since, if_none_match, if_unmodified_since, None,
-                                      ssec_algorithm, ssec_key, ssec_key_md5)
+                                      ssec_algorithm, ssec_key, ssec_key_md5, None)
 
         params = {}
 
@@ -1230,7 +1277,10 @@ class TosClientV2(TosClient):
                    storage_class: StorageClassType = None,
                    data_transfer_listener=None,
                    rate_limiter=None,
-                   content=None) -> PutObjectOutput:
+                   traffic_limit: int = None,
+                   content=None,
+                   callback: str = None,
+                   callback_var: str = None) -> PutObjectOutput:
         """上传对象
 
         :param bucket: 桶名
@@ -1259,7 +1309,10 @@ class TosClientV2(TosClient):
         :param website_redirect_location: 可以将获取这个对象的请求重定向到桶内另一个对象或一个外部的URL，TOS将这个值从头域中取出，保存在对象的元数据中。
         :param data_transfer_listener: 进度条特效
         :param rate_limiter: 客户端限速
+        :param traffic_limit: 单连接限速
         :param content: 数据
+        :param callback: 回调
+        :param callback_var: 回调参数
         :return: PutObjectOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -1275,7 +1328,8 @@ class TosClientV2(TosClient):
                                           content_length, content_md5, content_sha256, content_type, expires,
                                           grant_full_control, grant_read, grant_read_acp, grant_writeAcp, key, meta,
                                           ssec_algorithm, ssec_key, ssec_key_md5,
-                                          server_side_encryption, storage_class, website_redirect_location)
+                                          server_side_encryption, storage_class, website_redirect_location,
+                                          traffic_limit, callback, callback_var)
 
         if content:
             content = init_content(content)
@@ -1292,7 +1346,7 @@ class TosClientV2(TosClient):
         try:
             resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, data=content,
                              headers=headers)
-            result = PutObjectOutput(resp)
+            result = PutObjectOutput(resp, callback=callback)
             if self.enable_crc and content:
                 utils.check_crc('put_object', content.crc, result.hash_crc64_ecma, result.request_id)
             return result
@@ -1325,6 +1379,7 @@ class TosClientV2(TosClient):
                              website_redirect_location: str = None,
                              storage_class: StorageClassType = None,
                              data_transfer_listener=None,
+                             traffic_limit: int = None,
                              rate_limiter=None) -> PutObjectOutput:
         """上传对象
 
@@ -1355,6 +1410,7 @@ class TosClientV2(TosClient):
         :param data_transfer_listener: 进度条特效
         :param rate_limiter: 客户端限速
         :param file_path: 文件路径
+        :param traffic_limit: 单连接限速
         :return: PutObjectOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -1371,7 +1427,7 @@ class TosClientV2(TosClient):
                                    content_type, expires, acl, grant_full_control, grant_read, grant_read_acp,
                                    grant_writeAcp, ssec_algorithm, ssec_key,
                                    ssec_key_md5, server_side_encryption, meta, website_redirect_location, storage_class,
-                                   data_transfer_listener, rate_limiter, f)
+                                   data_transfer_listener, rate_limiter, traffic_limit, f)
 
     def append_object(self, bucket: str, key: str, offset: int,
                       content=None,
@@ -1392,7 +1448,8 @@ class TosClientV2(TosClient):
                       storage_class: StorageClassType = None,
                       data_transfer_listener=None,
                       rate_limiter=None,
-                      pre_hash_crc64_ecma: int = None):
+                      pre_hash_crc64_ecma: int = None,
+                      traffic_limit: int = None) -> AppendObjectOutput:
         """追加写对象
 
         :param bucket: 桶名
@@ -1416,7 +1473,9 @@ class TosClientV2(TosClient):
         :param storage_class: 第一次追加写对象时，可以使用该头域，设置目的对象的存储类型。如果未设置，则目的对象的存储类型，和所在桶的默认存储类型保持一致
         :param data_transfer_listener: 进度条特效
         :param rate_limiter: 客户端限速
+        :param traffic_limit: 单连接限制速
         :param pre_hash_crc64_ecma: 上一次crc值，第一次上传设置为0
+        :return: AppendObjectOutput
         """
 
         check_enum_type(acl=acl, storage_class=storage_class)
@@ -1431,7 +1490,7 @@ class TosClientV2(TosClient):
                                                     content_language, content_length, content_type,
                                                     expires, grant_full_control, grant_read, grant_read_acp,
                                                     grant_write_acp, key, meta, storage_class,
-                                                    website_redirect_location)
+                                                    website_redirect_location, traffic_limit)
 
         if content:
             content = init_content(content)
@@ -1514,7 +1573,10 @@ class TosClientV2(TosClient):
                    range_end: int = None,
                    data_transfer_listener=None,
                    rate_limiter=None,
-                   range: str = None) -> GetObjectOutput:
+                   range: str = None,
+                   traffic_limit: int = None,
+                   process: str = None) -> GetObjectOutput:
+
         """下载对象
 
         :param bucket: 桶名
@@ -1538,18 +1600,22 @@ class TosClientV2(TosClient):
         :param range_start: 指定对象的获取下边界
         :param range_end: 指定对象获取的上边界
         :param range: 查询范围 与range_start range_end 互斥优先使用此字段
+        :param traffic_limit: 单连接限速
+        :param process: 图片处理参数
         :return: GetObjectOutput
         """
+
         check_client_encryption_algorithm(ssec_algorithm)
 
         if range is None:
             range = _make_range_string(range_start, range_end)
 
         headers = _get_object_headers(if_match, if_modified_since, if_none_match, if_unmodified_since, range,
-                                      ssec_algorithm, ssec_key, ssec_key_md5)
+                                      ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit)
 
         params = _get_object_params(response_cache_control, response_content_disposition, response_content_encoding,
-                                    response_content_language, response_content_type, response_expires, version_id)
+                                    response_content_language, response_content_type, response_expires, version_id,
+                                    process)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Get.value, headers=headers,
                          params=params)
@@ -1575,7 +1641,8 @@ class TosClientV2(TosClient):
                            range_start: int = None,
                            range_end: int = None,
                            data_transfer_listener=None,
-                           rate_limiter=None):
+                           rate_limiter=None,
+                           traffic_limit: int = None):
         """下载对象到文件
 
         :param bucket: 桶名
@@ -1599,6 +1666,7 @@ class TosClientV2(TosClient):
         :param range_start: 指定对象的获取下边界
         :param range_end: 指定对象获取的上边界
         :param file_path: 文件路径
+        :param traffic_limit: 单连接限速
         :return: GetObjectOutput
         """
 
@@ -1622,8 +1690,8 @@ class TosClientV2(TosClient):
                                  range_start=range_start,
                                  range_end=range_end,
                                  data_transfer_listener=data_transfer_listener,
-                                 rate_limiter=rate_limiter
-                                 )
+                                 rate_limiter=rate_limiter,
+                                 traffic_limit=traffic_limit)
 
         if init_path(file_path, key):
             dir = os.path.join(file_path, key)
@@ -1739,7 +1807,8 @@ class TosClientV2(TosClient):
                     data_transfer_listener=None,
                     upload_event_listener=None,
                     rate_limiter=None,
-                    cancel_hook=None):
+                    cancel_hook=None,
+                    traffic_limit: int = None):
 
         """断点续传上传
 
@@ -1773,6 +1842,7 @@ class TosClientV2(TosClient):
         :param rate_limiter: 客户端限速
         :param storage_class: 存储类型
         :param cancel_hook: 支持取消断点任务
+        :param traffic_limit: 单连接限速
         :return: CreateMultipartUploadOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -1883,7 +1953,7 @@ class TosClientV2(TosClient):
                                        record=record, datatransfer_listener=data_transfer_listener,
                                        upload_event_listener=upload_event_listener, cancel_hook=cancel_hook,
                                        rate_limiter=rate_limiter, size=size, ssec_algorithm=ssec_algorithm,
-                                       ssec_key=ssec_key, ssec_key_md5=ssec_key_md5)
+                                       ssec_key=ssec_key, ssec_key_md5=ssec_key_md5, traffic_limit=traffic_limit)
 
         result = uploader.execute()
 
@@ -1922,7 +1992,8 @@ class TosClientV2(TosClient):
                               enable_checkpoint: bool = True,
                               checkpoint_file: str = None,
                               copy_event_listener=None,
-                              cancel_hook=None) -> ResumableCopyObjectOutput:
+                              cancel_hook=None,
+                              traffic_limit: int = None) -> ResumableCopyObjectOutput:
         """断点续传复制
 
         :param bucket: 桶名
@@ -1962,6 +2033,7 @@ class TosClientV2(TosClient):
         :param checkpoint_file: 断点续传上传文件夹，在该文件夹下生成断点续传文件
         :param copy_event_listener: 断点续传事件回调
         :param cancel_hook: 取消回调
+        :param traffic_limit: 单连接限速
         :return: ResumableCopyObjectOutput
         """
 
@@ -1985,8 +2057,8 @@ class TosClientV2(TosClient):
 
         size = head_out.content_length
 
-        if size == 0:
-            raise TosClientError('object size is 0, please use copy_object')
+        # if size == 0:
+        #     raise TosClientError('object size is 0, please use copy_object')
 
         check_part_number(size, part_size)
 
@@ -2074,6 +2146,9 @@ class TosClientV2(TosClient):
 
             parts = _get_parts_to_upload(size, part_size, [])
 
+        # 若源对象大小为0，则直接上传一个空分片
+        if size == 0:
+            parts.append(_PartToDo(part_number=-1, start=0, end=0))
         uploader = _BreakpointResumableCopyObject(self, bucket=bucket, key=key, store=store,
                                                   src_bucket=src_bucket, src_object=src_key,
                                                   src_version_id=src_version_id,
@@ -2091,7 +2166,8 @@ class TosClientV2(TosClient):
                                                   datatransfer_listener=None,
                                                   copy_source_if_none_match=copy_source_if_none_match,
                                                   copy_source_if_unmodified_since=copy_source_if_unmodified_since,
-                                                  copy_source_if_modified_since=copy_source_if_modified_since)
+                                                  copy_source_if_modified_since=copy_source_if_modified_since,
+                                                  traffic_limit=traffic_limit)
 
         result = uploader.execute(tos_crc=head_out.hash_crc64_ecma)
 
@@ -2113,7 +2189,8 @@ class TosClientV2(TosClient):
                       data_transfer_listener=None,
                       download_event_listener=None,
                       rate_limiter=None,
-                      cancel_hook=None):
+                      cancel_hook=None,
+                      traffic_limit: int = None):
         """断点传输下载
 
         :param bucket: 桶名
@@ -2135,6 +2212,7 @@ class TosClientV2(TosClient):
         :param download_event_listener: 下载事件回调
         :param rate_limiter: 客户端限速
         :param cancel_hook: 取消断点下载任务
+        :param traffic_limit: 单连接限速
         :return: HeadObjectOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -2227,7 +2305,7 @@ class TosClientV2(TosClient):
                                            download_event_listener=download_event_listener, rate_limiter=rate_limiter,
                                            cancel_hook=cancel_hook, size=result.content_length,
                                            ssec_algorithm=ssec_algorithm, ssec_key=ssec_key, ssec_key_md5=ssec_key_md5,
-                                           version_id=version_id)
+                                           version_id=version_id, traffic_limit=traffic_limit)
 
         downloader.execute(tos_crc=result.hash_crc64_ecma)
 
@@ -2242,7 +2320,8 @@ class TosClientV2(TosClient):
                     content_length: int = None,
                     content=None,
                     data_transfer_listener=None,
-                    rate_limiter=None) -> UploadPartOutput:
+                    rate_limiter=None,
+                    traffic_limit: int = None) -> UploadPartOutput:
 
         """上传分片数据
 
@@ -2259,6 +2338,7 @@ class TosClientV2(TosClient):
         :param content: 内容
         :param data_transfer_listener: 进度条
         :param rate_limiter: 限速
+        :param traffic_limit: 单连接限速
         :return: UploadPartOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -2266,7 +2346,7 @@ class TosClientV2(TosClient):
         check_server_encryption_algorithm(server_side_encryption)
 
         headers = _get_upload_part_headers(content_length, content_md5, server_side_encryption, ssec_algorithm,
-                                           ssec_key, ssec_key_md5)
+                                           ssec_key, ssec_key_md5, traffic_limit)
 
         if content:
             content = init_content(content)
@@ -2302,7 +2382,8 @@ class TosClientV2(TosClient):
                               rate_limiter=None,
                               file_path: str = None,
                               part_size: int = -1,
-                              offset: int = 0) -> UploadPartOutput:
+                              offset: int = 0,
+                              traffic_limit: int = None) -> UploadPartOutput:
         """以文件形式上传分片数据
 
         :param bucket: 桶名
@@ -2319,6 +2400,7 @@ class TosClientV2(TosClient):
         :param file_path: 文件路径
         :param part_size: 当前分段长度
         :param offset: 当前分段在文件中的起始位置
+        :param traffic_limit: 单连接限速
         :return: UploadPartOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -2343,26 +2425,36 @@ class TosClientV2(TosClient):
                                     server_side_encryption=server_side_encryption,
                                     content=content,
                                     data_transfer_listener=data_transfer_listener,
-                                    rate_limiter=rate_limiter
+                                    rate_limiter=rate_limiter,
+                                    traffic_limit=traffic_limit
                                     )
 
-    def complete_multipart_upload(self, bucket: str, key: str, upload_id: str,
-                                  parts: []) -> CompleteMultipartUploadOutput:
+    def complete_multipart_upload(self, bucket: str, key: str, upload_id: str, parts: [],
+                                  complete_all: bool = False,
+                                  callback: str = None,
+                                  callback_var: str = None) -> CompleteMultipartUploadOutput:
         """ 合并段
 
         :param bucket: 桶名
         :param key: 对象名
         :param upload_id: 分段任务编号
         :param parts: 完成的分段任务
+        :param complete_all: 指定是否合并指定当前UploadId已上传的所有Part
+        :param callback: 回调
+        :param callback_var: 回调参数
         :return: CompleteMultipartUploadOutput
         """
-        body = to_complete_multipart_upload_request(parts)
-        data = json.dumps(body)
+        headers = _get_complete_upload_part_headers(complete_all, callback, callback_var)
+
+        data = None
+        if not complete_all:
+            body = to_complete_multipart_upload_request(parts)
+            data = json.dumps(body)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Post.value,
-                         params={'uploadId': upload_id}, data=data)
+                         params={'uploadId': upload_id}, data=data, headers=headers)
 
-        return CompleteMultipartUploadOutput(resp)
+        return CompleteMultipartUploadOutput(resp, callback)
 
     def abort_multipart_upload(self, bucket: str, key: str, upload_id: str) -> AbortMultipartUpload:
         """取消分片上传
@@ -2392,7 +2484,8 @@ class TosClientV2(TosClient):
                          ssec_algorithm: str = None,
                          ssec_key: str = None,
                          ssec_key_md5: str = None,
-                         copy_source_range: str = None) -> UploadPartCopyOutput:
+                         copy_source_range: str = None,
+                         traffic_limit: int = None) -> UploadPartCopyOutput:
         """复制段
 
         :param bucket: 桶名
@@ -2415,6 +2508,7 @@ class TosClientV2(TosClient):
         :param ssec_algorithm: 目标对象的加密方式
         :param ssec_key: 目标对象的加密 key
         :param ssec_key_md5: 目标对象加密key的md5值
+        :param traffic_limit: 单连接限速
         return: UploadPartCopyOutput
         """
         check_client_encryption_algorithm(copy_source_ssec_algorithm)
@@ -2427,7 +2521,8 @@ class TosClientV2(TosClient):
         headers = _get_upload_part_copy_headers(copy_source, copy_source_if_match, copy_source_if_modified_since,
                                                 copy_source_if_none_match, copy_source_if_unmodified_since,
                                                 copy_source_range, copy_source_ssec_algorithm, copy_source_ssec_key,
-                                                copy_source_ssec_key_md5, ssec_algorithm, ssec_key, ssec_key_md5)
+                                                copy_source_ssec_key_md5, ssec_algorithm, ssec_key, ssec_key_md5,
+                                                traffic_limit)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value,
                          params={'uploadId': upload_id, 'partNumber': part_number},
@@ -2978,14 +3073,16 @@ class TosClientV2(TosClient):
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'website': ''})
         return PutBucketWebsiteOutput(resp)
 
-    def put_bucket_notification(self, bucket: str, cloud_function_configurations: []) -> PutBucketNotificationOutput:
+    def put_bucket_notification(self, bucket: str, cloud_function_configurations: [] = None,
+                                rocket_mq_configurations: [] = None) -> PutBucketNotificationOutput:
         """
 
         :param: bucket: 桶名
         :param: cloudFunctionConfigurations: 配置
+        :param: rocket_mq_configurations: rocketMQ 配置
         :return: PutBucketNotificationOutput
         """
-        data = to_put_bucket_notification(cloud_function_configurations)
+        data = to_put_bucket_notification(cloud_function_configurations, rocket_mq_configurations)
         data = json.dumps(data)
         headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params={'notification': ''},
@@ -3060,7 +3157,7 @@ class TosClientV2(TosClient):
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'realtimeLog': ''})
         return GetBucketRealTimeLog(resp)
 
-    def delete_bucket_real_time_log(self, bucket) -> DeleteBucketRealTimeLog:
+    def delete_bucket_real_time_log(self, bucket: str) -> DeleteBucketRealTimeLog:
         """ 删除桶实时日志配置
 
         :param bucket: 桶名
@@ -3068,6 +3165,71 @@ class TosClientV2(TosClient):
         """
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'realtimeLog': ''})
         return DeleteBucketRealTimeLog(resp)
+
+    def restore_object(self, bucket: str, key: str, days: int, version_id: str = None,
+                       restore_job_parameters: RestoreJobParameters = None) -> RestoreObjectOutput:
+        """ 取回对象
+        :param bucket: 桶名
+        :param key: 对象名
+        :param version_id: 版本id
+        :param days: 恢复天数
+        :param restore_job_parameters: 取回方式
+        :return: RestoreObjectOutput
+        """
+        data = to_restore_object(days, restore_job_parameters)
+        data = json.dumps(data)
+
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        params = {"restore": ""}
+        if version_id:
+            params["versionId"] = version_id
+
+        resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Post.value,
+                         params=params, headers=headers, data=data)
+
+        return RestoreObjectOutput(resp)
+
+    def rename_object(self, bucket: str, key: str, new_key: str):
+        """ 重命名对象
+        :param bucket: 桶名
+        :param key: 对象名
+        :param new_key: 新对象名
+        :return: RenameObjectOutput
+        """
+        _is_valid_object_name(new_key)
+        params = {"rename": "", "name": new_key}
+        resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, params=params)
+        return RenameObjectOutput(resp)
+
+    def get_bucket_rename(self, bucket: str):
+        """ 获取桶rename是否开启rename功能
+        :param bucket: 桶名
+        :return: GetBucketRenameOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={"rename": ""})
+        return GetBucketRenameOutput(resp)
+
+    def put_bucket_rename(self, bucket: str, rename_enable: bool):
+        """ 设置开启rename功能
+        :param bucket: 桶名
+        :param rename_enable: 是否开启桶rename功能
+        :return: PutBucketRenameOutput
+        """
+        data = {"RenameEnable": rename_enable}
+        data = json.dumps(data)
+
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, data=data, headers=headers,
+                         params={"rename": ""})
+        return PutBucketRenameOutput(resp)
+
+    def delete_bucket_rename(self, bucket: str):
+        """ 删除桶rename功能
+        :param bucket: 桶名
+        :return: DeleteBucketRenameOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={"rename": ""})
+        return DeleteBucketRenameOutput(resp)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None):
         # 获取调用方法的名称
@@ -3086,14 +3248,19 @@ class TosClientV2(TosClient):
         # 通过变量赋值,防止动态调整 auth endpoint 出现并发问题
         auth = self.auth
         endpoint = self.endpoint
-        req = Request(method, self._make_virtual_host_url(bucket, key),
+        req_bucket = None if self.is_custom_domain else bucket
+        req = Request(method, self._make_virtual_host_url(req_bucket, key),
                       _make_virtual_host_uri(key),
-                      _get_virtual_host(bucket, endpoint),
+                      _get_virtual_host(req_bucket, endpoint),
                       data=data,
                       params=params,
                       headers=headers)
 
-        # 若auth 为空即为匿名请求，则计算不签名
+        # 若为网络流对象删除headers中的content-length，防止签名计算错误
+        if isinstance(data, _ReaderAdapter) and headers.get('content-length'):
+            del req.headers['content-length']
+
+        # 若auth 为空即为匿名请求，则不计算签名
         if auth is not None:
             auth.sign_request(req)
 
@@ -3126,7 +3293,7 @@ class TosClientV2(TosClient):
                                            proxies=self.proxies,
                                            allow_redirects=False)
                 rsp = Response(res)
-                if rsp.status >= 300:
+                if rsp.status >= 300 or (rsp.status == 203 and func_name in CALLBACK_FUNCTION):
                     raise exceptions.make_server_error(rsp)
 
                 content_length = get_value(rsp.headers, 'content-length', int)
