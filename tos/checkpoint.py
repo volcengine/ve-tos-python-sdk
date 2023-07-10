@@ -127,7 +127,7 @@ class BreakpointBase(object):
     def __init__(self, client, bucket, key, store: CheckPointStore, task_num,
                  parts_to_do, record: Dict,
                  size, rate_limiter, cancel_hook,
-                 datatransfer_listener, event_listener):
+                 datatransfer_listener, event_listener, traffic_limit):
         self.client = client
         self.bucket = bucket
         self.key = key
@@ -139,6 +139,7 @@ class BreakpointBase(object):
         self.datatransfer_listener = datatransfer_listener
         self.event_listener = event_listener
         self.rate_limiter = rate_limiter
+        self.traffic_limit = traffic_limit
         self.need_bytes = 0
         for part in parts_to_do:
             self.need_bytes += part.size
@@ -234,13 +235,14 @@ class _BreakpointUploader(BreakpointBase):
                  parts_to_update, upload_id, record: Dict,
                  size, ssec_algorithm, ssec_key, ssec_key_md5, rate_limiter, cancel_hook,
                  datatransfer_listener, upload_event_listener,
-                 file_path):
+                 file_path, traffic_limit):
 
         super(_BreakpointUploader, self).__init__(client=client, bucket=bucket, key=key, store=store, task_num=task_num,
                                                   parts_to_do=parts_to_update, record=record, size=size,
                                                   rate_limiter=rate_limiter, cancel_hook=cancel_hook,
                                                   datatransfer_listener=datatransfer_listener,
-                                                  event_listener=upload_event_listener)
+                                                  event_listener=upload_event_listener,
+                                                  traffic_limit=traffic_limit)
         self.filename = file_path
         self.task_num = task_num
         self.upload_id = upload_id
@@ -267,7 +269,8 @@ class _BreakpointUploader(BreakpointBase):
                                                  rate_limiter=self.rate_limiter,
                                                  ssec_algorithm=self.ssec_algorithm,
                                                  ssec_key=self.ssec_key,
-                                                 ssec_key_md5=self.ssec_key_md5)
+                                                 ssec_key_md5=self.ssec_key_md5,
+                                                 traffic_limit=self.traffic_limit)
             except Exception as e:
                 self._callback_part_fail(e, part)
                 raise e
@@ -327,13 +330,14 @@ class _BreakpointResumableCopyObject(BreakpointBase):
                  src_bucket, src_object,
                  copy_source_if_match, copy_source_if_modified_since,
                  copy_source_if_none_match, copy_source_if_unmodified_since, src_version_id,
-                 copy_source_ssec_algorithm, copy_source_ssec_key, copy_source_ssec_key_md5):
+                 copy_source_ssec_algorithm, copy_source_ssec_key, copy_source_ssec_key_md5, traffic_limit):
         super(_BreakpointResumableCopyObject, self).__init__(client=client, bucket=bucket, key=key, store=store,
                                                              task_num=task_num,
                                                              parts_to_do=parts_to_update, record=record, size=size,
                                                              rate_limiter=rate_limiter, cancel_hook=cancel_hook,
                                                              datatransfer_listener=datatransfer_listener,
-                                                             event_listener=upload_event_listener)
+                                                             event_listener=upload_event_listener,
+                                                             traffic_limit=traffic_limit)
         self.upload_id = upload_id
         self.src_version_id = src_version_id
         self.ssec_algorithm = ssec_algorithm
@@ -357,19 +361,30 @@ class _BreakpointResumableCopyObject(BreakpointBase):
 
     def _do_task(self, part):
         try:
-            result = self.client.upload_part_copy(self.bucket, self.key, self.upload_id, part.part_number,
-                                                  self.src_bucket, self.src_object,
-                                                  src_version_id=self.src_version_id,
-                                                  copy_source_range_start=part.start,
-                                                  # 由于拷贝为闭区间，因此end -1
-                                                  copy_source_range_end=part.start + part.size - 1,
-                                                  copy_source_if_match=self.copy_source_if_match,
-                                                  copy_source_ssec_key=self.copy_source_ssec_key,
-                                                  copy_source_ssec_algorithm=self.copy_source_ssec_algorithm,
-                                                  copy_source_ssec_key_md5=self.copy_source_ssec_key_md5,
-                                                  ssec_key=self.ssec_key,
-                                                  ssec_algorithm=self.ssec_algorithm,
-                                                  ssec_key_md5=self.ssec_key_md5)
+            if part.part_number == -1:
+                # part_number -1 则说明为空分片
+                part.part_number = 1
+                result = self.client.upload_part(bucket=self.bucket, key=self.key, upload_id=self.upload_id,
+                                                 part_number=1,
+                                                 rate_limiter=self.rate_limiter,
+                                                 ssec_algorithm=self.ssec_algorithm,
+                                                 ssec_key=self.ssec_key,
+                                                 ssec_key_md5=self.ssec_key_md5)
+            else:
+                result = self.client.upload_part_copy(self.bucket, self.key, self.upload_id, part.part_number,
+                                                      self.src_bucket, self.src_object,
+                                                      src_version_id=self.src_version_id,
+                                                      copy_source_range_start=part.start,
+                                                      # 由于拷贝为闭区间，因此end -1
+                                                      copy_source_range_end=part.start + part.size - 1,
+                                                      copy_source_if_match=self.copy_source_if_match,
+                                                      copy_source_ssec_key=self.copy_source_ssec_key,
+                                                      copy_source_ssec_algorithm=self.copy_source_ssec_algorithm,
+                                                      copy_source_ssec_key_md5=self.copy_source_ssec_key_md5,
+                                                      ssec_key=self.ssec_key,
+                                                      ssec_algorithm=self.ssec_algorithm,
+                                                      ssec_key_md5=self.ssec_key_md5,
+                                                      traffic_limit=self.traffic_limit)
         except Exception as e:
             self._callback_part_fail(e, part)
             raise e
@@ -430,13 +445,14 @@ class _BreakpointDownloader(BreakpointBase):
                  parts_to_download, record: Dict, etag,
                  datatransfer_listener, download_event_listener,
                  rate_limiter, cancel_hook, version_id, size,
-                 ssec_algorithm, ssec_key, ssec_key_md5):
+                 ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit):
         super(_BreakpointDownloader, self).__init__(client=client, bucket=bucket, key=key, store=store,
                                                     task_num=task_num,
                                                     parts_to_do=parts_to_download, record=record, size=size,
                                                     rate_limiter=rate_limiter, cancel_hook=cancel_hook,
                                                     datatransfer_listener=datatransfer_listener,
-                                                    event_listener=download_event_listener)
+                                                    event_listener=download_event_listener,
+                                                    traffic_limit=traffic_limit)
         self.etag = etag
         self.version_id = version_id
         self.file_path = file_path
@@ -472,7 +488,8 @@ class _BreakpointDownloader(BreakpointBase):
                                                  ssec_algorithm=self.ssec_algorithm,
                                                  ssec_key=self.ssec_key,
                                                  ssec_key_md5=self.ssec_key_md5,
-                                                 version_id=self.version_id)
+                                                 version_id=self.version_id,
+                                                 traffic_limit=self.traffic_limit)
                 copy_and_verify_length(content, f, part.end - part.start, request_id=content.request_id)
                 if self.client.enable_crc:
                     part.part_crc = content.content.crc

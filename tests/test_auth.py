@@ -85,6 +85,14 @@ class TestAuth(TosTestCase):
             self.assertTrue('contentlength' in url.signed_url)
             url.signed_header['contentLength'] = 1000
 
+            self.anonymousCli = tos.TosClientV2(ak='', sk='', endpoint='tos-cn-beijing.volces.com', region='beijing')
+            url = self.anonymousCli.pre_signed_url(http_method=HttpMethodType.Http_Method_Put, bucket='bkt', key='key',
+                                                   header={'contentLength': 1000}, query={'t1': 't1'})
+            self.assertEqual(url.signed_url, 'https://bkt.tos-cn-beijing.volces.com/key?t1=t1')
+
+            url = self.anonymousCli.pre_signed_url(http_method=HttpMethodType.Http_Method_Put, bucket='bkt', key='key')
+            self.assertEqual(url.signed_url, 'https://bkt.tos-cn-beijing.volces.com/key?')
+
     def test_pre_signed_post_signature(self):
         datetime_mock = mock.Mock(wraps=datetime.datetime)
         datetime_mock.utcnow.return_value = datetime.datetime(2022, 1, 1)
@@ -96,7 +104,6 @@ class TestAuth(TosTestCase):
             content_length_range = ContentLengthRange(range_start=1023, range_end=10000)
             out = tos_cli.pre_signed_post_signature(bucket='testBucket', key='test_object', conditions=conditions,
                                                     expires=704800, content_length_range=content_length_range)
-            print(out)
 
     def test_pre_signed_policy_url(self):
         datetime_mock = mock.Mock(wraps=datetime.datetime)
@@ -115,6 +122,15 @@ class TestAuth(TosTestCase):
             get = out.get_signed_url_for_get_or_head(key='exampleobject', additional_query={'k1': 'v1', 'k2': 'v2'})
             self.assertEqual(get,
                              'https://test.tos-cn-beijing.volces.com/exampleobject?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=ak%2F20220101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20220101T000000Z&X-Tos-Expires=704800&X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In1dfQ%3D%3D&X-Tos-Signature=869b9e678a6a69ce4a1cd02c7c0e333cb8e7a312a1078563dd2619d3daa9f5ee&k1=v1&k2=v2')
+
+            anonymous_cli = tos.TosClientV2(ak='', sk='', endpoint='tos-cn-beijing.volces.com', region='beijing')
+            out = anonymous_cli.pre_signed_policy_url(bucket='test', conditions=conditions)
+            list_1 = out.get_signed_url_for_list({'k1': 'v1', 'k2': 'v2'})
+            self.assertEqual(list_1,
+                             'https://test.tos-cn-beijing.volces.com?X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In0sIHsiYnVja2V0IjogInRlc3QifV19&k1=v1&k2=v2')
+            get = out.get_signed_url_for_get_or_head(key='exampleobject', additional_query={'k1': 'v1', 'k2': 'v2'})
+            self.assertEqual(get,
+                             'https://test.tos-cn-beijing.volces.com/exampleobject?X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In0sIHsiYnVja2V0IjogInRlc3QifV19&k1=v1&k2=v2')
 
 
 if __name__ == '__main__':

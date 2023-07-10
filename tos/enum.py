@@ -29,8 +29,13 @@ class StorageClassType(Enum):
     Storage_Class_Standard = "STANDARD"
     # 低频访问存储
     Storage_Class_Ia = "IA"
+    Storage_Class_INTELLIGENT_TIERING = "INTELLIGENT_TIERING"
     # 归档闪回存储
     Storage_Class_Archive_Fr = 'ARCHIVE_FR'
+    # 冷归档存储
+    Storage_Class_Cold_Archive = 'COLD_ARCHIVE'
+    # 归档存储
+    Storage_Class_Archive = 'ARCHIVE'
 
 
 def convert_storage_class_type(storage_class: str):
@@ -231,3 +236,17 @@ class CopyEventType(Enum):
     Copy_Event_Create_Part_Copy_Aborted = 5
     Copy_Event_Completed_Multipart_Upload_Succeed = 6
     Copy_Event_Completed_Multipart_Upload_Failed = 7
+
+
+class TierType(Enum):
+    Tier_Unknown = "Unknown"
+    Tier_Standard = "Standard"
+    Tier_Expedited = "Expedited"
+    Tier_Bulk = "Bulk"
+
+
+def convert_tier_type(s: str):
+    for t in TierType:
+        if t.value == s:
+            return t
+    return TierType.Tier_Unknown

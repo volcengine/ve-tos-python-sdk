@@ -19,7 +19,8 @@ from tos.models2 import CORSRule, Rule, Condition, Redirect, PublicSource, Sourc
     BucketLifeCycleNonCurrentVersionTransition, BucketLifeCycleAbortInCompleteMultipartUpload, ReplicationRule, \
     Destination, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, RoutingRule, \
     RoutingRuleCondition, RoutingRuleRedirect, CustomDomainRule, RealTimeLogConfiguration, AccessLogConfiguration, \
-    CloudFunctionConfiguration, Filter, FilterKey, FilterRule
+    CloudFunctionConfiguration, Filter, FilterKey, FilterRule, RocketMQConfiguration, RocketMQConf, Transform, \
+    ReplaceKeyPrefix
 
 tos.set_logger()
 
@@ -40,7 +41,7 @@ class TestBucket(TosTestBase):
         self.assertIsNotNone(head_out.region)
         self.assertEqual(head_out.storage_class, StorageClassType.Storage_Class_Standard)
         key = 'a.txt'
-        self.client.put_object(bucket_name, key=key, content="contenet")
+        self.client.put_object(bucket_name, key=key, content='content')
 
         with self.assertRaises(TosServerError):
             self.client.delete_bucket(bucket_name)
@@ -226,7 +227,9 @@ class TestBucket(TosTestBase):
                 public_source=PublicSource(SourceEndpoint(primary=['http://tosv.byted.org/obj/tostest/'])),
                 pass_query=True,
                 follow_redirect=True,
-                mirror_header=MirrorHeader(pass_all=True, pass_headers=['aaa', 'bbb'], remove=['xxx', 'xxx'])
+                mirror_header=MirrorHeader(pass_all=True, pass_headers=['aaa', 'bbb'], remove=['xxx', 'xxx']),
+                transform=Transform(with_key_prefix='prefix', with_key_suffix='suffix',
+                                    replace_key_prefix=ReplaceKeyPrefix(key_prefix='prefix1', replace_with='replace'))
             )
         ))
         put_out = self.client.put_bucket_mirror_back(bucket=bucket_name, rules=rules)
@@ -244,6 +247,11 @@ class TestBucket(TosTestBase):
         self.assertEqual(get_out.rules[0].redirect.mirror_header.remove, ['xxx', 'xxx'])
         self.assertEqual(get_out.rules[0].redirect.public_source.source_endpoint.primary,
                          ['http://tosv.byted.org/obj/tostest/'])
+        self.assertEqual(get_out.rules[0].redirect.public_source.fixed_endpoint, None)
+        self.assertEqual(get_out.rules[0].redirect.transform.with_key_prefix, 'prefix')
+        self.assertEqual(get_out.rules[0].redirect.transform.with_key_suffix, 'suffix')
+        self.assertEqual(get_out.rules[0].redirect.transform.replace_key_prefix.key_prefix, 'prefix1')
+        self.assertEqual(get_out.rules[0].redirect.transform.replace_key_prefix.replace_with, 'replace')
         rules = []
         rules.append(Rule(
             id='2',
@@ -252,7 +260,8 @@ class TestBucket(TosTestBase):
                 redirect_type=RedirectType.Async,
                 fetch_source_on_redirect=False,
                 public_source=PublicSource(SourceEndpoint(primary=['http://test.com/obj/tostest2/'],
-                                                          follower=['http://test.com/obj/tostest2/3'])),
+                                                          follower=['http://test.com/obj/tostest2/3']),
+                                           fixed_endpoint=True),
                 pass_query=False,
                 follow_redirect=False,
                 mirror_header=MirrorHeader(pass_all=False, pass_headers=['aaa2', 'bbb2'], remove=['xxxx', 'xxxx'])
@@ -272,6 +281,7 @@ class TestBucket(TosTestBase):
                          ['http://test.com/obj/tostest2/'])
         self.assertEqual(get_out.rules[0].redirect.public_source.source_endpoint.follower,
                          ['http://test.com/obj/tostest2/3'])
+        self.assertEqual(get_out.rules[0].redirect.public_source.fixed_endpoint, True)
 
         delete_out = self.client.delete_bucket_mirror_back(bucket=bucket_name)
         self.assertIsNotNone(delete_out.request_id)
@@ -630,24 +640,56 @@ class TestBucket(TosTestBase):
         bucket_name = self.bucket_name + '-notification'
         self.client2.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
-        config = CloudFunctionConfiguration(
+        cloud_config = CloudFunctionConfiguration(
             id='1',
-            events=['tos:ObjectCreated:Put', 'tos:ObjectCreated:Post'],
+            events=['tos:ObjectCreated:Put'],
             filter=Filter(
                 key=FilterKey(
                     rules=[FilterRule(name='prefix', value='object')]
                 )),
             cloud_function='zkru2tzw'
         )
-        out = self.client2.put_bucket_notification(bucket_name, [config])
+
+        out = self.client2.put_bucket_notification(bucket_name, [cloud_config])
         self.assertIsNotNone(out.request_id)
         get_out = self.client2.get_bucket_notification(bucket_name)
         self.assertEqual(get_out.cloud_function_configurations[0].id, '1')
-        self.assertEqual(get_out.cloud_function_configurations[0].events,
-                         ['tos:ObjectCreated:Put', 'tos:ObjectCreated:Post'])
+        self.assertEqual(get_out.cloud_function_configurations[0].events, ['tos:ObjectCreated:Put'])
         self.assertEqual(get_out.cloud_function_configurations[0].cloud_function, 'zkru2tzw')
         self.assertEqual(get_out.cloud_function_configurations[0].filter.key.rules[0].name, 'prefix')
         self.assertEqual(get_out.cloud_function_configurations[0].filter.key.rules[0].value, 'object')
+
+    def test_put_bucket_notification_mq(self):
+        bucket_name = self.bucket_name + '-notification-mq'
+        self.client2.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        rocket_mq_config = RocketMQConfiguration(
+            id='2',
+            events=['tos:ObjectCreated:Post'],
+            role='trn:iam::{}:role/{}'.format(self.account_id, self.mq_role_name),
+            filter=Filter(
+                key=FilterKey(
+                    rules=[FilterRule(name='prefix', value='object')]
+                )),
+            rocket_mq=RocketMQConf(
+                instance_id=self.mq_instance_id,
+                topic='SDK',
+                access_key_id=self.mq_access_key_id
+            )
+        )
+        out = self.client2.put_bucket_notification(bucket_name,
+                                                   rocket_mq_configurations=[rocket_mq_config])
+        self.assertIsNotNone(out.request_id)
+        get_out = self.client2.get_bucket_notification(bucket_name)
+        self.assertEqual(get_out.rocket_mq_configurations[0].id, '2')
+        self.assertEqual(get_out.rocket_mq_configurations[0].events, ['tos:ObjectCreated:Post'])
+        self.assertEqual(get_out.rocket_mq_configurations[0].role,
+                         'trn:iam::{}:role/{}'.format(self.account_id, self.mq_role_name))
+        self.assertEqual(get_out.rocket_mq_configurations[0].filter.key.rules[0].name, 'prefix')
+        self.assertEqual(get_out.rocket_mq_configurations[0].filter.key.rules[0].value, 'object')
+        self.assertEqual(get_out.rocket_mq_configurations[0].rocket_mq.instance_id, self.mq_instance_id)
+        self.assertEqual(get_out.rocket_mq_configurations[0].rocket_mq.topic, 'SDK')
+        self.assertEqual(get_out.rocket_mq_configurations[0].rocket_mq.access_key_id, self.mq_access_key_id)
 
     def test_put_bucket_real_time_log(self):
         bucket_name = self.bucket_name + '-real-time-log'

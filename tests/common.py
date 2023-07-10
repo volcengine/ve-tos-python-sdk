@@ -59,6 +59,13 @@ class TosTestBase(unittest.TestCase):
         self.region = os.getenv('Region')
         self.region2 = os.getenv('Region2')
         self.bucket_name = "sun-" + random_string(10)
+
+        self.mq_instance_id = os.getenv('MqInstanceId')
+        self.account_id = os.getenv('AccountId')
+        self.mq_role_name = os.getenv('MqRoleName')
+        self.mq_access_key_id = os.getenv('MqAccessKeyId')
+        self.callback = os.getenv('Callback')
+        self.callback_var = os.getenv('CallbackVar')
         self.object_name = "test_object" + random_string(10)
         self.prefix = random_string(12)
         self.bucket_delete = []

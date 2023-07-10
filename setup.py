@@ -16,7 +16,7 @@ AUTHOR = 'sunyushan'
 REQUIRES = [
     'Deprecated>=1.2.13,<2.0.0',
     'pytz',
-    "requests>=2.19.1,<2.26.0",
+    "requests>=2.19.1, ==2.*",
     'crcmod>=1.7',
     'six',
 ]

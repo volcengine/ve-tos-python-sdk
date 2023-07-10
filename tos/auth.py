@@ -244,3 +244,32 @@ class Auth(AuthBase):
 class FederationAuth(AuthBase):
     def __init__(self, credentials_provider: FederationCredentials, region: str):
         super(FederationAuth, self).__init__(credentials_provider, region)
+
+
+class AnonymousAuth(object):
+    def __init__(self, access_key_id, access_key_secret, region, sts=None):
+        self.region = region.strip()
+
+    def copy(self):
+        return self
+
+    def sign_request(self, req):
+        pass
+
+    def sign_url(self, req, expires):
+        return req.url + '?' + '&'.join(_param_to_quoted_query(k, v) for k, v in req.params.items())
+
+    def post_sign(self, bucket: str, key: str, expires: int, conditions: [],
+                  content_length_range: ContentLengthRange) -> PreSignedPostSignatureOutPut:
+        date = datetime.datetime.utcnow().strftime(DATE_FORMAT)
+        sign = PreSignedPostSignatureOutPut()
+        sign.origin_policy = _get_post_policy(date, expires, sign.algorithm, sign.credential, bucket, key,
+                                              conditions, content_length_range)
+        sign.origin_policy = json.dumps(sign.origin_policy)
+        sign.policy = base64.b64encode(sign.origin_policy.encode('utf-8')).decode('utf-8')
+
+        return sign
+
+    def x_tos_post_sign(self, expires: int, conditions: []):
+        params = {'X-Tos-Policy': base64.b64encode(json.dumps(_get_policy(conditions)).encode('utf-8')).decode('utf-8')}
+        return '&'.join(_param_to_quoted_query(k, v) for k, v in params.items())
