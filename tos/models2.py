@@ -402,7 +402,7 @@ class ListedObject(object):
         self.hash_crc64_ecma = hash_crc64_ecma
 
     def __str__(self):
-        info = {"key": self.key, "last_modified": self.key, "etag": self.etag, "size": self.size, "owner": self.owner,
+        info = {"key": self.key, "last_modified": self.last_modified, "etag": self.etag, "size": self.size, "owner": self.owner,
                 "storage_class": self.storage_class, 'hash_crc64_ecma': self.hash_crc64_ecma}
 
         return str(info)
