@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 import pytz
+from tos.exceptions import TosError
 
 from tests.common import MockResponse, TosTestCase
 
@@ -33,6 +34,16 @@ class TestObject(TosTestCase):
         res = self.client.get_object(Bucket=self.bucket_name, Key=self.key_name)
         self.assertEqual(res.status, 200)
         self.assertEqual(res.content_range, 'bytes=0-100')
+
+    @mock.patch('requests.Session.request')
+    def test_get_object_not_found(self, mock_request):
+        mock_request.return_value = MockResponse(status_code=404)
+
+        try:
+            self.client.get_object(Bucket=self.bucket_name, Key=self.key_name)
+            self.assertTrue(False)
+        except TosError as e:
+            self.assertEqual(e.status, 404)
 
     @mock.patch('requests.Session.request')
     def test_head_object(self, mock_request):
