@@ -11,30 +11,40 @@ def get_value(kv, key, handler=lambda x: x):
 
 
 class TosError(Exception):
-    def __init__(self, msg: str):
-        self.message = msg
-
-    def __str__(self):
-        error = {"message": self.message}
-        return str(error)
+    def __init__(self, status, headers, body, details):
+        self.status = status
+        self.request_id = headers.get('x-tos-request-id', '')
+        self.body = body
+        self.details = details
+        self.code = self.details.get('Code', '')
+        self.message = self.details.get('Message', '')
+        self.headers = headers
+        self.etag = headers.get("ETag")
 
 
 def make_exception(resp):
-    details = _parse_error_body(resp)
-    return TosError(details.get('Message', ''))
+    status = resp.status
+    headers = resp.headers
+    body = resp.read()
+    details = _parse_body_json(body)
+    return TosError(status, headers, body, details)
 
 
 def _parse_error_body(resp):
     body = resp.read()
+    return _parse_body_json(body)
+
+
+def _parse_body_json(body):
     try:
         return json.loads(body.decode('utf-8'))
     except Exception:
-        return {'message': body.decode('utf-8')}
+        return {'Message': body.decode('utf-8')}
 
 
 class TosClientError(TosError):
     def __init__(self, msg: str, cause: Exception = None):
-        super(TosClientError, self).__init__(msg)
+        self.message = msg
         self.cause = cause
 
     def __str__(self):
@@ -47,7 +57,7 @@ class TosServerError(TosError):
     def __init__(self, resp, msg: str, code: str, host_id: str, resource: str):
         self.message = msg
         self.request_id = resp.request_id
-        self.id2 = get_value(resp.headers, "x-tos-id-2")
+        self.id2 = get_value(resp.headers, 'x-tos-id-2')
         self.status_code = resp.status
         self.header = resp.headers
         self.code = code
