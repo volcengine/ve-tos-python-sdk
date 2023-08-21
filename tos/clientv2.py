@@ -3257,7 +3257,7 @@ class TosClientV2(TosClient):
                       headers=headers)
 
         # 若为网络流对象删除headers中的content-length，防止签名计算错误
-        if isinstance(data, _ReaderAdapter) and headers.get('content-length'):
+        if isinstance(data, _IterableAdapter) and headers.get('content-length'):
             del req.headers['content-length']
 
         # 若auth 为空即为匿名请求，则不计算签名
