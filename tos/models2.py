@@ -569,7 +569,8 @@ class GetObjectOutput(HeadObjectOutput):
     def read(self, amt=None):
         data = self.content.read(amt)
         if not data:
-            if self.enable_crc and self.client_crc and self.content_range is None and self.client_crc != self.hash_crc64_ecma:
+            if self.enable_crc and self.client_crc and self.content_range is None and self.hash_crc64_ecma is not None \
+                    and self.client_crc != self.hash_crc64_ecma:
                 raise TosClientError(
                     'client crc:{} is not equal to tos crc:{}'.format(self.client_crc, self.hash_crc64_ecma))
         return data
