@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 USER_AGENT = 'volc-tos-sdk-python/{0}'.format(__version__)
 
 
-
 class TosClient():
     def __init__(self, auth, endpoint, connect_timeout=None, connection_pool_size=10, recognize_content_type=True):
         self.auth = auth
@@ -49,9 +48,9 @@ class TosClient():
 
         self.session = requests.Session()
         self.session.mount('http://', HTTPAdapter(pool_connections=connection_pool_size,
-                                                  pool_maxsize=connection_pool_size, max_retries=3))
+                                                  pool_maxsize=connection_pool_size, max_retries=0))
         self.session.mount('https://', HTTPAdapter(pool_connections=connection_pool_size,
-                                                   pool_maxsize=connection_pool_size, max_retries=3))
+                                                   pool_maxsize=connection_pool_size, max_retries=0))
 
     @deprecated(version='2.1.0', reason="please use TosClientV2")
     def generate_presigned_url(self, Method: str, Bucket: str = None, Key: str = None, Params: Dict = None,

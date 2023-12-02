@@ -2,6 +2,8 @@ import json
 
 _TOS_ERROR_TO_EXCEPTION = {}
 
+from .thread_ctx import produce_body
+
 
 def get_value(kv, key, handler=lambda x: x):
     if key in kv:
@@ -11,15 +13,18 @@ def get_value(kv, key, handler=lambda x: x):
 
 
 class TosError(Exception):
-    def __init__(self, status, headers, body, details):
+    def __init__(self, status=None, headers=None, body=None, details=None):
         self.status = status
-        self.request_id = headers.get('x-tos-request-id', '')
         self.body = body
         self.details = details
-        self.code = self.details.get('Code', '')
-        self.message = self.details.get('Message', '')
         self.headers = headers
-        self.etag = headers.get("ETag")
+        if headers:
+            self.request_id = headers.get('x-tos-request-id', '')
+            self.etag = headers.get("ETag")
+        if details:
+            self.code = self.details.get('Code', '')
+            self.message = self.details.get('Message', '')
+        self.request_url = ''
 
 
 def make_exception(resp):
@@ -32,6 +37,7 @@ def make_exception(resp):
 
 def _parse_error_body(resp):
     body = resp.read()
+    produce_body(len(body))
     return _parse_body_json(body)
 
 
@@ -44,17 +50,21 @@ def _parse_body_json(body):
 
 class TosClientError(TosError):
     def __init__(self, msg: str, cause: Exception = None):
+        super().__init__()
         self.message = msg
         self.cause = cause
 
     def __str__(self):
         error = {'message': self.message,
                  'case': str(self.cause)}
+        if self.request_url:
+            error['request_url'] = self.request_url
         return str(error)
 
 
 class TosServerError(TosError):
-    def __init__(self, resp, msg: str, code: str, host_id: str, resource: str):
+    def __init__(self, resp, msg: str, code: str, host_id: str, resource: str, ec: str = ''):
+        super().__init__()
         self.message = msg
         self.request_id = resp.request_id
         self.id2 = get_value(resp.headers, 'x-tos-id-2')
@@ -63,6 +73,7 @@ class TosServerError(TosError):
         self.code = code
         self.host_id = host_id
         self.resource = resource
+        self.ec = ec
 
     def __str__(self):
         error = {'message': self.message,
@@ -73,16 +84,16 @@ class TosServerError(TosError):
                  'code': self.code,
                  'host_id': self.host_id,
                  'resource': self.resource}
+        if self.ec:
+            error['ec'] = self.ec
+        if self.request_url:
+            error['request_url'] = self.request_url
         return str(error)
 
 
 def make_server_error(resp):
     details = _parse_error_body(resp)
-    code = details.get('Code', '')
-    host_id = details.get('HostId', '')
-    resource = details.get('Resource', '')
-    message = details.get('Message', '')
-    return TosServerError(resp, message, code, host_id, resource)
+    return make_server_error_with_exception(resp, details)
 
 
 def make_server_error_with_exception(resp, body):
@@ -90,7 +101,8 @@ def make_server_error_with_exception(resp, body):
     host_id = body.get('HostId', '')
     resource = body.get('Resource', '')
     message = body.get('Message', '')
-    return TosServerError(resp, message, code, host_id, resource)
+    ec = body.get('EC', '')
+    return TosServerError(resp, message, code, host_id, resource, ec)
 
 
 class CancelError(Exception):
