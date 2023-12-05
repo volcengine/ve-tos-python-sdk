@@ -2,6 +2,7 @@ import time
 
 import tos
 from tests.common import TosTestBase, random_bytes
+from tos import VersioningStatusType
 from tos.models2 import Tag, ObjectTobeDeleted
 
 
@@ -16,7 +17,7 @@ class TestWithVersion(TosTestBase):
         self.client.create_bucket(dist_bucket)
         self.version_client.put_bucket_versioning(bucket_name, True)
         self.version_client.put_bucket_versioning(dist_bucket, True)
-        time.sleep(20)
+        time.sleep(60)
         out_v1 = self.client.put_object(bucket_name, key, content=b'123')
         self.assertIsNotNone(out_v1.version_id)
         self.assertObjectContent(bucket_name, key, content=b'123')
@@ -80,7 +81,7 @@ class TestWithVersion(TosTestBase):
         content = random_bytes(100)
         self.client.create_bucket(bucket_name)
         self.version_client.put_bucket_versioning(bucket_name, True)
-        time.sleep(20)
+        time.sleep(30)
         self.client.put_object(bucket_name, 'test.txt', content=content,
                                storage_class=tos.StorageClassType.Storage_Class_Ia)
         self.client.put_object(bucket_name, 'test.txt', content=content,
@@ -122,7 +123,11 @@ class TestWithVersion(TosTestBase):
         self.client.create_bucket(dist_bucket)
         self.version_client.put_bucket_versioning(bucket_name, True)
         self.version_client.put_bucket_versioning(dist_bucket, True)
-        time.sleep(20)
+        time.sleep(60)
+        rsp = self.version_client.get_bucket_version(bucket_name)
+        self.assertEqual(rsp.status, VersioningStatusType.Versioning_Status_Enabled)
+        rsp = self.version_client.get_bucket_version(dist_bucket)
+        self.assertEqual(rsp.status, VersioningStatusType.Versioning_Status_Enabled)
         out = self.client.put_object(bucket_name, key, content=content1)
         self.client.put_object(bucket_name, key, content=content2)
         self.client.download_file(bucket_name, key, file_name, version_id=out.version_id)

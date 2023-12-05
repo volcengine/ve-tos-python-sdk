@@ -162,43 +162,48 @@ class TestClient2(TosClientV2):
         return resp
 
 
-def clean_and_delete_bucket(tos_client: tos.TosClientV2, bucket: str):
-    try:
-        out = tos_client.head_bucket(bucket=bucket)
-    except tos.exceptions.TosServerError as e:
-        status = e.status_code
-        if status == 404:
+def clean_and_delete_bucket(tos_client: tos.TosClientV2, bucket: str, retry_times=3):
+    for i in range(retry_times):
+        try:
+            tos_client.head_bucket(bucket=bucket)
+        except tos.exceptions.TosServerError as e:
+            status = e.status_code
+            if status == 404:
+                return
+            
+        try:
+            truncated = True
+
+            while truncated:
+                rsp = tos_client.list_objects(bucket=bucket)
+                truncated = rsp.is_truncated
+
+                for obj in rsp.contents:
+                    tos_client.delete_object(bucket=bucket, key=obj.key)
+
+            truncated = True
+            while truncated:
+                rsp = tos_client.list_object_versions(bucket=bucket)
+                truncated = rsp.is_truncated
+
+                for obj in rsp.versions:
+                    tos_client.delete_object(bucket, obj.key, obj.version_id)
+
+                for obj in rsp.delete_markers:
+                    tos_client.delete_object(bucket=bucket, key=obj.key, version_id=obj.version_id)
+
+            truncated = True
+            while truncated:
+                rsp = tos_client.list_multipart_uploads(bucket=bucket)
+                truncated = rsp.is_truncated
+
+                for upload in rsp.uploads:
+                    tos_client.abort_multipart_upload(bucket=bucket, key=upload.key, upload_id=upload.upload_id)
+
+            tos_client.delete_bucket(bucket=bucket)
             return
-
-    truncated = True
-
-    while truncated:
-        rsp = tos_client.list_objects(bucket=bucket)
-        truncated = rsp.is_truncated
-
-        for obj in rsp.contents:
-            tos_client.delete_object(bucket=bucket, key=obj.key)
-
-    truncated = True
-    while truncated:
-        rsp = tos_client.list_object_versions(bucket=bucket)
-        truncated = rsp.is_truncated
-
-        for obj in rsp.versions:
-            tos_client.delete_object(bucket, obj.key, obj.version_id)
-
-        for obj in rsp.delete_markers:
-            tos_client.delete_object(bucket=bucket, key=obj.key, version_id=obj.version_id)
-
-    truncated = True
-    while truncated:
-        rsp = tos_client.list_multipart_uploads(bucket=bucket)
-        truncated = rsp.is_truncated
-
-        for upload in rsp.uploads:
-            tos_client.abort_multipart_upload(bucket=bucket, key=upload.key, upload_id=upload.upload_id)
-
-    tos_client.delete_bucket(bucket=bucket)
+        except tos.exceptions.TosServerError as e:
+            print(e)
 
 
 def clean_and_delete_bucket_with_prefix(tos_client: tos.TosClientV2, prefix: str):

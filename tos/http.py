@@ -1,10 +1,11 @@
 import json
+
 from requests.structures import CaseInsensitiveDict
 
 from . import exceptions
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError
-from .utils import get_value, to_bytes
+from .utils import get_value, to_bytes, _param_to_quoted_query
 
 
 class Request(object):
@@ -17,6 +18,10 @@ class Request(object):
         self.headers = headers or {}
 
         self.headers['Host'] = host
+
+    def get_request_url(self):
+        return self.url + '?' + '&'.join(
+            _param_to_quoted_query(k, v) for k, v in self.params.items()) if self.params else self.url
 
 
 class Response(object):

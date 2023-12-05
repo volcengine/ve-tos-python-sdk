@@ -10,7 +10,6 @@ import shutil
 import socket
 import sys
 import tempfile
-import threading
 import time
 import traceback
 import urllib.parse
@@ -20,7 +19,7 @@ from typing import Dict
 import requests
 from requests.structures import CaseInsensitiveDict
 from urllib3.util import connection
-from urllib3.util.connection import allowed_gai_family, _set_socket_options
+from urllib3.util.connection import _set_socket_options
 
 from . import TosClient
 from . import __version__
@@ -68,18 +67,20 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       PreSignedPolicyURlInputOutput, ListObjectType2Output, ListObjectsIterator, GetBucketRealTimeLog,
                       PolicySignatureCondition, RestoreObjectOutput, RestoreJobParameters, RenameObjectOutput,
                       PutBucketRenameOutput, DeleteBucketRenameOutput, GetBucketRenameOutput)
+from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
                     _ReaderAdapter, generate_http_proxies, get_content_type,
-                    get_parent_directory_from_File, get_value, init_content,
+                    get_parent_directory_from_File, get_value, init_content, patch_content,
                     meta_header_encode, to_bytes, to_str,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
-                    check_client_encryption_algorithm, check_server_encryption_algorithm, LogInfo, gen_key,
-                    try_make_file_dir, _IterableAdapter, init_checkpoint_dir,
-                    UploadEventHandler, ResumableCopyObject, DownloadEventHandler)
+                    check_client_encryption_algorithm, check_server_encryption_algorithm, try_make_file_dir,
+                    _IterableAdapter, init_checkpoint_dir, resolve_ip_list,
+                    UploadEventHandler, ResumableCopyObject, DownloadEventHandler, LogInfo)
 
 logger = logging.getLogger(__name__)
 _dns_cache = DnsCacheService()
+_orig_create_connection = connection.create_connection
 USER_AGENT = 've-tos-python-sdk/{0}({1}/{2};{3})'.format(__version__.__version__, sys.platform, platform.machine(),
                                                          platform.python_version())
 
@@ -405,7 +406,8 @@ def _get_object_headers(IfMatch, IfModifiedSince, IfNoneMatch, IfUnmodifiedSince
 
 
 def _get_object_params(ResponseCacheControl, ResponseContentDisposition, ResponseContentEncoding,
-                       ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId, Process):
+                       ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId, Process,
+                       SaveAsBucket, SaveAsObject):
     params = {}
     if VersionId:
         params['versionId'] = VersionId
@@ -423,7 +425,10 @@ def _get_object_params(ResponseCacheControl, ResponseContentDisposition, Respons
         params['response-expires'] = ResponseExpires.strftime(GMT_DATE_FORMAT)
     if Process:
         params['x-tos-process'] = Process
-
+    if SaveAsBucket:
+        params["x-tos-save-bucket"] = SaveAsBucket
+    if SaveAsObject:
+        params["x-tos-save-object"] = SaveAsObject
     return params
 
 
@@ -684,12 +689,67 @@ def _get_parts_to_download(size, part_size, parts_downloaded):
     return all_parts_map.values()
 
 
+import functools
+from . import log
+
+
+def high_latency_log(f):
+    @functools.wraps(f)
+    def wrapper(*args, **kwargs):
+        start = time.perf_counter()
+        res = None
+        ex = None
+        try:
+            res = f(*args, **kwargs)
+            return res
+        except TosError as e:
+            ex = e
+            raise e
+        finally:
+            if len(args) <= 0 or not isinstance(args[0], TosClientV2):
+                return
+
+            threshold = args[0].high_latency_log_threshold
+            if threshold <= 0:
+                return
+
+            try:
+                total = consume_body()
+                # 不足 1KB 当 1KB 计算
+                if total < 1024:
+                    total = 1024
+                # 耗时，单位：秒
+                cost = time.perf_counter() - start
+                rate = total / 1024 / cost
+                # 传输速率小于 threshold 且耗时超过 500 毫秒
+                if cost > 0 and rate < threshold and cost * 1000 > 500:
+                    # 包含 HTTP 状态码、RequestID、接口调用总耗时
+                    pf = logger.warning
+                    if logger.getEffectiveLevel() < log.DEBUG or logger.getEffectiveLevel() > log.WARNING:
+                        pf = print
+
+                    if res:
+                        pf(
+                            'high latency request: exec httpCode: {}, requestId: {}, usedTime: {} s'.format(
+                                res.status_code,
+                                res.request_id,
+                                cost))
+                    else:
+                        pf(
+                            'high latency request: exception: {}, usedTime:{} s'.format(ex, cost))
+            except Exception:
+                # ignore Exception
+                pass
+
+    return wrapper
+
+
 class TosClientV2(TosClient):
     def __init__(self, ak, sk, endpoint, region,
                  security_token=None,
                  auto_recognize_content_type=True,
                  max_retry_count=3,
-                 request_timeout=120,
+                 request_timeout=30,  # deprecated
                  max_connections=1024,
                  enable_crc=True,
                  connection_time=10,
@@ -699,8 +759,9 @@ class TosClientV2(TosClient):
                  proxy_port: int = None,
                  proxy_username: str = None,
                  proxy_password: str = None,
-                 auth=None,
-                 is_custom_domain: bool = False):
+                 is_custom_domain: bool = False,
+                 high_latency_log_threshold: int = 100,
+                 socket_timeout=30):
 
         """创建client
 
@@ -711,32 +772,31 @@ class TosClientV2(TosClient):
         :param region: TOS 服务端所在区域
         :param auto_recognize_content_type: 使用自动识别 MIME 类型，默认为 true，代表开启自动识别 MIME 类型能力
         :param max_retry_count: 请求失败后最大的重试次数。默认3次
-        :param request_timeout: socket收到一次响应的超时时间，单位：秒，默认 120 秒，
-                                参考: https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts
+        :param request_timeout: deprecated，该参数已不再使用，请使用 socket_timeout 参数
         :param connection_time: 建立连接超时时间，单位：秒，默认 10 秒
         :param max_connections: 连接池中允许打开的最大 HTTP 连接数，默认 1024
         :param enable_crc: 是否开启上传后客户端 CRC 校验，默认为 true
         :param enable_verify_ssl: 是否开启 SSL 证书校验，默认为 true
-        :param dns_cache_time: DNS 缓存的有效期，单位：毫秒，小与等于 0 时代表关闭 DNS 缓存，默认为 0
+        :param dns_cache_time: DNS 缓存的有效期，单位：分钟，小于等于 0 时代表关闭 DNS 缓存，默认为 0
         :param proxy_host: 代理服务器的主机地址，当前只支持 http 协议
         :param proxy_port: 代理服务器的端口
         :param proxy_username: 连接代理服务器时使用的用户名
         :param proxy_password: 代理服务使用的密码
-        :param auth: 用户自定义auth
         :param is_custom_domain: 是否使用自定义域名，默认为False
+        :param high_latency_log_threshold: 大于 0 时，代表开启高延迟日志，单位：KB，默认为 100，当单次请求传输总速率低于该值且总请求耗时大于 500 毫秒时打印 WARN 级别日志
+        :param socket_timeout: 连接建立成功后，单个请求的 Socket 读写超时时间，单位：秒，默认 30 秒，参考: https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts
         :return TosClientV2:
         """
+
+        endpoint = endpoint if isinstance(endpoint, str) else endpoint.decode() if isinstance(endpoint, bytes) else str(
+            endpoint)
+
+        endpoint = endpoint.strip()
 
         if 's3' in endpoint:
             raise TosClientError("invalid endpoint, please use Tos endpoint rather than S3 endpoint")
 
-        if auth:
-            super(TosClientV2, self).__init__(auth=auth,
-                                              endpoint=endpoint,
-                                              recognize_content_type=auto_recognize_content_type,
-                                              connection_pool_size=max_connections,
-                                              connect_timeout=connection_time)
-        elif ak == "" and sk == "":
+        if ak == "" and sk == "":
             super(TosClientV2, self).__init__(auth=AnonymousAuth(ak, sk, region, sts=security_token),
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
@@ -748,10 +808,10 @@ class TosClientV2(TosClient):
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
                                               connect_timeout=connection_time)
-        self.max_retry_count = max_retry_count
-        self.dns_cache_time = dns_cache_time
+        self.max_retry_count = max_retry_count if max_retry_count >= 0 else 0
+        self.dns_cache_time = dns_cache_time * 60 if dns_cache_time > 0 else 0
         self.request_timeout = request_timeout
-        self.connection_time = connection_time
+        self.connection_time = connection_time if connection_time > 0 else 10
         self.enable_verify_ssl = enable_verify_ssl
         self.proxy_host = proxy_host
         self.proxy_port = proxy_port
@@ -760,15 +820,16 @@ class TosClientV2(TosClient):
         self.enable_crc = enable_crc
         self.proxies = generate_http_proxies(proxy_host, proxy_port, proxy_username, proxy_password)
         self.is_custom_domain = is_custom_domain
+        self.high_latency_log_threshold = high_latency_log_threshold if high_latency_log_threshold >= 0 else 0
+        self.socket_timeout = socket_timeout if socket_timeout > 0 else self.request_timeout if self.request_timeout > 0 else 30
 
-        # 控制动态调整初始参数
-        self.lock = threading.RLock()
         # 通过 hook 机制实现in-request log
         self.session.hooks['response'].append(hook_request_log)
 
+        self._start_async_refresh_cache = False
         # 开启DNS缓存
         if self.dns_cache_time is not None and self.dns_cache_time > 0:
-            self._open_dns_cache()
+            self._start_async_refresh_cache = self._open_dns_cache()
 
     def close(self):
         """关闭Client
@@ -776,30 +837,8 @@ class TosClientV2(TosClient):
         :return:
         """
         self.session.close()
-
-    # def set_keys(self, new_ak=None, new_sk=None, new_security_token=None):
-    #     """ 动态调整Access Key、Secret Access Key、 security_token。若相关参数未设置，则默认使用对应初始 Clinet2 值
-    #
-    #     :param new_ak: Access Key ID: 访问密钥ID，用于标识用户
-    #     :param new_sk: Secret Access Key: 与访问密钥ID结合使用的密钥，用于加密签名
-    #     :param new_security_token: 临时鉴权 Token
-    #     """
-    #     with self.lock:
-    #         ak, sk, sts, region = self.auth.copy()
-    #         auth = Auth(new_ak or ak, new_sk or sk, new_security_token or sts)
-    #         self.auth = auth
-    #
-    # def set_endpoint_region(self, new_endpoint, new_region):
-    #     """ 动态调整 new_endpoint new_region
-    #     :param new_endpoint: TOS 服务端域名，完整格式：https://{host}:{port}
-    #     :param new_region: TOS 服务端所在区域
-    #     """
-    #     with self.lock:
-    #         if new_region:
-    #             ak, sk, sts, region = self.auth.copy()
-    #             auth = Auth(ak, sk, new_region or region, sts)
-    #             self.auth = auth
-    #         self.endpoint = new_endpoint or self.endpoint
+        if self._start_async_refresh_cache:
+            _dns_cache.shutdown()
 
     def pre_signed_url(self, http_method: HttpMethodType, bucket: str,
                        key: str = None,
@@ -1253,6 +1292,7 @@ class TosClientV2(TosClient):
 
         return PutObjectACLOutput(resp)
 
+    @high_latency_log
     def put_object(self, bucket: str, key: str,
                    content_length: int = None,
                    content_md5: str = None,
@@ -1333,6 +1373,7 @@ class TosClientV2(TosClient):
 
         if content:
             content = init_content(content)
+            patch_content(content)
 
             if data_transfer_listener:
                 content = utils.add_progress_listener_func(content, data_transfer_listener)
@@ -1429,6 +1470,7 @@ class TosClientV2(TosClient):
                                    ssec_key_md5, server_side_encryption, meta, website_redirect_location, storage_class,
                                    data_transfer_listener, rate_limiter, traffic_limit, f)
 
+    @high_latency_log
     def append_object(self, bucket: str, key: str, offset: int,
                       content=None,
                       content_length: int = None,
@@ -1494,6 +1536,7 @@ class TosClientV2(TosClient):
 
         if content:
             content = init_content(content)
+            patch_content(content)
             if isinstance(content, _ReaderAdapter) and content.size == 0:
                 raise TosClientError('Your proposed append content is smaller than the minimum allowed size')
 
@@ -1575,7 +1618,9 @@ class TosClientV2(TosClient):
                    rate_limiter=None,
                    range: str = None,
                    traffic_limit: int = None,
-                   process: str = None) -> GetObjectOutput:
+                   process: str = None,
+                   save_bucket: str = None,
+                   save_object: str = None) -> GetObjectOutput:
 
         """下载对象
 
@@ -1602,6 +1647,8 @@ class TosClientV2(TosClient):
         :param range: 查询范围 与range_start range_end 互斥优先使用此字段
         :param traffic_limit: 单连接限速
         :param process: 图片处理参数
+        :param save_bucket: 图片处理或者video处理持久化的bucket
+        :param save_object: 图片处理或者video处理持久化的对象名
         :return: GetObjectOutput
         """
 
@@ -1615,7 +1662,7 @@ class TosClientV2(TosClient):
 
         params = _get_object_params(response_cache_control, response_content_disposition, response_content_encoding,
                                     response_content_language, response_content_type, response_expires, version_id,
-                                    process)
+                                    process, save_bucket, save_object)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Get.value, headers=headers,
                          params=params)
@@ -1623,6 +1670,7 @@ class TosClientV2(TosClient):
         return GetObjectOutput(resp, progress_callback=data_transfer_listener, rate_limiter=rate_limiter,
                                enable_crc=self.enable_crc)
 
+    @high_latency_log
     def get_object_to_file(self, bucket: str, key: str, file_path: str,
                            version_id: str = None,
                            if_match: str = None,
@@ -1642,7 +1690,8 @@ class TosClientV2(TosClient):
                            range_end: int = None,
                            data_transfer_listener=None,
                            rate_limiter=None,
-                           traffic_limit: int = None):
+                           traffic_limit: int = None,
+                           process: str = None):
         """下载对象到文件
 
         :param bucket: 桶名
@@ -1667,6 +1716,7 @@ class TosClientV2(TosClient):
         :param range_end: 指定对象获取的上边界
         :param file_path: 文件路径
         :param traffic_limit: 单连接限速
+        :param process: 图片处理参数
         :return: GetObjectOutput
         """
 
@@ -1691,8 +1741,10 @@ class TosClientV2(TosClient):
                                  range_end=range_end,
                                  data_transfer_listener=data_transfer_listener,
                                  rate_limiter=rate_limiter,
-                                 traffic_limit=traffic_limit)
+                                 traffic_limit=traffic_limit,
+                                 process=process)
 
+        patch_content(result)
         if init_path(file_path, key):
             dir = os.path.join(file_path, key)
             os.makedirs(dir, exist_ok=True)
@@ -2311,6 +2363,7 @@ class TosClientV2(TosClient):
 
         return result
 
+    @high_latency_log
     def upload_part(self, bucket: str, key: str, upload_id: str, part_number: int,
                     content_md5: str = None,
                     ssec_algorithm: str = None,
@@ -2350,6 +2403,7 @@ class TosClientV2(TosClient):
 
         if content:
             content = init_content(content)
+            patch_content(content)
 
             if data_transfer_listener:
                 content = utils.add_progress_listener_func(content, data_transfer_listener)
@@ -3232,15 +3286,15 @@ class TosClientV2(TosClient):
         return DeleteBucketRenameOutput(resp)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None):
+        consume_body()
         # 获取调用方法的名称
         func_name = func or traceback.extract_stack()[-2][2]
-        exp = None
-        info = LogInfo()
         if key is not None:
             _is_valid_object_name(key)
         key = to_str(key)
 
-        headers = CaseInsensitiveDict(headers)
+        headers = self._to_case_insensitive_dict(headers)
+        params = self._sanitize_dict(params)
 
         if headers.get('x-tos-content-sha256') is None:
             headers['x-tos-content-sha256'] = UNSIGNED_PAYLOAD
@@ -3257,7 +3311,7 @@ class TosClientV2(TosClient):
                       headers=headers)
 
         # 若为网络流对象删除headers中的content-length，防止签名计算错误
-        if isinstance(data, _ReaderAdapter) and headers.get('content-length'):
+        if isinstance(data, _IterableAdapter) and headers.get('content-length'):
             del req.headers['content-length']
 
         # 若auth 为空即为匿名请求，则不计算签名
@@ -3274,12 +3328,15 @@ class TosClientV2(TosClient):
 
         # 通过变量赋值，防止动态调整 max_retry_count 出现并发问题
         retry_count = self.max_retry_count
+        rsp = None
         for i in range(0, retry_count + 1):
+            info = LogInfo()
             # 采用指数避让策略
             if i != 0:
-                sleep_time = SLEEP_BASE_TIME * math.pow(2, i - 1)
+                sleep_time = self._get_sleep_time(rsp, i)
                 logger.info('in-request: sleep {}s'.format(sleep_time))
                 time.sleep(sleep_time)
+                req.headers['x-sdk-retry-count'] = 'attempt=' + str(i) + '; max=' + str(retry_count)
             try:
                 # 由于TOS的重定向场景尚未明确, 目前关闭重定向功能
                 res = self.session.request(method,
@@ -3288,7 +3345,7 @@ class TosClientV2(TosClient):
                                            headers=req.headers,
                                            params=req.params,
                                            stream=True,
-                                           timeout=(self.connection_time, self.request_timeout),
+                                           timeout=(self.connection_time, self.socket_timeout),
                                            verify=self.enable_verify_ssl,
                                            proxies=self.proxies,
                                            allow_redirects=False)
@@ -3303,7 +3360,6 @@ class TosClientV2(TosClient):
                 return rsp
 
             except (requests.RequestException, TosServerError) as e:
-                can_retry = False
                 logger.info('Exception: %s', e)
                 if isinstance(e, TosServerError):
                     can_retry = _handler_retry_policy(req.data, method, func_name, server_exp=e)
@@ -3312,42 +3368,57 @@ class TosClientV2(TosClient):
                     can_retry = _handler_retry_policy(req.data, method, func_name, client_exp=e)
                     exp = TosClientError('http request timeout', e)
 
-                if can_retry:
+                if can_retry and i < retry_count:
                     logger.info(
                         'in-request: retry success data:{} method:{} func_name:{}, exp:{}'.format(req.data, method,
                                                                                                   func_name, exp))
                     continue
-                else:
-                    logger.info('in-request: retry fail data:{} method:{} func_name:{}, exp:{}'.format(req.data, method,
-                                                                                                       func_name, e))
-                    info.fail(func_name, exp)
-                    raise exp
-        info.fail(func_name, exp)
-        raise exp
+                logger.info('in-request: retry fail data:{} method:{} func_name:{}, exp:{}'.format(req.data, method,
+                                                                                                   func_name, e))
+
+                exp.request_url = req.get_request_url()
+                info.fail(func_name, exp)
+
+    def _get_sleep_time(self, rsp, retry_count):
+        sleep_time = SLEEP_BASE_TIME * math.pow(2, retry_count - 1)
+        if sleep_time > 60:
+            sleep_time = 60
+        if rsp and (rsp.status == 429 or rsp.status == 503) and 'retry-after' in rsp.headers:
+            try:
+                sleep_time = max(int(rsp.headers['retry-after']), sleep_time)
+            except Exception as e:
+                logger.warning('try to parse retry-after from headers error: {}'.format(e))
+        return sleep_time
+
+    def _to_case_insensitive_dict(self, headers: dict):
+        self._sanitize_dict(headers)
+        return CaseInsensitiveDict(headers)
+
+    def _sanitize_dict(self, d: dict):
+        if d:
+            for k, v in d.items():
+                d[k] = v if isinstance(v, str) else v.decode() if isinstance(v, bytes) else str(v)
+        return d
 
     def _open_dns_cache(self):
-        _orig_create_connection = connection.create_connection
+        dns_cache_time = self.dns_cache_time
+        start_succeed = _dns_cache.async_refresh_cache(dns_cache_time)
 
         def get_connect(host, port, cache_entry,
                         timeout,
                         source_address,
                         socket_options):
             if cache_entry is None:
-                family = allowed_gai_family()
-                info = socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
-
+                info = resolve_ip_list(host, port)
                 if info and len(info) > 0:
-                    expire = self.dns_cache_time
-                    _dns_cache.add(host, port, info, int(time.time()) + expire)
-                    cache_entry = _dns_cache.get_ip_list(host, port)
+                    cache_entry = _dns_cache.add(host, port, info, int(time.time()) + dns_cache_time)
                     return create_connection(cache_entry, timeout, source_address, socket_options)
-
             else:
                 logger.info('in-request cache dns host: {}, port: {}'.format(host, port))
                 return create_connection(cache_entry, timeout, source_address, socket_options)
 
-        def create_connection(cache, timeout, source_address, socket_options):
-            for res in cache.copy_ip_list():
+        def create_connection(cache_entry, timeout, source_address, socket_options):
+            for res in cache_entry.copy_ip_list():
                 af, socktype, proto, canonname, sa = res
                 sock = None
                 try:
@@ -3362,12 +3433,11 @@ class TosClientV2(TosClient):
                     sock.connect(sa)
                     return sock
                 except socket.error:
-                    cache.remove(res)
+                    cache_entry.remove(res)
                     if sock is not None:
                         sock.close()
-                        sock = None
 
-            _dns_cache.remove(gen_key(cache.host, cache.port))
+            return None
 
         def patched_create_connection(address,
                                       timeout=socket._GLOBAL_DEFAULT_TIMEOUT,
@@ -3383,24 +3453,15 @@ class TosClientV2(TosClient):
                 logger.info('in-request: ip request {} port {}'.format(host, port))
                 return _orig_create_connection(address, timeout, source_address, socket_options)
 
-            virtual_host = host
-            real_host = get_real_host(virtual_host)
-            if real_host:
-                cache_entry_real = _dns_cache.get_ip_list(real_host, port)
-                real_conn = get_connect(real_host, port, cache_entry_real, timeout, source_address, socket_options)
-                if real_conn:
-                    return real_conn
+            cache_entry = _dns_cache.get_ip_list(host, port)
+            conn = get_connect(host, port, cache_entry, timeout, source_address, socket_options)
+            # cache_entry 查询 DNS
+            return conn if conn else _orig_create_connection(address, timeout, source_address, socket_options)
 
-            cache_entry_virtual = _dns_cache.get_ip_list(virtual_host, port)
-            virtual_conn = get_connect(host, port, cache_entry_virtual, timeout, source_address, socket_options)
-            if virtual_conn:
-                return virtual_conn
-
-            # cache_entry_real 和 cache_entry_virtual 都为空 查询 DNS
-            return _orig_create_connection(address, timeout, source_address, socket_options)
-
-        if patched_create_connection.__name__ != connection.create_connection.__name__:
+        if start_succeed:
             connection.create_connection = patched_create_connection
+
+        return start_succeed
 
 
 def get_real_host(host):
@@ -3409,7 +3470,7 @@ def get_real_host(host):
         arr.pop(0)
         real_host = '.'.join(arr)
         return real_host
-    return None
+    return host
 
 
 def hook_request_log(r, *args, **kwargs):
@@ -3498,7 +3559,7 @@ def _handler_retry_policy(body, method, fun_name, client_exp: requests.RequestEx
 def _is_func_can_retry(method, fun_name,
                        client_exp: requests.RequestException = None,
                        server_exp: TosServerError = None) -> bool:
-    if client_exp and (not isinstance(client_exp, requests.ReadTimeout)):
+    if client_exp:
         return True
     if server_exp and (server_exp.status_code >= 500 or server_exp.status_code == 429):
         # 对GET、HEAD直接返回

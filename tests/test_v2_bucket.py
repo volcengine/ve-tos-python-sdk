@@ -557,12 +557,14 @@ class TestBucket(TosTestBase):
 
         out = self.client.put_bucket_versioning(bucket_name, VersioningStatusType.Versioning_Status_Enabled)
         self.assertIsNotNone(out.request_id)
+        time.sleep(30)
         out = self.client.get_bucket_version(bucket_name)
         self.assertIsNotNone(out.request_id)
         self.assertEqual(VersioningStatusType.Versioning_Status_Enabled, out.status)
-        time.sleep(20)
+
         self.client.put_bucket_versioning(bucket_name, VersioningStatusType.Versioning_Status_Suspended)
         out = self.client.get_bucket_version(bucket_name)
+        time.sleep(30)
         self.assertEqual(out.status, VersioningStatusType.Versioning_Status_Suspended)
 
     def test_bucket_website(self):
