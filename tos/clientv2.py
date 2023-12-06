@@ -405,7 +405,8 @@ def _get_object_headers(IfMatch, IfModifiedSince, IfNoneMatch, IfUnmodifiedSince
 
 
 def _get_object_params(ResponseCacheControl, ResponseContentDisposition, ResponseContentEncoding,
-                       ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId, Process):
+                       ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId, Process,
+                       SaveAsBucket, SaveAsObject):
     params = {}
     if VersionId:
         params['versionId'] = VersionId
@@ -423,7 +424,10 @@ def _get_object_params(ResponseCacheControl, ResponseContentDisposition, Respons
         params['response-expires'] = ResponseExpires.strftime(GMT_DATE_FORMAT)
     if Process:
         params['x-tos-process'] = Process
-
+    if SaveAsBucket:
+        params["x-tos-save-bucket"] = SaveAsBucket
+    if SaveAsObject:
+        params["x-tos-save-object"] = SaveAsObject
     return params
 
 
@@ -1575,7 +1579,9 @@ class TosClientV2(TosClient):
                    rate_limiter=None,
                    range: str = None,
                    traffic_limit: int = None,
-                   process: str = None) -> GetObjectOutput:
+                   process: str = None,
+                   save_bucket: str = None,
+                   save_object: str = None) -> GetObjectOutput:
 
         """下载对象
 
@@ -1602,6 +1608,8 @@ class TosClientV2(TosClient):
         :param range: 查询范围 与range_start range_end 互斥优先使用此字段
         :param traffic_limit: 单连接限速
         :param process: 图片处理参数
+        :param save_bucket: 图片处理或者video处理持久化的bucket
+        :param save_object: 图片处理或者video处理持久化的对象名
         :return: GetObjectOutput
         """
 
@@ -1615,7 +1623,7 @@ class TosClientV2(TosClient):
 
         params = _get_object_params(response_cache_control, response_content_disposition, response_content_encoding,
                                     response_content_language, response_content_type, response_expires, version_id,
-                                    process)
+                                    process, save_bucket, save_object)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Get.value, headers=headers,
                          params=params)
@@ -1642,7 +1650,8 @@ class TosClientV2(TosClient):
                            range_end: int = None,
                            data_transfer_listener=None,
                            rate_limiter=None,
-                           traffic_limit: int = None):
+                           traffic_limit: int = None,
+                           process: str = None):
         """下载对象到文件
 
         :param bucket: 桶名
@@ -1667,6 +1676,7 @@ class TosClientV2(TosClient):
         :param range_end: 指定对象获取的上边界
         :param file_path: 文件路径
         :param traffic_limit: 单连接限速
+        :param process: 图片处理参数
         :return: GetObjectOutput
         """
 
@@ -1691,7 +1701,8 @@ class TosClientV2(TosClient):
                                  range_end=range_end,
                                  data_transfer_listener=data_transfer_listener,
                                  rate_limiter=rate_limiter,
-                                 traffic_limit=traffic_limit)
+                                 traffic_limit=traffic_limit,
+                                 process=process)
 
         if init_path(file_path, key):
             dir = os.path.join(file_path, key)
@@ -3257,7 +3268,7 @@ class TosClientV2(TosClient):
                       headers=headers)
 
         # 若为网络流对象删除headers中的content-length，防止签名计算错误
-        if isinstance(data, _ReaderAdapter) and headers.get('content-length'):
+        if isinstance(data, _IterableAdapter) and headers.get('content-length'):
             del req.headers['content-length']
 
         # 若auth 为空即为匿名请求，则不计算签名
