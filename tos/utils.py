@@ -4,29 +4,35 @@ import functools
 import logging
 import os.path
 import re
+import socket
 import sys
 import threading
 import time
 from hashlib import sha256
-from urllib.parse import quote_plus, unquote_to_bytes, quote
+from urllib.parse import unquote_to_bytes, quote
 
 import crcmod as crcmod
 import pytz
 import six
 from pytz import unicode
+from urllib3.util.connection import allowed_gai_family
 
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
                      MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
                      CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT,
-                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER, MIN_TRAFFIC_LIMIT, MAX_TRAFFIC_LIMIT)
+                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER)
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
 from .exceptions import TosClientError
 from .mine_type import TYPES_MAP
 
 logger = logging.getLogger(__name__)
-REGION_MAP = {'cn-beijing': 'tos-cn-beijing.volces.com', 'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
-              'cn-shanghai': 'tos-cn-shanghai.volces.com'}
+REGION_MAP = {
+    'cn-beijing': 'tos-cn-beijing.volces.com',
+    'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
+    'cn-shanghai': 'tos-cn-shanghai.volces.com',
+    'ap-southeast-1': 'tos-ap-southeast-1.volces.com',
+}
 
 
 def get_value(kv, key, handler=lambda x: x):
@@ -442,7 +448,6 @@ class _ReaderAdapter(object):
         _cal_crc_callback(self.crc_callback, content)
 
         _cal_rate_limiter_callback(self.limiter_callback, bytes_to_read)
-
         return content
 
     @property
@@ -522,6 +527,30 @@ class _IterableAdapter(object):
             return self.crc_callback.crc
         else:
             return 0
+
+
+from .thread_ctx import produce_body
+
+
+def patch_content(content):
+    if isinstance(content, _ReaderAdapter) or (hasattr(content, 'read') and callable(content.read)):
+        _read = content.read
+
+        def read(amt=None):
+            data = _read(amt)
+            produce_body(len(data))
+            return data
+
+        content.read = read
+    elif isinstance(content, _IterableAdapter):
+        _next = content.next
+
+        def next():
+            data = _next()
+            produce_body(len(data))
+            return data
+
+        content.next = next
 
 
 def init_content(data, can_reset=None, init_offset=None):
@@ -708,7 +737,8 @@ class Crc64(object):
 
 
 def check_crc(operation, client_crc, tos_crc, request_id):
-    tos_crc = int(tos_crc)
+    if tos_crc is not None:
+        tos_crc = int(tos_crc)
     if client_crc != tos_crc:
         raise TosClientError(
             "Check CRC failed: req_id: {0}, operation: {1}, CRC checksum of client: {2} is mismatch "
@@ -899,12 +929,11 @@ class CacheEntry(object):
         self.ip_list = ip_list
         self.port = port
         self.expire = expire
-        self.lock = threading.Lock()
+        self.immortal = False
 
     def remove(self, entry):
-        with self.lock:
-            if entry in self.ip_list:
-                self.ip_list.remove(entry)
+        if entry in self.ip_list and len(self.ip_list) > 1:
+            self.ip_list.remove(entry)
 
     def copy_ip_list(self):
         return self.ip_list.copy()
@@ -915,32 +944,69 @@ class CacheEntry(object):
 
 class DnsCacheService(object):
     def __init__(self):
-        self.lock = threading.Lock()
         self.cache = {}
+        self.async_started = False
+        self.is_shutdown = True
+        self.async_lock = threading.Lock()
+
+    def shutdown(self):
+        with self.async_lock:
+            self.async_started = False
+            self.is_shutdown = True
+
+    def async_refresh_cache(self, dns_cache_time, interval=30):
+        if self.async_started:
+            return False
+
+        with self.async_lock:
+            if self.async_started:
+                return False
+
+            def _refresh_cache():
+                while not self.is_shutdown:
+                    try:
+                        time.sleep(interval)
+                        for k, v in self.cache.copy().items():
+                            ip_list = resolve_ip_list(v.host, v.port)
+                            if ip_list and len(ip_list) > 0:
+                                self.cache[k] = CacheEntry(v.host, v.port, ip_list, time.time() + dns_cache_time)
+                            else:
+                                v.immortal = True
+                    except Exception as ex:
+                        logger.info('_refresh_cache exception, {}'.format(ex))
+
+            self.async_started = True
+            self.is_shutdown = False
+            t = threading.Thread(target=_refresh_cache)
+            t.setDaemon(True)
+            t.start()
+            return True
 
     def get_ip_list(self, host: str, port: int) -> CacheEntry:
         now = int(time.time())
         key = gen_key(host, port)
-        with self.lock:
-            if key in self.cache:
-                info = self.cache[key]
-                if info.expire >= now:
-                    return info
-                self.cache.pop(key)
+        if key in self.cache:
+            info = self.cache[key]
+            if info.immortal or info.expire >= now:
+                return info
+            self.cache.pop(key)
 
     def add(self, host, port, ip_list, expire):
-        entry = CacheEntry(host, port, ip_list, expire)
         key = gen_key(host, port)
-        with self.lock:
-            if key in self.cache:
-                return
-            self.cache[key] = entry
-            logger.info('in-request: add cache address:{}'.format(key))
+        if key in self.cache:
+            return self.cache[key]
+        entry = CacheEntry(host, port, ip_list, expire)
+        self.cache[key] = entry
+        logger.info('in-request: add cache address:{}'.format(key))
+        return entry
 
-    def remove(self, key):
-        with self.lock:
-            if key in self.cache:
-                self.cache.pop(key)
+
+def resolve_ip_list(host, port):
+    try:
+        family = allowed_gai_family()
+        return socket.getaddrinfo(host, port, family, socket.SOCK_STREAM)
+    except:
+        return None
 
 
 def check_enum_type(acl=None, storage_class=None, metadata_directive=None, az_redundancy=None,
@@ -1038,7 +1104,8 @@ class LogInfo(object):
         self.start = time.perf_counter()
 
     def fail(self, func_name, e):
-        logger.info('after-request: {}  exception: {}'.format(func_name, e))
+        end = time.perf_counter()
+        logger.info('after-request: {}  exception: {}, usedTime:{} s'.format(func_name, e, end - self.start))
         raise e
 
     def success(self, func_name, res):
@@ -1145,12 +1212,8 @@ def _param_to_quoted_query(k, v):
         return quote(k, '/~')
 
 
-def _is_valid_region(region: str):
-    return region == 'cn-beijing' or region == 'cn-guangzhou' or region == 'cn-shanghai'
-
-
 def _if_map(region: str, endpoint: str):
-    if _is_valid_region(region) and not endpoint:
+    if region in REGION_MAP and not endpoint:
         return REGION_MAP[region]
     else:
         return endpoint

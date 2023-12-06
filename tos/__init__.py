@@ -1,4 +1,5 @@
 import logging
+
 from . import exceptions, models2, log
 from .auth import Auth, FederationAuth
 from .client import TosClient
@@ -7,7 +8,6 @@ from .enum import *
 from .utils import RateLimiter, to_bytes, DnsCacheService
 
 logger = logging.getLogger('tos')
-_dns_cache = DnsCacheService()
 
 
 def set_logger(file_path='TosClient.log', name="tos", level=log.INFO, format_string=None):
