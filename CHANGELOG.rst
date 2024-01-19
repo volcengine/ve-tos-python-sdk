@@ -1,5 +1,10 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.6.6
+-------------
+- 增加：download_file 支持打印高延迟日志
+- 增加：初始化参数新增 credential_provider 参数
+
 Version 2.6.5
 -------------
 - 增加：DNS 缓存支持异步刷新和失效保护

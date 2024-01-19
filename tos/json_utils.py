@@ -6,6 +6,8 @@ from .utils import check_enum_type
 
 def to_complete_multipart_upload_request(parts: list):
     dic = {}
+    if parts is None:
+        return dic
     p = []
     for part in parts:
         p.append({'PartNumber': part.part_number, 'ETag': part.etag})

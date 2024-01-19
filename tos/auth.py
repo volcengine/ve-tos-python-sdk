@@ -10,7 +10,7 @@ from urllib.parse import quote
 import pytz
 
 from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD, LAST_MODIFY_TIME_DATE_FORMAT
-from .credential import FederationCredentials, StaticCredentials
+from .credential import FederationCredentials, StaticCredentialsProvider
 from .exceptions import TosClientError
 from .models2 import PreSignedPostSignatureOutPut, ContentLengthRange
 from .utils import to_bytes, _param_to_quoted_query
@@ -217,28 +217,27 @@ class AuthBase():
         return '\n'.join(sts)
 
     def _credential(self, date):
-        return "{0}/{1}/{2}/tos/request".format(self.credential.get_access_key_id(), date[0:8], self.region)
+        return "{0}/{1}/{2}/tos/request".format(self.credential.get_ak(), date[0:8], self.region)
 
     def _credential_scope(self, date):
         return "{0}/{1}/tos/request".format(date[0:8], self.region)
 
     def _signature(self, string_to_sign, date):
-        k_date = _sign(to_bytes(self.credential.get_access_key_secret()), date[0:8])
+        k_date = _sign(to_bytes(self.credential.get_sk()), date[0:8])
         k_region = _sign(k_date, self.region)
         k_service = _sign(k_region, 'tos')
         k_signing = _sign(k_service, 'request')
         return _sign(k_signing, string_to_sign, hex=True)
 
-    def copy(self):
-        if not isinstance(self.credentials_provider, StaticCredentials):
-            return None
-        provider = self.credentials_provider.credentials
-        return provider.access_key_id, provider.access_key_secret, provider.security_token, self.region
-
 
 class Auth(AuthBase):
     def __init__(self, access_key_id, access_key_secret, region, sts=None):
-        super(Auth, self).__init__(StaticCredentials(access_key_id, access_key_secret, sts), region)
+        super(Auth, self).__init__(StaticCredentialsProvider(access_key_id, access_key_secret, sts), region)
+
+
+class CredentialProviderAuth(AuthBase):
+    def __init__(self, credential_provider, region):
+        super(CredentialProviderAuth, self).__init__(credential_provider, region)
 
 
 class FederationAuth(AuthBase):
@@ -249,9 +248,6 @@ class FederationAuth(AuthBase):
 class AnonymousAuth(object):
     def __init__(self, access_key_id, access_key_secret, region, sts=None):
         self.region = region.strip()
-
-    def copy(self):
-        return self
 
     def sign_request(self, req):
         pass
