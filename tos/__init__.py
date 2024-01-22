@@ -6,6 +6,7 @@ from .client import TosClient
 from .clientv2 import TosClientV2
 from .enum import *
 from .utils import RateLimiter, to_bytes, DnsCacheService
+from .credential import StaticCredentialsProvider, EcsCredentialsProvider, EnvCredentialsProvider
 
 logger = logging.getLogger('tos')
 

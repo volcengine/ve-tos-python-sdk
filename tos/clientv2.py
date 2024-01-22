@@ -24,12 +24,13 @@ from urllib3.util.connection import _set_socket_options
 from . import TosClient
 from . import __version__
 from . import exceptions, utils
-from .auth import Auth, AnonymousAuth
+from .auth import Auth, AnonymousAuth, CredentialProviderAuth
 from .checkpoint import (CheckPointStore, _BreakpointDownloader,
                          _BreakpointUploader, _BreakpointResumableCopyObject)
 from .client import _make_virtual_host_url, _make_virtual_host_uri, _get_virtual_host, _get_host, _get_scheme
 from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
                      WHITE_LIST_FUNCTION, CALLBACK_FUNCTION)
+from .credential import StaticCredentialsProvider
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType, VersioningStatusType, CopyEventType)
 from .exceptions import TosClientError, TosServerError, TosError
@@ -745,7 +746,7 @@ def high_latency_log(f):
 
 
 class TosClientV2(TosClient):
-    def __init__(self, ak, sk, endpoint, region,
+    def __init__(self, ak='', sk='', endpoint='', region='',
                  security_token=None,
                  auto_recognize_content_type=True,
                  max_retry_count=3,
@@ -761,7 +762,8 @@ class TosClientV2(TosClient):
                  proxy_password: str = None,
                  is_custom_domain: bool = False,
                  high_latency_log_threshold: int = 100,
-                 socket_timeout=30):
+                 socket_timeout=30,
+                 credentials_provider=None):
 
         """创建client
 
@@ -785,24 +787,35 @@ class TosClientV2(TosClient):
         :param is_custom_domain: 是否使用自定义域名，默认为False
         :param high_latency_log_threshold: 大于 0 时，代表开启高延迟日志，单位：KB，默认为 100，当单次请求传输总速率低于该值且总请求耗时大于 500 毫秒时打印 WARN 级别日志
         :param socket_timeout: 连接建立成功后，单个请求的 Socket 读写超时时间，单位：秒，默认 30 秒，参考: https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts
+        :param credentials_provider: 通过 credentials_provider 实现永久访问密钥、临时访问密钥、ECS免密登陆、环境变量获取访问密钥等方式
         :return TosClientV2:
         """
 
-        if 's3' in endpoint:
-            raise TosClientError("invalid endpoint, please use Tos endpoint rather than S3 endpoint")
+        endpoint = endpoint if isinstance(endpoint, str) else endpoint.decode() if isinstance(endpoint, bytes) else str(
+            endpoint)
 
-        if ak == "" and sk == "":
+        endpoint = endpoint.strip()
+
+        if utils.is_s3_endpoint(endpoint):
+            raise TosClientError("invalid endpoint, please use Tos endpoint rather than S3 endpoint")
+        if credentials_provider is not None and (ak != "" or sk != ""):
+            raise TosClientError("credentials_provider, ak, sk both")
+
+        if ak == "" and sk == "" and credentials_provider is None:
             super(TosClientV2, self).__init__(auth=AnonymousAuth(ak, sk, region, sts=security_token),
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
                                               connect_timeout=connection_time)
         else:
-            super(TosClientV2, self).__init__(auth=Auth(ak, sk, region, sts=security_token),
+            if credentials_provider is None:
+                credentials_provider = StaticCredentialsProvider(ak, sk, security_token)
+            super(TosClientV2, self).__init__(auth=CredentialProviderAuth(credentials_provider, region),
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
                                               connect_timeout=connection_time)
+
         self.max_retry_count = max_retry_count if max_retry_count >= 0 else 0
         self.dns_cache_time = dns_cache_time * 60 if dns_cache_time > 0 else 0
         self.request_timeout = request_timeout
@@ -1666,6 +1679,17 @@ class TosClientV2(TosClient):
                                enable_crc=self.enable_crc)
 
     @high_latency_log
+    def _get_object_by_part(self, bucket: str, key: str, part, file, if_match=None, data_transfer_listener=None,
+                            rate_limiter=None,
+                            ssec_algorithm=None, ssec_key=None, ssec_key_md5=None, version_id=None, traffic_limit=None):
+        content = self.get_object(bucket, key, range_start=part.start, range_end=part.end - 1, if_match=if_match,
+                                  data_transfer_listener=data_transfer_listener,
+                                  rate_limiter=rate_limiter, ssec_algorithm=ssec_algorithm, ssec_key=ssec_key,
+                                  ssec_key_md5=ssec_key_md5, version_id=version_id, traffic_limit=traffic_limit)
+        utils.copy_and_verify_length(content, file, part.end - part.start, request_id=content.request_id)
+        return content.content.crc if self.enable_crc else None
+
+    @high_latency_log
     def get_object_to_file(self, bucket: str, key: str, file_path: str,
                            version_id: str = None,
                            if_match: str = None,
@@ -2478,7 +2502,7 @@ class TosClientV2(TosClient):
                                     traffic_limit=traffic_limit
                                     )
 
-    def complete_multipart_upload(self, bucket: str, key: str, upload_id: str, parts: [],
+    def complete_multipart_upload(self, bucket: str, key: str, upload_id: str, parts: list = None,
                                   complete_all: bool = False,
                                   callback: str = None,
                                   callback_var: str = None) -> CompleteMultipartUploadOutput:
@@ -3487,12 +3511,12 @@ def _is_valid_expires(expires):
 def _is_valid_object_name(object_name):
     """
     - 对象名命名规范
-    - 对象名字符长度为 1~696 个字符；
+    - 对象名字符长度不能0；
     - 对象名不允许为 . 由于 requests 库中 _remove_path_dot_segments 方法会将 虚拟主机请求 {bucket}.{host}/. 强制转化为 {bucket}.{host}/ 导致最后签名报错
     SDK 会对依照该规范做校验，如果用户指定的对象名与规范不匹配则报错客户端校验失败。
     """
-    if len(object_name) < 1 or len(object_name) > 696:
-        raise exceptions.TosClientError('invalid object name, the length must be [1, 696]')
+    if len(object_name) < 1:
+        raise exceptions.TosClientError('invalid object name, object name is empty')
 
     if object_name == '.' or object_name == '..':
         raise exceptions.TosClientError("invalid object name, the object name can not use '.'")

@@ -144,3 +144,12 @@ class RenameFileError(Exception):
         error = {'message': self.message,
                  'case': str(self.cause)}
         return str(error)
+
+
+class NoneTokenException(Exception):
+    def __init__(self, message):
+        super(NoneTokenException, self).__init__(self)
+        self.message = message
+
+    def __str__(self):
+        return {'message': self.message}

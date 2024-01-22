@@ -251,8 +251,7 @@ class TestMultipart(TosTestBase):
         for i in range(2):
             self.client.upload_part(bucket=bucket_name, key=key, upload_id=resp.upload_id, part_number=i + 1,
                                     content=content)
-        complete_out = self.client.complete_multipart_upload(bucket_name, key, resp.upload_id, complete_all=True,
-                                                             parts=[])
+        complete_out = self.client.complete_multipart_upload(bucket_name, key, resp.upload_id, complete_all=True)
         assert len(complete_out.complete_parts) == 2
         out = self.client.get_object(bucket_name, key)
         assert out.read() == content + content

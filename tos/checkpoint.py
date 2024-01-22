@@ -13,7 +13,7 @@ from .exceptions import (CancelNotWithAbortError, CancelWithAbortError,
                          TosClientError, TosServerError, TosError, TaskCompleteMultipartError, RenameFileError)
 from .models2 import PartInfo, UploadedPart, _PartToDo, CopyPartInfo
 from .utils import (SizeAdapter, to_unicode, MergeProcess, to_bytes,
-                    cal_crc_from_download_parts, check_crc, rename_file, copy_and_verify_length, makedir_p,
+                    cal_crc_from_download_parts, check_crc, rename_file, makedir_p,
                     cal_crc_from_upload_parts)
 
 logger = logging.getLogger(__name__)
@@ -481,18 +481,17 @@ class _BreakpointDownloader(BreakpointBase):
         with open(self.temp, 'rb+') as f:
             try:
                 f.seek(part.start, os.SEEK_SET)
-                content = self.client.get_object(bucket=self.bucket, key=self.key, range_start=part.start,
-                                                 range_end=part.end - 1, if_match=self.etag,
-                                                 data_transfer_listener=self.datatransfer_listener,
-                                                 rate_limiter=self.rate_limiter,
-                                                 ssec_algorithm=self.ssec_algorithm,
-                                                 ssec_key=self.ssec_key,
-                                                 ssec_key_md5=self.ssec_key_md5,
-                                                 version_id=self.version_id,
-                                                 traffic_limit=self.traffic_limit)
-                copy_and_verify_length(content, f, part.end - part.start, request_id=content.request_id)
+                crc = self.client._get_object_by_part(bucket=self.bucket, key=self.key, part=part, file=f,
+                                                      if_match=self.etag,
+                                                      data_transfer_listener=self.datatransfer_listener,
+                                                      rate_limiter=self.rate_limiter,
+                                                      ssec_algorithm=self.ssec_algorithm,
+                                                      ssec_key=self.ssec_key,
+                                                      ssec_key_md5=self.ssec_key_md5,
+                                                      version_id=self.version_id,
+                                                      traffic_limit=self.traffic_limit)
                 if self.client.enable_crc:
-                    part.part_crc = content.content.crc
+                    part.part_crc = crc
             except Exception as e:
                 self._callback_part_fail(e, part)
                 raise e

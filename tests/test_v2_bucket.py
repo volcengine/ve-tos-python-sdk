@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import datetime
 import json
+import os
 import time
 import time as tim
 import unittest
@@ -9,7 +10,9 @@ from pytz import UTC
 
 import tos
 from tests.common import TosTestBase, clean_and_delete_bucket
+from tos import TosClientV2
 from tos.checkpoint import TaskExecutor
+from tos.credential import EnvCredentialsProvider
 from tos.enum import ACLType, StorageClassType, RedirectType, StatusType, PermissionType, CannedType, GranteeType, \
     VersioningStatusType, ProtocolType, AzRedundancyType, StorageClassInheritDirectiveType, CertStatus
 from tos.exceptions import TosClientError, TosServerError
@@ -196,6 +199,7 @@ class TestBucket(TosTestBase):
         put_out = self.client.put_bucket_storage_class(bucket=bucket_name,
                                                        storage_class=StorageClassType.Storage_Class_Ia)
         self.assertIsNotNone(put_out.request_id)
+        time.sleep(60)
         out = self.client.head_bucket(bucket=bucket_name)
         self.assertEqual(out.storage_class, StorageClassType.Storage_Class_Ia)
 
@@ -557,12 +561,14 @@ class TestBucket(TosTestBase):
 
         out = self.client.put_bucket_versioning(bucket_name, VersioningStatusType.Versioning_Status_Enabled)
         self.assertIsNotNone(out.request_id)
+        time.sleep(30)
         out = self.client.get_bucket_version(bucket_name)
         self.assertIsNotNone(out.request_id)
         self.assertEqual(VersioningStatusType.Versioning_Status_Enabled, out.status)
-        time.sleep(20)
+
         self.client.put_bucket_versioning(bucket_name, VersioningStatusType.Versioning_Status_Suspended)
         out = self.client.get_bucket_version(bucket_name)
+        time.sleep(30)
         self.assertEqual(out.status, VersioningStatusType.Versioning_Status_Suspended)
 
     def test_bucket_website(self):

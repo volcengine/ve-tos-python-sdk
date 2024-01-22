@@ -34,6 +34,11 @@ REGION_MAP = {
     'ap-southeast-1': 'tos-ap-southeast-1.volces.com',
 }
 
+S3_REGION_LIST = ['tos-s3-cn-beijing.volces.com',
+                  'tos-s3-cn-guangzhou.volces.com',
+                  'tos-s3-cn-shanghai.volces.com',
+                  'tos-s3-ap-southeast-1.volces.com']
+
 
 def get_value(kv, key, handler=lambda x: x):
     if key in kv:
@@ -1290,3 +1295,9 @@ def _make_virtual_host_url(host, scheme, bucket=None, key=None):
         url = '{0}/{1}'.format(host, quote(key, '/~'))
 
     return _format_endpoint(scheme + url)
+
+
+def is_s3_endpoint(endpoint):
+    if endpoint in S3_REGION_LIST:
+        return True
+    return False
