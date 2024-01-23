@@ -1127,6 +1127,20 @@ class TestObject(TosTestBase):
         resp.close()
         self.assertEqual(resp.status_code, 403)
 
+        prefix = 'test_post/'
+        key = prefix + key
+        condition = [PostSignatureCondition(key='key', value=prefix, operator='starts-with')]
+        out3 = self.client.pre_signed_post_signature(conditions=condition, bucket=bucket_name)
+        form3 = {'key': key, 'x-tos-algorithm': out3.algorithm, 'bucket': bucket_name, 'x-tos-date': out3.date,
+                 'policy': out3.policy, 'x-tos-signature': out3.signature, 'x-tos-credential': out3.credential}
+        resp = requests.post(url=self.client._make_virtual_host_url(bucket_name, key),
+                             files={"upload_file": open(file_name, 'rb')},
+                             data=form3)
+        self.assertEqual(resp.status_code, 204)
+
+        resp = self.client.get_object(bucket_name, key)
+        self.assertEqual(resp.status_code, 200)
+
     def test_pre_signed_policy_url(self):
         bucket_name = self.bucket_name + 'test-policy-url'
         self.client.create_bucket(bucket_name)

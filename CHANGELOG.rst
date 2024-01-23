@@ -1,5 +1,9 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.6.7
+-------------
+- 修复：pre_signed_post_signature部分参数为可选
+
 Version 2.6.6
 -------------
 - 增加：download_file 支持打印高延迟日志

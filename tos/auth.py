@@ -84,8 +84,11 @@ def _get_post_policy(date: str, expire: int, algorithm, credential, bucket, obje
         "expiration": time.strftime(LAST_MODIFY_TIME_DATE_FORMAT)
     }
 
-    cond = [{"x-tos-algorithm": algorithm}, {"x-tos-credential": credential}, {"x-tos-date": date}, {"key": object_key},
-            {"bucket": bucket}]
+    cond = [{"x-tos-algorithm": algorithm}, {"x-tos-credential": credential}, {"x-tos-date": date}]
+    if bucket:
+        cond.append({"bucket": bucket})
+    if object_key:
+        cond.append({"key": object_key})
     if sts:
         cond.append({'x-tos-security-token': sts})
 

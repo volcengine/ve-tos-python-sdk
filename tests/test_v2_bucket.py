@@ -204,6 +204,7 @@ class TestBucket(TosTestBase):
         self.assertEqual(out.storage_class, StorageClassType.Storage_Class_Ia)
 
         self.client.put_bucket_storage_class(bucket_name, StorageClassType.Storage_Class_Standard)
+        time.sleep(60)
         self.assertEqual(self.client.head_bucket(bucket_name).storage_class, StorageClassType.Storage_Class_Standard)
 
         # self.client.put_bucket_storage_class(bucket_name, StorageClassType.Storage_Class_Archive_Fr)
