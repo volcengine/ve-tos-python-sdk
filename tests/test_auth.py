@@ -19,7 +19,6 @@ class TestAuth(TosTestCase):
         with mock.patch('datetime.datetime', new=datetime_mock):
             tos_cli = tos.TosClient(tos.Auth('ak', 'sk', 'beijing'), 'tos-cn-beijing.volces.com')
             url = tos_cli.generate_presigned_url(Method='GET', Bucket='bkt', Key='key', ExpiresIn=86400)
-            print(url)
             self.assertEqual(url,
                              'https://bkt.tos-cn-beijing.volces.com/key?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Creden'
                              'tial=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Expires=8'
@@ -31,14 +30,14 @@ class TestAuth(TosTestCase):
             self.assertEqual(url,
                              'https://bkt.tos-cn-beijing.volces.com/key?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credentia'
                              'l=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Expires=36'
-                             '00&X-Tos-SignedHeaders=host&X-Tos-Security-Token=sts&X-Tos-Signature=3041fb481e31ec25f'
+                             '00&X-Tos-Security-Token=sts&X-Tos-SignedHeaders=host&X-Tos-Signature=3041fb481e31ec25f'
                              'e7a1be44cafe25caf1cd97228710ee440b2ca1bd49bc563')
 
             url = tos_cli.generate_presigned_url(Method='PUT', Bucket='bkt', Key='key', Params={'acl': ''})
             self.assertEqual(url,
                              'https://bkt.tos-cn-beijing.volces.com/key?acl&X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-C'
                              'redential=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Exp'
-                             'ires=3600&X-Tos-SignedHeaders=host&X-Tos-Security-Token=sts&X-Tos-Signature=51c89070206'
+                             'ires=3600&X-Tos-Security-Token=sts&X-Tos-SignedHeaders=host&X-Tos-Signature=51c89070206'
                              'dd438fd8be1ed201a77335af80e33cad5fd408841590b99aa93d3')
 
     def test_client2_presigned_url(self):
@@ -70,20 +69,19 @@ class TestAuth(TosTestCase):
             self.assertEqual(url.signed_url,
                              'https://bkt.tos-cn-beijing.volces.com/key?acl&X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-C'
                              'redential=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Exp'
-                             'ires=3600&X-Tos-SignedHeaders=host&X-Tos-Security-Token=sts&X-Tos-Signature=51c89070206'
+                             'ires=3600&X-Tos-Security-Token=sts&X-Tos-SignedHeaders=host&X-Tos-Signature=51c89070206'
                              'dd438fd8be1ed201a77335af80e33cad5fd408841590b99aa93d3')
 
             url = tos_cli.pre_signed_url(http_method=HttpMethodType.Http_Method_Put, bucket='bkt', key='key')
             self.assertEqual(url.signed_url,
                              'https://bkt.tos-cn-beijing.volces.com/key?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credentia'
                              'l=ak%2F20210101%2Fbeijing%2Ftos%2Frequest&X-Tos-Date=20210101T000000Z&X-Tos-Expires=36'
-                             '00&X-Tos-SignedHeaders=host&X-Tos-Security-Token=sts&X-Tos-Signature=3041fb481e31ec25f'
+                             '00&X-Tos-Security-Token=sts&X-Tos-SignedHeaders=host&X-Tos-Signature=3041fb481e31ec25f'
                              'e7a1be44cafe25caf1cd97228710ee440b2ca1bd49bc563')
             url = tos_cli.pre_signed_url(http_method=HttpMethodType.Http_Method_Put, bucket='bkt', key='key',
                                          expires=1234, header={'contentLength': 1000})
             self.assertTrue('1234' in url.signed_url)
-            self.assertTrue('contentlength' in url.signed_url)
-            url.signed_header['contentLength'] = 1000
+            self.assertTrue('contentlength' not in url.signed_url)
 
             self.anonymousCli = tos.TosClientV2(ak='', sk='', endpoint='tos-cn-beijing.volces.com', region='beijing')
             url = self.anonymousCli.pre_signed_url(http_method=HttpMethodType.Http_Method_Put, bucket='bkt', key='key',

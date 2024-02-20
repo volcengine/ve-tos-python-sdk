@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 import pytz
 
-from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD, LAST_MODIFY_TIME_DATE_FORMAT
+from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD, LAST_MODIFY_TIME_DATE_FORMAT, SIGNATURE_QUERY_LOWER, V4_PREFIX
 from .credential import FederationCredentials, StaticCredentialsProvider
 from .exceptions import TosClientError
 from .models2 import PreSignedPostSignatureOutPut, ContentLengthRange
@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 def _canonical_query_string_params(params):
     results = []
     for param in sorted(params):
+        if param.lower() == SIGNATURE_QUERY_LOWER:
+            continue
         value = str(params[param])
         results.append('%s=%s' % (quote(param, safe='-_.~'),
                                   quote(value, safe='-_.~')))
@@ -28,30 +30,38 @@ def _canonical_query_string_params(params):
     return cqs
 
 
-def _signed_headers(headers):
-    hl = sorted(headers.items(), key=lambda d: d[0].lower())
-    vl = []
-    for v in hl:
-        vl.append(v[0].lower())
-    return ';'.join(vl)
+def _need_signed_headers(key, is_signing_query):
+    return (key == "content-type" and not is_signing_query) or key.startswith(V4_PREFIX) or key == 'host'
+
+
+def _get_signed_headers(headers, is_signing_query=False):
+    signed_headers = {}
+    for k, v in headers.items():
+        k = k.lower()
+        if _need_signed_headers(k, is_signing_query):
+            signed_headers[k] = v
+    return sorted(signed_headers.items(), key=lambda d: d[0].lower())
+
+
+def _get_signed_header_key(signed_headers):
+    return ';'.join([v[0] for v in signed_headers])
 
 
 def _canonical_headers(headers):
-    hl = sorted(headers.items(), key=lambda d: d[0].lower())
     s = ''
-    for val in hl:
+    for val in headers:
         if isinstance(val[1], list):
             tlist = sorted(val[1])
             for v in tlist:
-                s += val[0] + ':' + v + '\n'
+                s += val[0].lower() + ':' + v + '\n'
         else:
             s += val[0].lower() + ':' + str(val[1]) + '\n'
     return s
 
 
-def _canonical_request(req):
+def _canonical_request(req, signed_headers):
     cr = [req.method.upper(), quote(req.path, safe='/~'), _canonical_query_string_params(req.params),
-          _canonical_headers(req.headers), _signed_headers(req.headers)]
+          _canonical_headers(signed_headers), _get_signed_header_key(signed_headers)]
     if req.headers.get('x-tos-content-sha256'):
         cr.append(req.headers['x-tos-content-sha256'])
     else:
@@ -134,8 +144,9 @@ class AuthBase():
         req.headers['Date'] = date
         req.headers['x-tos-date'] = date
 
-        signature = self._make_signature(req=req, date=date)
-        req.headers['Authorization'] = self._inject_signature_to_request(req, signature, date)
+        signed_headers = _get_signed_headers(req.headers)
+        signature = self._make_signature(req=req, date=date, signed_headers=signed_headers)
+        req.headers['Authorization'] = self._inject_signature_to_request(signature, date, signed_headers)
 
     def sign_url(self, req, expires):
         if expires is None:
@@ -147,11 +158,11 @@ class AuthBase():
         req.params['X-Tos-Credential'] = self._credential(date)
         req.params['X-Tos-Date'] = date
         req.params['X-Tos-Expires'] = expires
-        req.params['X-Tos-SignedHeaders'] = _signed_headers(req.headers)
-
         if self.credential.get_security_token():
             req.params["X-Tos-Security-Token"] = self.credential.get_security_token()
-        req.params['X-Tos-Signature'] = self._make_signature(req=req, date=date)
+        signed_headers = _get_signed_headers(req.headers, True)
+        req.params['X-Tos-SignedHeaders'] = _get_signed_header_key(signed_headers)
+        req.params['X-Tos-Signature'] = self._make_signature(req=req, date=date, signed_headers=signed_headers)
 
         return req.url + '?' + '&'.join(_param_to_quoted_query(k, v) for k, v in req.params.items())
 
@@ -190,9 +201,9 @@ class AuthBase():
 
         return '&'.join(_param_to_quoted_query(k, v) for k, v in params.items())
 
-    def _make_signature(self, date, req=None, string_to_sign=None):
+    def _make_signature(self, date, req=None, string_to_sign=None, signed_headers=None):
         if not string_to_sign:
-            canonical_request = _canonical_request(req)
+            canonical_request = _canonical_request(req, signed_headers)
             logger.debug("pre-request: canonical_request:\n%s", canonical_request)
             string_to_sign = self._string_to_sign(canonical_request, date)
         logger.debug("pre-request: string_to_sign:\n%s", string_to_sign)
@@ -209,9 +220,9 @@ class AuthBase():
         logger.debug("pre-request: signature:\n%s", signature)
         return signature
 
-    def _inject_signature_to_request(self, req, signature, date):
+    def _inject_signature_to_request(self, signature, date, signed_headers):
         results = ['TOS4-HMAC-SHA256 Credential=%s' % self._credential(date),
-                   'SignedHeaders=%s' % _signed_headers(req.headers), 'Signature=%s' % signature]
+                   'SignedHeaders=%s' % _get_signed_header_key(signed_headers), 'Signature=%s' % signature]
         return ', '.join(results)
 
     def _string_to_sign(self, canonical_request, date):

@@ -1,5 +1,11 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.6.8
+-------------
+- 增加：BucketTagging相关接口
+- 改变：重试时重新生成签名
+- 改变：签名只签必要的Header
+
 Version 2.6.7
 -------------
 - 修复：pre_signed_post_signature部分参数为可选

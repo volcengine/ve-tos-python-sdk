@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-import http
+import datetime
 import os
 import time
 import unittest
 from io import StringIO
-import http.client as httplib
+from unittest import mock
 import requests
 from requests.exceptions import RetryError
 from urllib3.exceptions import NewConnectionError
@@ -15,11 +15,13 @@ from tos import DnsCacheService, RateLimiter, exceptions, utils, convert_storage
     convert_az_redundancy_type, PermissionType, convert_permission_type, GranteeType, convert_grantee_type, \
     convert_canned_type, CannedType, RedirectType, convert_redirect_type, StatusType, convert_status_type, \
     StorageClassInheritDirectiveType, convert_storage_class_inherit_directive_type, VersioningStatusType, \
-    convert_versioning_status_type, ProtocolType, convert_protocol_type, CertStatus, convert_cert_status
+    convert_versioning_status_type, ProtocolType, convert_protocol_type, CertStatus, convert_cert_status, \
+    StaticCredentialsProvider
+from tos.auth import CredentialProviderAuth
 from tos.checkpoint import CancelHook
-from tos.clientv2 import _handler_retry_policy, _is_wrapper_data
+from tos.clientv2 import _handler_retry_policy, _is_wrapper_data, _signed_req
 from tos.exceptions import TosServerError, CancelNotWithAbortError, CancelWithAbortError
-from tos.http import Response
+from tos.http import Response, Request
 from tos.utils import SizeAdapter
 
 
@@ -225,6 +227,27 @@ class BaseFuncTestCase(unittest.TestCase):
         for t in CertStatus:
             assert t == convert_cert_status(t.value)
         assert CertStatus.Cert_Unknown == convert_cert_status('test')
+
+    def test_sign_req(self):
+        auth = CredentialProviderAuth(StaticCredentialsProvider('ak', 'sk', 'sts'), 'region')
+        host = 'zzz.com'
+        headers = {'content-type': 'application/json', 'Host': host}
+        params = {'versionId': 'test'}
+
+        req = Request('GET', 'http://zzz.com/key', 'key', 'zzz.com',
+                      params=params,
+                      headers=headers)
+
+        datetime_mock = mock.Mock(wraps=datetime.datetime)
+        datetime_mock.utcnow.return_value = datetime.datetime(2021, 1, 1)
+        with mock.patch('datetime.datetime', new=datetime_mock):
+            req = _signed_req(auth, req, host)
+            self.assertEqual(req.headers['Authorization'],
+                             'TOS4-HMAC-SHA256 Credential=ak/20210101/region/tos/request, '
+                             'SignedHeaders=content-type;host;x-tos-date;x-tos-security-token, Signature=ca8eb8987663e61e740bc5be9078d6d4f716990573a56c86a6602d42faf3af7e')
+            self.assertEqual(req.headers['Host'], host)
+            self.assertEqual(req.headers['x-tos-date'], '20210101T000000Z')
+            self.assertEqual(req.headers['x-tos-security-token'], 'sts')
 
 
 class args(object):

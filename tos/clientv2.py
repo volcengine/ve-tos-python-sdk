@@ -24,7 +24,7 @@ from urllib3.util.connection import _set_socket_options
 from . import TosClient
 from . import __version__
 from . import exceptions, utils
-from .auth import Auth, AnonymousAuth, CredentialProviderAuth
+from .auth import AnonymousAuth, CredentialProviderAuth
 from .checkpoint import (CheckPointStore, _BreakpointDownloader,
                          _BreakpointUploader, _BreakpointResumableCopyObject)
 from .client import _make_virtual_host_url, _make_virtual_host_uri, _get_virtual_host, _get_host, _get_scheme
@@ -37,7 +37,7 @@ from .exceptions import TosClientError, TosServerError, TosError
 from .http import Request, Response
 from .json_utils import (to_complete_multipart_upload_request,
                          to_put_acl_request, to_delete_multi_objects_request, to_put_bucket_cors_request,
-                         to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_object_tagging, to_fetch_object,
+                         to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_tagging, to_fetch_object,
                          to_put_replication, to_put_bucket_website, to_put_bucket_notification, to_put_custom_domain,
                          to_put_bucket_real_time_log, to_restore_object)
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
@@ -67,7 +67,8 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       DeleteBucketRealTimeLog, GetBucketWebsiteOutput, ResumableCopyObjectOutput,
                       PreSignedPolicyURlInputOutput, ListObjectType2Output, ListObjectsIterator, GetBucketRealTimeLog,
                       PolicySignatureCondition, RestoreObjectOutput, RestoreJobParameters, RenameObjectOutput,
-                      PutBucketRenameOutput, DeleteBucketRenameOutput, GetBucketRenameOutput)
+                      PutBucketRenameOutput, DeleteBucketRenameOutput, GetBucketRenameOutput, PutBucketTaggingOutput,
+                      DeleteBucketTaggingOutput, GetBucketTaggingOutput)
 from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
@@ -743,6 +744,14 @@ def high_latency_log(f):
                 pass
 
     return wrapper
+
+
+def _signed_req(auth, req, host):
+    if auth is None:
+        return req
+    req.headers['Host'] = host
+    auth.sign_request(req)
+    return req
 
 
 class TosClientV2(TosClient):
@@ -2843,6 +2852,36 @@ class TosClientV2(TosClient):
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'mirror': ''})
         return DeleteBucketMirrorBackOutput(resp)
 
+    def put_bucket_tagging(self, bucket: str, tag_set: []):
+        """ 设置桶标签
+        :param bucket: 桶名
+        :param tag_set: 标签集合
+        :return: PutBucketTaggingOutput
+        """
+        data = to_put_tagging(tag_set)
+        data = json.dumps(data)
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params={'tagging': ''},
+                         data=data, headers=headers)
+        return PutBucketTaggingOutput(resp)
+
+    def get_bucket_tagging(self, bucket: str):
+        """ 获取桶标签
+        :param bucket: 桶名
+        :return: GetBucketTaggingOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'tagging': ''})
+        return GetBucketTaggingOutput(resp)
+
+    def delete_bucket_tagging(self, bucket: str):
+        """ 删除桶标签
+        :param bucket: 桶名
+        :return: DeleteBucketTaggingOutput
+        """
+
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'tagging': ''})
+        return DeleteBucketTaggingOutput(resp)
+
     def put_object_tagging(self, bucket: str, key: str, tag_set: [],
                            version_id: str = None) -> PutObjectTaggingOutput:
         """ 为 object 添加标签
@@ -2857,7 +2896,7 @@ class TosClientV2(TosClient):
         if version_id:
             params['versionId'] = version_id
 
-        data = to_put_object_tagging(tag_set)
+        data = to_put_tagging(tag_set)
         data = json.dumps(data)
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params=params, data=data, key=key)
         return PutObjectTaggingOutput(resp)
@@ -3337,17 +3376,13 @@ class TosClientV2(TosClient):
         if auth is not None:
             auth.sign_request(req)
 
-        # 对于网络流的对象, 删除header中的 host 元素
-        # 对于能获取大小的流对象，但size==0, 删除header中的 host 元素
-        if isinstance(data, _IterableAdapter) or (isinstance(data, _ReaderAdapter) and data.size == 0):
-            del headers['Host']
-
         if 'User-Agent' not in req.headers:
             req.headers['User-Agent'] = USER_AGENT
 
         # 通过变量赋值，防止动态调整 max_retry_count 出现并发问题
         retry_count = self.max_retry_count
         rsp = None
+        host = headers['Host']
         for i in range(0, retry_count + 1):
             info = LogInfo()
             # 采用指数避让策略
@@ -3356,7 +3391,12 @@ class TosClientV2(TosClient):
                 logger.info('in-request: sleep {}s'.format(sleep_time))
                 time.sleep(sleep_time)
                 req.headers['x-sdk-retry-count'] = 'attempt=' + str(i) + '; max=' + str(retry_count)
+                req = _signed_req(auth, req, host)
             try:
+                # 对于网络流的对象, 删除header中的 host 元素
+                # 对于能获取大小的流对象，但size==0, 删除header中的 host 元素
+                if isinstance(data, _IterableAdapter) or (isinstance(data, _ReaderAdapter) and data.size == 0):
+                    del req.headers['Host']
                 # 由于TOS的重定向场景尚未明确, 目前关闭重定向功能
                 res = self.session.request(method,
                                            req.url,
