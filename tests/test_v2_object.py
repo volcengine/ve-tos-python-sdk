@@ -179,8 +179,12 @@ class TestObject(TosTestBase):
             content = content_io
             content.read()
             key = self.random_key()
-        self.client.put_object(bucket_name, key)
         conn.close()
+        file_name = self.random_filename()
+        file = open(file_name, 'w')
+        file.close()
+        self.client.put_object_from_file(bucket_name, key, file_path=file_name)
+        os.remove(file_name)
 
     def test_put_with_illegal_name(self):
         bucket_name = self.bucket_name + '-put-object-with-illegal-name'

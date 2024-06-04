@@ -1755,3 +1755,29 @@ class PutBucketRenameOutput(ResponseInfo):
 class DeleteBucketRenameOutput(ResponseInfo):
     def __init__(self, resp):
         super(DeleteBucketRenameOutput, self).__init__(resp)
+
+
+class PutBucketTaggingOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketTaggingOutput, self).__init__(resp)
+
+
+class GetBucketTaggingOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketTaggingOutput, self).__init__(resp)
+        self.tag_set = []
+        data = resp.json_read()
+        tag_set = get_value(data, 'TagSet')
+        if tag_set:
+            tags = get_value(tag_set, 'Tags')
+            if tags:
+                for tag in tags:
+                    self.tag_set.append(Tag(
+                        get_value(tag, 'Key'),
+                        get_value(tag, 'Value')
+                    ))
+
+
+class DeleteBucketTaggingOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketTaggingOutput, self).__init__(resp)

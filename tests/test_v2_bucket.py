@@ -717,6 +717,30 @@ class TestBucket(TosTestBase):
         with self.assertRaises(TosServerError):
             self.client2.get_bucket_real_time_log(bucket_name)
 
+    def test_bucket_tagging(self):
+        bucket_name = self.bucket_name  # + '-bucket-tagging'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        tag_set = [Tag(
+            key='1',
+            value='2'
+        ), Tag(
+            key='3',
+            value='4'
+        )]
+        self.client.put_bucket_tagging(bucket_name, tag_set)
+        out = self.client.get_bucket_tagging(bucket_name)
+        self.assertIsNotNone(out.request_id)
+        self.assertEqual(len(out.tag_set), 2)
+        self.assertEqual(out.tag_set[0].key, tag_set[0].key)
+        self.assertEqual(out.tag_set[0].value, tag_set[0].value)
+        self.assertEqual(out.tag_set[1].key, tag_set[1].key)
+        self.assertEqual(out.tag_set[1].value, tag_set[1].value)
+        delete_out = self.client.delete_bucket_tagging(bucket_name)
+        self.assertIsNotNone(delete_out.request_id)
+        with self.assertRaises(TosServerError):
+            self.client.get_bucket_tagging(bucket_name)
+
     def retry_assert(self, func):
         for i in range(5):
             if func():

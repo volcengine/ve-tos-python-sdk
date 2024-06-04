@@ -211,7 +211,7 @@ def to_put_bucket_lifecycle(rules: []):
     return data
 
 
-def to_put_object_tagging(tags: []):
+def to_put_tagging(tags: []):
     info = []
     for tag in tags:
         info.append({
