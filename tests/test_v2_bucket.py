@@ -167,7 +167,8 @@ class TestBucket(TosTestBase):
             allowed_methods=['GET'],
             allowed_headers=['*'],
             expose_headers=['*'],
-            max_age_seconds=200
+            max_age_seconds=200,
+            response_vary=True,
         ))
         out = self.client.put_bucket_cors(bucket=bucket_name, cors_rule=cors_rules)
         self.assertIsNotNone(out.id2)
@@ -186,6 +187,7 @@ class TestBucket(TosTestBase):
         self.assertEqual(out_get.cors_rules[1].allowed_headers[0], '*')
         self.assertEqual(out_get.cors_rules[1].allowed_methods[0], 'GET')
         self.assertEqual(out_get.cors_rules[1].allowed_origins[0], 'example*1.com')
+        self.assertEqual(out_get.cors_rules[1].response_vary, True)
 
         out_delete = self.client.delete_bucket_cors(bucket=bucket_name)
         self.assertIsNotNone(out_delete.request_id)
@@ -716,6 +718,44 @@ class TestBucket(TosTestBase):
         self.assertIsNotNone(delete_out.request_id)
         with self.assertRaises(TosServerError):
             self.client2.get_bucket_real_time_log(bucket_name)
+
+    def test_bucket_tagging(self):
+        bucket_name = self.bucket_name  # + '-bucket-tagging'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        tag_set = [Tag(
+            key='1',
+            value='2'
+        ), Tag(
+            key='3',
+            value='4'
+        )]
+        self.client.put_bucket_tagging(bucket_name, tag_set)
+        out = self.client.get_bucket_tagging(bucket_name)
+        self.assertIsNotNone(out.request_id)
+        self.assertEqual(len(out.tag_set), 2)
+        self.assertEqual(out.tag_set[0].key, tag_set[0].key)
+        self.assertEqual(out.tag_set[0].value, tag_set[0].value)
+        self.assertEqual(out.tag_set[1].key, tag_set[1].key)
+        self.assertEqual(out.tag_set[1].value, tag_set[1].value)
+        delete_out = self.client.delete_bucket_tagging(bucket_name)
+        self.assertIsNotNone(delete_out.request_id)
+        with self.assertRaises(TosServerError):
+            self.client.get_bucket_tagging(bucket_name)
+
+    def test_bucket_project_name(self):
+        bucket_name = self.bucket_name + "project-name"
+        self.bucket_delete.append(bucket_name)
+
+        project_name = 'default'
+        self.client.create_bucket(bucket=bucket_name, project_name=project_name)
+        head_out = self.client.head_bucket(bucket_name)
+        self.assertEqual(head_out.project_name, project_name)
+        list_out = self.client.list_buckets(project_name=project_name)
+        self.assertTrue(len(list_out.buckets) > 1)
+        self.assertTrue(bucket_name in (b.name for b in list_out.buckets))
+        for bucket in list_out.buckets:
+            self.assertEqual(bucket.project_name, project_name)
 
     def retry_assert(self, func):
         for i in range(5):

@@ -20,7 +20,7 @@ from tos.enum import (ACLType, AzRedundancyType, DataTransferType,
                       StorageClassType, VersioningStatusType, TierType, CopyEventType, HttpMethodType)
 from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import Deleted, Grant, Grantee, ListObjectsOutput, Owner, ObjectTobeDeleted, Tag, \
-    PostSignatureCondition, UploadedPart, PolicySignatureCondition, RestoreJobParameters
+    PostSignatureCondition, UploadedPart, PolicySignatureCondition, RestoreJobParameters, GenericInput
 from tos.utils import RateLimiter
 
 
@@ -51,6 +51,8 @@ class TestObject(TosTestBase):
         self.assertTrue(len(put_object_out.etag) > 0)
         self.assertTrue(len(put_object_out.id2) > 0)
         self.assertTrue(put_object_out.hash_crc64_ecma > 0)
+        with self.assertRaises(TosServerError):
+            self.client.put_object(bucket_name, key=key, content=random_bytes(1024), forbid_overwrite=True)
 
         head_object_out = self.client.head_object(bucket_name, key)
         self.assertTrue(len(head_object_out.etag) > 0)
@@ -179,8 +181,12 @@ class TestObject(TosTestBase):
             content = content_io
             content.read()
             key = self.random_key()
-        self.client.put_object(bucket_name, key)
         conn.close()
+        file_name = self.random_filename()
+        file = open(file_name, 'w')
+        file.close()
+        self.client.put_object_from_file(bucket_name, key, file_path=file_name)
+        os.remove(file_name)
 
     def test_put_with_illegal_name(self):
         bucket_name = self.bucket_name + '-put-object-with-illegal-name'
@@ -417,6 +423,10 @@ class TestObject(TosTestBase):
         self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
         self.client.head_object(bucket_name_2, key)
         self.assertObjectContent(bucket_name_2, key, content)
+        with self.assertRaises(TosServerError):
+            self.client.copy_object(bucket_name_2, key, bucket_name_1, key, forbid_overwrite=True)
+        with self.assertRaises(TosServerError):
+            self.client.copy_object(bucket_name_2, key, bucket_name_1, key, if_match='123')
 
         self.client.delete_object(bucket_name_1, key)
 
@@ -552,6 +562,8 @@ class TestObject(TosTestBase):
         self.client.append_object(bucket_name, key, 100, content=content[100:],
                                   pre_hash_crc64_ecma=append_out_1.hash_crc64_ecma)
 
+        with self.assertRaises(TosServerError):
+            self.client.append_object(bucket_name, key, 100, content=content, if_match='123')
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content)
 
@@ -1409,6 +1421,62 @@ class TestObject(TosTestBase):
         rsp = requests.get(signed_url_out.signed_url)
         self.assertEqual(rsp.content, content)
 
+    def test_symlink(self):
+        bucket_name = self.bucket_name + '-test-symlink'
+        bucket_name2 = self.bucket_name + '-test-symlink2'
+        self.client2.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client2.create_bucket(bucket_name2)
+        self.bucket_delete.append(bucket_name2)
+
+        dst_key = 'dst_key'
+        symlink_key = 'symlink_key'
+        content = random_bytes(100)
+        self.client2.put_object(bucket_name, dst_key, content=content)
+        self.client2.put_symlink(bucket_name, symlink_key, dst_key)
+        get_symlink_out = self.client2.get_symlink(bucket_name, symlink_key)
+        self.assertEqual(get_symlink_out.symlink_target_key, dst_key)
+        get_out = self.client2.get_object(bucket_name, symlink_key)
+        self.assertEqual(get_out.read(), content)
+        self.assertEqual(get_out.object_type, 'Symlink')
+        head_out = self.client2.head_object(bucket_name, symlink_key)
+        self.assertEqual(head_out.symlink_target_size, len(content))
+        self.assertEqual(head_out.object_type, 'Symlink')
+        list_out = self.client2.list_objects(bucket_name, prefix=symlink_key)
+        self.assertEqual(len(list_out.contents), 1)
+        self.assertEqual(list_out.contents[0].object_type, 'Symlink')
+        list_out = self.client2.list_objects_type2(bucket_name, prefix=symlink_key)
+        self.assertEqual(len(list_out.contents), 1)
+        self.assertEqual(list_out.contents[0].object_type, 'Symlink')
+
+        download_file = self.random_filename()
+        self.client2.download_file(bucket_name, symlink_key, download_file)
+        with open(download_file) as f:
+            self.assertEqual(f.read(), content.decode('utf-8'))
+
+        symlink_key2 = 'symlink_key2'
+        self.client2.put_object(bucket_name2, dst_key, content=content)
+        self.client2.put_symlink(bucket_name, symlink_key2, dst_key, symlink_target_bucket=bucket_name2)
+        get_symlink_out = self.client2.get_symlink(bucket_name, symlink_key2)
+        self.assertEqual(get_symlink_out.symlink_target_key, dst_key)
+        self.assertEqual(get_symlink_out.symlink_target_bucket, bucket_name2)
+        get_out = self.client2.get_object(bucket_name, symlink_key2)
+        self.assertEqual(get_out.read(), content)
+        self.assertEqual(get_out.object_type, 'Symlink')
+        head_out = self.client2.head_object(bucket_name, symlink_key2)
+        self.assertEqual(head_out.symlink_target_size, len(content))
+        self.assertEqual(head_out.object_type, 'Symlink')
+        list_out = self.client2.list_objects(bucket_name, prefix=symlink_key2)
+        self.assertEqual(len(list_out.contents), 1)
+        self.assertEqual(list_out.contents[0].object_type, 'Symlink')
+
+        copy_object = 'copy_symlink'
+        copy_out = self.client2.resumable_copy_object(bucket_name, copy_object, bucket_name, symlink_key2)
+        self.assertEqual(copy_out.etag, get_symlink_out.etag)
+        get_out = self.client2.get_symlink(bucket_name, copy_object)
+        self.assertEqual(get_out.symlink_target_key, dst_key)
+        self.assertEqual(get_out.symlink_target_bucket, bucket_name2)
+
     def test_env_credential_provider(self):
         bucket_name = self.bucket_name + '-env-credential-provider'
         os.environ['TOS_ACCESS_KEY'] = self.ak
@@ -1419,6 +1487,32 @@ class TestObject(TosTestBase):
         key = self.random_key('.js')
         client.put_object(bucket_name, key=key)
         client.delete_object(bucket_name, key=key)
+
+    def test_request_date(self):
+        bucket_name = self.bucket_name + '-request-date'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        file_name = self.random_filename()
+        key = self.random_key('.js')
+        request_date = datetime.datetime.utcnow()
+        input = GenericInput(request_date)
+        self.client.put_object(bucket_name, key=key, generic_input=input)
+        self.client.download_file(bucket_name, key, file_name, generic_input=input)
+        self.client.upload_file(bucket_name, key, file_name, generic_input=input)
+        self.client.resumable_copy_object(bucket_name, 'test', bucket_name, key, generic_input=input)
+
+        # 设置过期的request_date
+        request_date = datetime.datetime.fromtimestamp(int(time.time()) - 16 * 60)
+        input = GenericInput(request_date)
+        with self.assertRaises(TosServerError) as cm:
+            self.client.put_object(bucket_name, key=key, generic_input=input)
+        with self.assertRaises(TosServerError) as cm:
+            self.client.download_file(bucket_name, key, file_name, generic_input=input)
+        with self.assertRaises(TosServerError) as cm:
+            self.client.upload_file(bucket_name, key, file_name, generic_input=input)
+        with self.assertRaises(TosServerError) as cm:
+            self.client.resumable_copy_object(bucket_name, 'test', bucket_name, key, generic_input=input)
 
     def wrapper_socket_io(self, init, crc, use_data_transfer_listener, ues_limiter, bucket_name):
         def progress(consumed_bytes, total_bytes, rw_once_bytes,

@@ -2,7 +2,6 @@
 import base64
 import hashlib
 import json
-import logging
 import warnings
 from datetime import datetime
 from typing import IO, Dict, Union
@@ -26,13 +25,12 @@ from .convertor import (convert_complete_multipart_upload_result,
                         convert_list_objects_result, convert_list_parts_result,
                         convert_upload_part_copy_result)
 from .http import Request, Response
+from .log import get_logger
 from .models import (AppendObjectResult, CreateBucketResult, GetObjectResult,
                      HeadBucketResult, HeadObjectResult, PutObjectResult,
                      RequestResult)
 from .utils import get_content_type, get_value, to_bytes, to_str, _format_endpoint, _get_host, _get_scheme, _if_map, \
     _make_virtual_host_uri, _get_virtual_host, _make_virtual_host_url, _cal_content_sha256
-
-logger = logging.getLogger(__name__)
 
 USER_AGENT = 'volc-tos-sdk-python/{0}'.format(__version__)
 
@@ -109,7 +107,7 @@ class TosClient():
             headers['x-tos-grant-write-acp'] = GrantWriteACP
 
         resp = self._req(bucket=Bucket, method='PUT', headers=headers)
-        logger.info(
+        get_logger().info(
             'create_bucket, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return CreateBucketResult(resp)
 
@@ -123,7 +121,7 @@ class TosClient():
         """
         warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, method='DELETE')
-        logger.info(
+        get_logger().info(
             'delete_bucket, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return RequestResult(resp)
 
@@ -136,7 +134,7 @@ class TosClient():
         """
         warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, method='HEAD')
-        logger.info(
+        get_logger().info(
             'head_bucket, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return HeadBucketResult(resp)
 
@@ -149,7 +147,7 @@ class TosClient():
         """
         warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(method='GET')
-        logger.info(
+        get_logger().info(
             'list_buckets, req id: {0}, status code: {1}'.format(resp.request_id, resp.status))
         return convert_list_buckets_result(resp)
 
@@ -181,7 +179,7 @@ class TosClient():
             params['marker'] = Marker
 
         resp = self._req(bucket=Bucket, method='GET', params=params)
-        logger.info(
+        get_logger().info(
             'list_objects, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return convert_list_objects_result(resp)
 
@@ -215,7 +213,7 @@ class TosClient():
             params['version-id-marker'] = VersionIdMarker
 
         resp = self._req(bucket=Bucket, method='GET', params=params)
-        logger.info(
+        get_logger().info(
             'list_object_versions, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id,
                                                                                       resp.status))
         return convert_list_object_versions_result(resp)
@@ -252,7 +250,7 @@ class TosClient():
             params['upload-id-marker'] = UploadIdMarker
 
         resp = self._req(bucket=Bucket, method='GET', params=params)
-        logger.info(
+        get_logger().info(
             'list_multipart_uploads, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id,
                                                                                         resp.status))
         return convert_list_multipart_uploads_result(resp)
@@ -277,7 +275,7 @@ class TosClient():
             params['part-number-marker'] = PartNumberMarker
 
         resp = self._req(bucket=Bucket, key=Key, method='GET', params=params)
-        logger.info('list_parts, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(
+        get_logger().info('list_parts, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(
             Bucket, Key, resp.request_id, resp.status))
         return convert_list_parts_result(resp)
 
@@ -293,7 +291,7 @@ class TosClient():
         """
         warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, key=Key, method='DELETE', params={'uploadId': UploadId})
-        logger.info(
+        get_logger().info(
             'abort_multipart_upload, bucket: {0}, key: {1}, uploadId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, UploadId, resp.request_id, resp.status))
         return RequestResult(resp)
@@ -370,7 +368,7 @@ class TosClient():
             headers['x-tos-server-side-encryption-customer-key-md5'] = SSECustomerKeyMD5
 
         resp = self._req(bucket=Bucket, key=Key, method='POST', params={'uploads': ''}, headers=headers)
-        logger.info(
+        get_logger().info(
             'create_multipart_upload, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(
                 Bucket, Key, resp.request_id, resp.status))
         return convert_create_multipart_upload_result(resp)
@@ -390,7 +388,7 @@ class TosClient():
         warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, key=Key, method='PUT', params={'uploadId': UploadId, 'partNumber': PartNumber},
                          data=Body)
-        logger.info(
+        get_logger().info(
             'upload_part, bucket: {0}, key: {1}, uploadId: {2}, partNumber: {3}, req id: {4}, status code: {5}'.format(
                 Bucket, Key, UploadId, PartNumber, resp.request_id, resp.status))
         return PutObjectResult(resp)
@@ -439,7 +437,7 @@ class TosClient():
 
         resp = self._req(bucket=Bucket, key=Key, method='PUT', params={'uploadId': UploadId, 'partNumber': PartNumber},
                          headers=headers)
-        logger.info(
+        get_logger().info(
             'upload_part_copy, bucket: {0}, key: {1}, uploadId: {2}, partNumber: {3}, req id: {4}, status code: {5}'.format(
                 Bucket, Key, UploadId, PartNumber, resp.request_id, resp.status))
         return convert_upload_part_copy_result(resp)
@@ -465,7 +463,7 @@ class TosClient():
         warnings.warn("please use TosClientV2", DeprecationWarning)
         data = json.dumps(MultipartUpload)
         resp = self._req(bucket=Bucket, key=Key, method='POST', params={'uploadId': UploadId}, data=data)
-        logger.info(
+        get_logger().info(
             'complete_multipart_upload, bucket: {0}, key: {1}, uploadId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, UploadId, resp.request_id, resp.status))
         return convert_complete_multipart_upload_result(resp)
@@ -547,7 +545,7 @@ class TosClient():
             headers['x-tos-server-side-encryption-customer-key-md5'] = SSECustomerKeyMD5
 
         resp = self._req(bucket=Bucket, key=Key, method='PUT', data=Body, headers=headers)
-        logger.info(
+        get_logger().info(
             'put_object, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(
                 Bucket, Key, resp.request_id, resp.status))
         return PutObjectResult(resp)
@@ -619,7 +617,7 @@ class TosClient():
             params['response-expires'] = ResponseExpires.strftime(GMT_DATE_FORMAT)
 
         resp = self._req(bucket=Bucket, key=Key, method='GET', headers=headers, params=params)
-        logger.info(
+        get_logger().info(
             'get_object, bucket: {0}, key: {1}, VersionId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return GetObjectResult(resp)
@@ -668,7 +666,7 @@ class TosClient():
         if VersionId:
             params['versionId'] = VersionId
         resp = self._req(bucket=Bucket, key=Key, method='HEAD', params=params, headers=headers)
-        logger.info(
+        get_logger().info(
             'head_object, bucket: {0}, key: {1}, versionId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return HeadObjectResult(resp)
@@ -688,7 +686,7 @@ class TosClient():
         if VersionId:
             params = {'versionId': VersionId}
         resp = self._req(bucket=Bucket, key=Key, params=params, method='DELETE')
-        logger.info(
+        get_logger().info(
             'delete_object, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(
                 Bucket, Key, resp.request_id, resp.status))
         return RequestResult(resp)
@@ -791,7 +789,7 @@ class TosClient():
             headers['x-tos-server-side-encryption-customer-key-md5'] = SSECustomerKeyMD5
 
         resp = self._req(bucket=Bucket, key=Key, method='PUT', headers=headers)
-        logger.info(
+        get_logger().info(
             'copy_object, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(Bucket, Key, resp.request_id,
                                                                                        resp.status))
         return convert_copy_object_result(resp)
@@ -875,7 +873,7 @@ class TosClient():
             headers['x-tos-server-side-encryption-customer-key-md5'] = SSECustomerKeyMD5
 
         resp = self._req(bucket=Bucket, key=Key, method='POST', data=Body, headers=headers, params=params)
-        logger.info(
+        get_logger().info(
             'append_object, bucket: {0}, key: {1}, req id: {2}, status code: {3}'.format(
                 Bucket, Key, resp.request_id, resp.status))
         return AppendObjectResult(resp)
@@ -941,7 +939,7 @@ class TosClient():
             data = json.dumps(AccessControlPolicy)
 
         resp = self._req(bucket=Bucket, key=Key, method='PUT', params=params, headers=headers, data=data)
-        logger.info(
+        get_logger().info(
             'put_object_acl, bucket: {0}, key: {1}, versionId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return RequestResult(resp)
@@ -960,7 +958,7 @@ class TosClient():
         if VersionId:
             params['versionId'] = VersionId
         resp = self._req(bucket=Bucket, key=Key, method='GET', params=params)
-        logger.info(
+        get_logger().info(
             'get_object_acl, bucket: {0}, key: {1}, versionId: {2}, req id: {3}, status code: {4}'.format(
                 Bucket, Key, VersionId, resp.request_id, resp.status))
         return convert_get_object_acl_result(resp)
@@ -976,7 +974,7 @@ class TosClient():
         """
         warnings.warn("please use TosClientV2", DeprecationWarning)
         resp = self._req(bucket=Bucket, key=Key, method='Post', headers=ObjectMetadata, params={'metadata': ''})
-        logger.info(
+        get_logger().info(
             'set_object_metadata, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id,
                                                                                      resp.status))
         return RequestResult(resp)
@@ -1004,7 +1002,7 @@ class TosClient():
         headers = {}
         headers['Content-MD5'] = to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))
         resp = self._req(bucket=Bucket, method='POST', data=data, headers=headers, params={'delete': ''})
-        logger.info(
+        get_logger().info(
             'delete_objects, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return convert_delete_objects_result(resp)
 
@@ -1041,7 +1039,7 @@ class TosClient():
         rsp = Response(res)
         if rsp.status >= 300:
             e = exceptions.make_exception(rsp)
-            logger.info('Exception: %s' % e)
+            get_logger().info('Exception: %s' % e)
             raise e
 
         content_length = get_value(rsp.headers, 'content-length', int)
