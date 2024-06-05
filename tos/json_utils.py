@@ -62,6 +62,8 @@ def to_put_bucket_cors_request(cors_rules: []):
             info['ExposeHeaders'] = cors_rule.expose_headers
         if cors_rule.max_age_seconds:
             info['MaxAgeSeconds'] = cors_rule.max_age_seconds
+        if cors_rule.response_vary:
+            info['ResponseVary'] = cors_rule.response_vary
         arr.append(info)
 
     data['CORSRules'] = arr

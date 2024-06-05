@@ -1,5 +1,13 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.6.9
+-------------
+- 增加：软链接相关接口
+- 增加：上传/拷贝对象等接口支持forbid_overwrite/if_match参数
+- 增加：创建桶/列举桶支持project_name参数
+- 增加：bucket_cors接口增加response_vary参数
+- 增加：generic_input参数
+
 Version 2.6.8
 -------------
 - 增加：BucketTagging相关接口

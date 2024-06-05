@@ -24,9 +24,9 @@ from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
 from .exceptions import TosClientError
+from .log import get_logger
 from .mine_type import TYPES_MAP
 
-logger = logging.getLogger(__name__)
 REGION_MAP = {
     'cn-beijing': 'tos-cn-beijing.volces.com',
     'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
@@ -701,7 +701,7 @@ class RateLimiter(object):
                 increment + self._current_amount, self._capacity)  # 令牌数量不能超过桶的容量
             if want > self._current_amount:  # 如果没有⾜够的令牌，则不能发送数据
                 time_to_wait = (want - self._current_amount) / self._rate
-                return TokenBucketResult(False, int(time_to_wait))
+                return TokenBucketResult(False, time_to_wait)
             self._last_consume_time = int(time.time())
             self._current_amount -= want
             return TokenBucketResult(True, 0)
@@ -978,7 +978,7 @@ class DnsCacheService(object):
                             else:
                                 v.immortal = True
                     except Exception as ex:
-                        logger.info('_refresh_cache exception, {}'.format(ex))
+                        get_logger().info('_refresh_cache exception, {}'.format(ex))
 
             self.async_started = True
             self.is_shutdown = False
@@ -1002,7 +1002,7 @@ class DnsCacheService(object):
             return self.cache[key]
         entry = CacheEntry(host, port, ip_list, expire)
         self.cache[key] = entry
-        logger.info('in-request: add cache address:{}'.format(key))
+        get_logger().info('in-request: add cache address:{}'.format(key))
         return entry
 
 
@@ -1110,12 +1110,12 @@ class LogInfo(object):
 
     def fail(self, func_name, e):
         end = time.perf_counter()
-        logger.info('after-request: {}  exception: {}, usedTime:{} s'.format(func_name, e, end - self.start))
+        get_logger().info('after-request: {}  exception: {}, usedTime:{} s'.format(func_name, e, end - self.start))
         raise e
 
     def success(self, func_name, res):
         end = time.perf_counter()
-        logger.info(
+        get_logger().info(
             'after-request: {} exec httpCode: {}, requestId: {}, usedTime: {} s'.format(func_name, res.status,
                                                                                         res.request_id,
                                                                                         end - self.start))

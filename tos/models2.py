@@ -37,6 +37,7 @@ class HeadBucketOutput(ResponseInfo):
         self.region = get_value(self.header, "x-tos-bucket-region")
         self.storage_class = get_value(self.header, "x-tos-storage-class", lambda x: convert_storage_class_type(x))
         self.az_redundancy = get_value(self.header, "x-tos-az-redundancy", lambda x: convert_az_redundancy_type(x))
+        self.project_name = get_value(self.header, "x-tos-project-name")
 
 
 class DeleteBucketOutput(ResponseInfo):
@@ -45,12 +46,14 @@ class DeleteBucketOutput(ResponseInfo):
 
 
 class ListedBucket(object):
-    def __init__(self, name: str, location: str, creation_date: str, extranet_endpoint: str, intranet_endpoint: str):
+    def __init__(self, name: str, location: str, creation_date: str, extranet_endpoint: str, intranet_endpoint: str,
+                 project_name: str = None):
         self.name = name
         self.location = location
         self.creation_date = creation_date
         self.extranet_endpoint = extranet_endpoint
         self.intranet_endpoint = intranet_endpoint
+        self.project_name = project_name
 
     def __str__(self):
         info = {'name': self.name, 'location': self.location, 'creation_date': self.creation_date,
@@ -87,7 +90,9 @@ class ListBucketsOutput(ResponseInfo):
                 get_value(bkt, 'Location'),
                 get_value(bkt, 'CreationDate'),
                 get_value(bkt, 'ExtranetEndpoint'),
-                get_value(bkt, 'IntranetEndpoint')))
+                get_value(bkt, 'IntranetEndpoint'),
+                get_value(bkt, 'ProjectName'),
+            ))
 
 
 class PutObjectOutput(ResponseInfo):
@@ -207,6 +212,7 @@ class HeadObjectOutput(ResponseInfo):
         self.restore_tier = get_value(resp.headers, "x-tos-restore-tier", lambda x: convert_tier_type(x))
         self.meta = CaseInsensitiveDict()
         self.object_type = get_value(resp.headers, "x-tos-object-type")
+        self.symlink_target_size = get_value(resp.headers, "x-tos-symlink-target-size", lambda x: int(x))
         if not self.object_type:
             self.object_type = "Normal"
 
@@ -278,7 +284,8 @@ class ListObjectsOutput(ResponseInfo):
                 etag=get_etag(object),
                 size=get_value(object, 'Size', int),
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
-                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
+                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
+                object_type=get_value(object, 'Type')
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -366,7 +373,8 @@ class ListObjectType2Output(ResponseInfo):
                 etag=get_etag(object),
                 size=get_value(object, 'Size', int),
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
-                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x))
+                hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
+                object_type=get_value(object, "Type")
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -392,7 +400,7 @@ class ListObjectType2Output(ResponseInfo):
 
 class ListedObject(object):
     def __init__(self, key: str, last_modified: datetime, etag: str, size: int, storage_class: StorageClassType,
-                 hash_crc64_ecma: str, owner: Owner = None):
+                 hash_crc64_ecma: str, owner: Owner = None, object_type=None):
         self.key = key
         self.last_modified = last_modified
         self.etag = etag
@@ -400,9 +408,11 @@ class ListedObject(object):
         self.owner = owner
         self.storage_class = storage_class
         self.hash_crc64_ecma = hash_crc64_ecma
+        self.object_type = object_type
 
     def __str__(self):
-        info = {"key": self.key, "last_modified": self.last_modified, "etag": self.etag, "size": self.size, "owner": self.owner,
+        info = {"key": self.key, "last_modified": self.last_modified, "etag": self.etag, "size": self.size,
+                "owner": self.owner,
                 "storage_class": self.storage_class, 'hash_crc64_ecma': self.hash_crc64_ecma}
 
         return str(info)
@@ -415,8 +425,10 @@ class ListedCommonPrefix(object):
 
 class ListedObjectVersion(ListedObject):
     def __init__(self, key: str, last_modified: datetime, etag: str, size: int, storage_class: StorageClassType,
-                 hash_crc64_ecma, owner: Owner = None, version_id: str = None, is_latest: bool = None):
-        super(ListedObjectVersion, self).__init__(key, last_modified, etag, size, storage_class, hash_crc64_ecma, owner)
+                 hash_crc64_ecma, owner: Owner = None, version_id: str = None, is_latest: bool = None,
+                 object_type=None):
+        super(ListedObjectVersion, self).__init__(key, last_modified, etag, size, storage_class, hash_crc64_ecma, owner,
+                                                  object_type)
         self.version_id = version_id
         self.is_latest = is_latest
 
@@ -475,7 +487,8 @@ class ListObjectVersionsOutput(ResponseInfo):
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 version_id=get_value(object, 'VersionId'),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
-                is_latest=get_value(object, "IsLatest", lambda x: bool(x))
+                is_latest=get_value(object, "IsLatest", lambda x: bool(x)),
+                object_type=get_value(object, 'Type')
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -531,7 +544,7 @@ class GetObjectACLOutput(ResponseInfo):
             get_value(data['Owner'], 'DisplayName'),
         )
 
-        grant_list = data['Grants'] or []
+        grant_list = data.get('Grants') or []
         for grant in grant_list:
             g = Grantee(
                 id=get_value(grant['Grantee'], 'ID'),
@@ -806,7 +819,8 @@ class GetBucketCorsOutput(ResponseInfo):
                 allowed_methods=get_value(rule, 'AllowedMethods'),
                 allowed_headers=get_value(rule, 'AllowedHeaders'),
                 expose_headers=get_value(rule, 'ExposeHeaders'),
-                max_age_seconds=get_value(rule, 'MaxAgeSeconds', lambda x: int(x))
+                max_age_seconds=get_value(rule, 'MaxAgeSeconds', lambda x: int(x)),
+                response_vary=get_value(rule, 'ResponseVary', lambda x: bool(x))
             ))
 
 
@@ -990,12 +1004,14 @@ class _PartToDo(object):
 class CORSRule(object):
     def __init__(self, allowed_origins: [] = None, allowed_methods: [] = None, allowed_headers: [] = None,
                  expose_headers: [] = None,
-                 max_age_seconds: int = None):
+                 max_age_seconds: int = None,
+                 response_vary: bool = None):
         self.allowed_origins = allowed_origins
         self.allowed_methods = allowed_methods
         self.allowed_headers = allowed_headers
         self.expose_headers = expose_headers
         self.max_age_seconds = max_age_seconds
+        self.response_vary = response_vary
 
 
 class Tag(object):
@@ -1669,18 +1685,33 @@ class DeleteBucketRealTimeLog(ResponseInfo):
 
 
 class ResumableCopyObjectOutput(object):
-    def __init__(self, resp: CompleteMultipartUploadOutput, ssec_algorithm, ssec_key_md5, encoding_type):
-        self.request_id = resp.request_id
-        self.id2 = resp.id2
-        self.status_code = resp.status_code
-        self.header = resp.header
-        self.bucket = resp.bucket
-        self.key = resp.key
-        self.upload_id = resp.request_id
-        self.etag = resp.etag
-        self.location = resp.location
-        self.version_id = resp.version_id
-        self.hash_crc64_ecma = resp.hash_crc64_ecma
+    def __init__(self, resp: CompleteMultipartUploadOutput = None, ssec_algorithm=None,
+                 ssec_key_md5=None, encoding_type=None, upload_id=None,
+                 copy_resp: CopyObjectOutput = None, bucket=None, key=None):
+        self.hash_crc64_ecma = None
+        self.bucket = bucket
+        self.key = key
+        if resp:
+            self.request_id = resp.request_id
+            self.id2 = resp.id2
+            self.status_code = resp.status_code
+            self.header = resp.header
+            self.bucket = resp.bucket
+            self.key = resp.key
+            self.etag = resp.etag
+            self.location = resp.location
+            self.version_id = resp.version_id
+            self.hash_crc64_ecma = resp.hash_crc64_ecma
+        if copy_resp:
+            self.request_id = copy_resp.request_id
+            self.id2 = copy_resp.id2
+            self.status_code = copy_resp.status_code
+            self.version_id = copy_resp.version_id
+            self.header = copy_resp.header
+            self.hash_crc64_ecma = get_value(copy_resp.header, "x-tos-hash-crc64ecma", lambda x: int(x))
+            self.etag = copy_resp.etag
+            self.location = get_value(copy_resp.header, 'Location')
+        self.upload_id = upload_id
         self.ssec_algorithm = ssec_algorithm
         self.ssec_key_md5 = ssec_key_md5
         self.encoding_type = encoding_type
@@ -1781,3 +1812,26 @@ class GetBucketTaggingOutput(ResponseInfo):
 class DeleteBucketTaggingOutput(ResponseInfo):
     def __init__(self, resp):
         super(DeleteBucketTaggingOutput, self).__init__(resp)
+
+
+class PutSymlinkOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutSymlinkOutput, self).__init__(resp)
+        self.version_id = get_value(resp.headers, "x-tos-version-id")
+
+
+class GetSymlinkOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetSymlinkOutput, self).__init__(resp)
+        self.version_id = get_value(resp.headers, "x-tos-version-id")
+        self.symlink_target_key = get_value(resp.headers, 'x-tos-symlink-target')
+        self.etag = get_etag(resp.headers)
+        self.last_modified = get_value(resp.headers, 'last-modified')
+        if self.last_modified:
+            self.last_modified = parse_gmt_time_to_utc_datetime(self.last_modified)
+        self.symlink_target_bucket = get_value(resp.headers, 'x-tos-symlink-bucket')
+
+
+class GenericInput(object):
+    def __init__(self, request_date: datetime = None):
+        self.request_date = request_date

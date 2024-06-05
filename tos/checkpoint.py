@@ -127,7 +127,7 @@ class BreakpointBase(object):
     def __init__(self, client, bucket, key, store: CheckPointStore, task_num,
                  parts_to_do, record: Dict,
                  size, rate_limiter, cancel_hook,
-                 datatransfer_listener, event_listener, traffic_limit):
+                 datatransfer_listener, event_listener, traffic_limit, generic_input):
         self.client = client
         self.bucket = bucket
         self.key = key
@@ -140,6 +140,7 @@ class BreakpointBase(object):
         self.event_listener = event_listener
         self.rate_limiter = rate_limiter
         self.traffic_limit = traffic_limit
+        self.generic_input = generic_input
         self.need_bytes = 0
         for part in parts_to_do:
             self.need_bytes += part.size
@@ -235,14 +236,14 @@ class _BreakpointUploader(BreakpointBase):
                  parts_to_update, upload_id, record: Dict,
                  size, ssec_algorithm, ssec_key, ssec_key_md5, rate_limiter, cancel_hook,
                  datatransfer_listener, upload_event_listener,
-                 file_path, traffic_limit):
+                 file_path, traffic_limit, generic_input):
 
         super(_BreakpointUploader, self).__init__(client=client, bucket=bucket, key=key, store=store, task_num=task_num,
                                                   parts_to_do=parts_to_update, record=record, size=size,
                                                   rate_limiter=rate_limiter, cancel_hook=cancel_hook,
                                                   datatransfer_listener=datatransfer_listener,
                                                   event_listener=upload_event_listener,
-                                                  traffic_limit=traffic_limit)
+                                                  traffic_limit=traffic_limit, generic_input=generic_input)
         self.filename = file_path
         self.task_num = task_num
         self.upload_id = upload_id
@@ -270,7 +271,8 @@ class _BreakpointUploader(BreakpointBase):
                                                  ssec_algorithm=self.ssec_algorithm,
                                                  ssec_key=self.ssec_key,
                                                  ssec_key_md5=self.ssec_key_md5,
-                                                 traffic_limit=self.traffic_limit)
+                                                 traffic_limit=self.traffic_limit,
+                                                 generic_input=self.generic_input)
             except Exception as e:
                 self._callback_part_fail(e, part)
                 raise e
@@ -280,7 +282,7 @@ class _BreakpointUploader(BreakpointBase):
                          hash_crc64_ecma=result.hash_crc64_ecma, is_completed=True))
 
     def _abort_task(self):
-        self.client.abort_multipart_upload(self.bucket, self.key, self.upload_id)
+        self.client.abort_multipart_upload(self.bucket, self.key, self.upload_id, generic_input=self.generic_input)
 
     def _delete_checkpoint(self):
         self.store.delete(self.bucket, self.key)
@@ -288,7 +290,8 @@ class _BreakpointUploader(BreakpointBase):
     def _last_task(self):
         try:
             parts = _cover_to_uploaded_parts(self.finished_parts)
-            result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts)
+            result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts,
+                                                           generic_input=self.generic_input)
             if self.client.enable_crc:
                 parts = sorted(self.finished_parts, key=lambda p: p.part_number)
                 download_crc = cal_crc_from_upload_parts(parts)
@@ -330,14 +333,16 @@ class _BreakpointResumableCopyObject(BreakpointBase):
                  src_bucket, src_object,
                  copy_source_if_match, copy_source_if_modified_since,
                  copy_source_if_none_match, copy_source_if_unmodified_since, src_version_id,
-                 copy_source_ssec_algorithm, copy_source_ssec_key, copy_source_ssec_key_md5, traffic_limit):
+                 copy_source_ssec_algorithm, copy_source_ssec_key, copy_source_ssec_key_md5, traffic_limit,
+                 generic_input):
         super(_BreakpointResumableCopyObject, self).__init__(client=client, bucket=bucket, key=key, store=store,
                                                              task_num=task_num,
                                                              parts_to_do=parts_to_update, record=record, size=size,
                                                              rate_limiter=rate_limiter, cancel_hook=cancel_hook,
                                                              datatransfer_listener=datatransfer_listener,
                                                              event_listener=upload_event_listener,
-                                                             traffic_limit=traffic_limit)
+                                                             traffic_limit=traffic_limit,
+                                                             generic_input=generic_input)
         self.upload_id = upload_id
         self.src_version_id = src_version_id
         self.ssec_algorithm = ssec_algorithm
@@ -369,7 +374,8 @@ class _BreakpointResumableCopyObject(BreakpointBase):
                                                  rate_limiter=self.rate_limiter,
                                                  ssec_algorithm=self.ssec_algorithm,
                                                  ssec_key=self.ssec_key,
-                                                 ssec_key_md5=self.ssec_key_md5)
+                                                 ssec_key_md5=self.ssec_key_md5,
+                                                 generic_input=self.generic_input)
             else:
                 result = self.client.upload_part_copy(self.bucket, self.key, self.upload_id, part.part_number,
                                                       self.src_bucket, self.src_object,
@@ -384,7 +390,8 @@ class _BreakpointResumableCopyObject(BreakpointBase):
                                                       ssec_key=self.ssec_key,
                                                       ssec_algorithm=self.ssec_algorithm,
                                                       ssec_key_md5=self.ssec_key_md5,
-                                                      traffic_limit=self.traffic_limit)
+                                                      traffic_limit=self.traffic_limit,
+                                                      generic_input=self.generic_input)
         except Exception as e:
             self._callback_part_fail(e, part)
             raise e
@@ -399,13 +406,14 @@ class _BreakpointResumableCopyObject(BreakpointBase):
     def _last_task(self, **kwargs):
         try:
             parts = _cover_to_uploaded_parts(self.finished_parts)
-            result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts)
+            result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts,
+                                                           generic_input=self.generic_input)
             return result
         except Exception as e:
             raise TaskCompleteMultipartError(e)
 
     def _abort_task(self):
-        self.client.abort_multipart_upload(self.bucket, self.key, self.upload_id)
+        self.client.abort_multipart_upload(self.bucket, self.key, self.upload_id, generic_input=self.generic_input)
 
     def _finish_part(self, part_info):
         self._callback_part_success(part_info)
@@ -445,14 +453,15 @@ class _BreakpointDownloader(BreakpointBase):
                  parts_to_download, record: Dict, etag,
                  datatransfer_listener, download_event_listener,
                  rate_limiter, cancel_hook, version_id, size,
-                 ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit):
+                 ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit, generic_input):
         super(_BreakpointDownloader, self).__init__(client=client, bucket=bucket, key=key, store=store,
                                                     task_num=task_num,
                                                     parts_to_do=parts_to_download, record=record, size=size,
                                                     rate_limiter=rate_limiter, cancel_hook=cancel_hook,
                                                     datatransfer_listener=datatransfer_listener,
                                                     event_listener=download_event_listener,
-                                                    traffic_limit=traffic_limit)
+                                                    traffic_limit=traffic_limit,
+                                                    generic_input=generic_input)
         self.etag = etag
         self.version_id = version_id
         self.file_path = file_path
@@ -489,7 +498,8 @@ class _BreakpointDownloader(BreakpointBase):
                                                       ssec_key=self.ssec_key,
                                                       ssec_key_md5=self.ssec_key_md5,
                                                       version_id=self.version_id,
-                                                      traffic_limit=self.traffic_limit)
+                                                      traffic_limit=self.traffic_limit,
+                                                      generic_input=self.generic_input)
                 if self.client.enable_crc:
                     part.part_crc = crc
             except Exception as e:
