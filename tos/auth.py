@@ -12,10 +12,9 @@ import pytz
 from .consts import DATE_FORMAT, UNSIGNED_PAYLOAD, LAST_MODIFY_TIME_DATE_FORMAT, SIGNATURE_QUERY_LOWER, V4_PREFIX
 from .credential import FederationCredentials, StaticCredentialsProvider
 from .exceptions import TosClientError
-from .models2 import PreSignedPostSignatureOutPut, ContentLengthRange
+from .log import get_logger
+from .models2 import PreSignedPostSignatureOutPut, ContentLengthRange, GenericInput
 from .utils import to_bytes, _param_to_quoted_query
-
-logger = logging.getLogger(__name__)
 
 
 def _canonical_query_string_params(params):
@@ -140,7 +139,7 @@ class AuthBase():
         if self.credential.get_security_token():
             req.headers["x-tos-security-token"] = self.credential.get_security_token()
 
-        date = datetime.datetime.utcnow().strftime(DATE_FORMAT)
+        date = get_date(req.generic_input)
         req.headers['Date'] = date
         req.headers['x-tos-date'] = date
 
@@ -204,20 +203,20 @@ class AuthBase():
     def _make_signature(self, date, req=None, string_to_sign=None, signed_headers=None):
         if not string_to_sign:
             canonical_request = _canonical_request(req, signed_headers)
-            logger.debug("pre-request: canonical_request:\n%s", canonical_request)
+            get_logger().debug("pre-request: canonical_request:\n%s", canonical_request)
             string_to_sign = self._string_to_sign(canonical_request, date)
-        logger.debug("pre-request: string_to_sign:\n%s", string_to_sign)
+        get_logger().debug("pre-request: string_to_sign:\n%s", string_to_sign)
         signature = self._signature(string_to_sign, date)
-        logger.debug("pre-request: signature:\n%s", signature)
+        get_logger().debug("pre-request: signature:\n%s", signature)
         return signature
 
     def _make_x_tos_policy_signature(self, date, params):
         canonical_request = _x_tos_policy_canonical_request(params)
-        logger.debug("pre-request: canonical_request:\n%s", canonical_request)
+        get_logger().debug("pre-request: canonical_request:\n%s", canonical_request)
         string_to_sign = self._string_to_sign(canonical_request, date)
-        logger.debug("pre-request: string_to_sign:\n%s", string_to_sign)
+        get_logger().debug("pre-request: string_to_sign:\n%s", string_to_sign)
         signature = self._signature(string_to_sign, date)
-        logger.debug("pre-request: signature:\n%s", signature)
+        get_logger().debug("pre-request: signature:\n%s", signature)
         return signature
 
     def _inject_signature_to_request(self, signature, date, signed_headers):
@@ -283,3 +282,10 @@ class AnonymousAuth(object):
     def x_tos_post_sign(self, expires: int, conditions: []):
         params = {'X-Tos-Policy': base64.b64encode(json.dumps(_get_policy(conditions)).encode('utf-8')).decode('utf-8')}
         return '&'.join(_param_to_quoted_query(k, v) for k, v in params.items())
+
+
+def get_date(generic_input: GenericInput = None):
+    if generic_input:
+        if generic_input.request_date:
+            return generic_input.request_date.strftime(DATE_FORMAT)
+    return datetime.datetime.utcnow().strftime(DATE_FORMAT)

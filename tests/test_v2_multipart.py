@@ -247,6 +247,12 @@ class TestMultipart(TosTestBase):
         content = random_bytes(1024 * 1024 * 5)
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
+
+        self.client.put_object(bucket=bucket_name, key=key)
+        with self.assertRaises(TosServerError):
+            self.client.create_multipart_upload(bucket=bucket_name, key=key, forbid_overwrite=True)
+        self.client.delete_object(bucket=bucket_name, key=key)
+
         resp = self.client.create_multipart_upload(bucket=bucket_name, key=key)
         for i in range(2):
             self.client.upload_part(bucket=bucket_name, key=key, upload_id=resp.upload_id, part_number=i + 1,

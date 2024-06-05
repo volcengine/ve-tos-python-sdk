@@ -9,13 +9,14 @@ from .utils import get_value, to_bytes, _param_to_quoted_query
 
 
 class Request(object):
-    def __init__(self, method, url, path, host, data=None, params=None, headers=None):
+    def __init__(self, method, url, path, host, data=None, params=None, headers=None, generic_input=None):
         self.method = method
         self.url = url
         self.path = path
         self.data = to_bytes(data)
         self.params = params or {}
         self.headers = headers or {}
+        self.generic_input = generic_input
 
         self.headers['Host'] = host
 
