@@ -595,7 +595,7 @@ def _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWr
 
 
 def _get_put_symlink_headers(TargetKey, TargetBucket, ACL, StorageClass, Metadata, ForbidOverwrite):
-    headers = {"x-tos-symlink-target": TargetKey}
+    headers = {"x-tos-symlink-target": urllib.parse.quote(TargetKey, '/~')}
     if TargetBucket:
         headers["x-tos-symlink-bucket"] = TargetBucket
     if ACL:

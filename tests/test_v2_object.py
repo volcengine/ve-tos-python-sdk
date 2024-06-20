@@ -1429,7 +1429,7 @@ class TestObject(TosTestBase):
         self.client2.create_bucket(bucket_name2)
         self.bucket_delete.append(bucket_name2)
 
-        dst_key = 'dst_key'
+        dst_key = 'abc中文测试%1 ? # */~'
         symlink_key = 'symlink_key'
         content = random_bytes(100)
         self.client2.put_object(bucket_name, dst_key, content=content)

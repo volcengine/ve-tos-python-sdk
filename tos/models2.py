@@ -1824,7 +1824,7 @@ class GetSymlinkOutput(ResponseInfo):
     def __init__(self, resp):
         super(GetSymlinkOutput, self).__init__(resp)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
-        self.symlink_target_key = get_value(resp.headers, 'x-tos-symlink-target')
+        self.symlink_target_key = urllib.parse.unquote_plus(get_value(resp.headers, 'x-tos-symlink-target'))
         self.etag = get_etag(resp.headers)
         self.last_modified = get_value(resp.headers, 'last-modified')
         if self.last_modified:
