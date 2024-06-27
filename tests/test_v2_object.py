@@ -324,8 +324,18 @@ class TestObject(TosTestBase):
         key = self.random_key('.js')
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
-        conn = http.client.HTTPConnection('www.volcengine.com', 80)
-        conn.request('GET', '/')
+        key2 = self.random_key('.js')
+        self.client.put_object(bucket_name, key2, content=random_bytes(20), acl=ACLType.ACL_Public_Read_Write)
+
+        endpoint = self.endpoint
+        if self.endpoint.startswith('http://'):
+            endpoint = self.endpoint[7:]
+        elif self.endpoint.startswith('https://'):
+            endpoint = self.endpoint[:8]
+        bucket_endpoint = '{}.{}'.format(bucket_name, endpoint)
+        object_endpoint = bucket_endpoint + '/' + key2
+        conn = http.client.HTTPConnection(bucket_endpoint)
+        conn.request('GET', '/'+key2)
         content = conn.getresponse()
 
         def generator():
@@ -351,18 +361,20 @@ class TestObject(TosTestBase):
 
         self.client.put_object(bucket_name, key, content=content)
         out = self.client.get_object(bucket_name, key)
-        conn = http.client.HTTPConnection('www.volcengine.com', 80)
-        conn.request('GET', '/')
+        conn = http.client.HTTPConnection(bucket_endpoint)
+        conn.request('GET', '/' + key2)
         content = conn.getresponse()
         buf = b''
         for chuck in content:
             buf += chuck
         self.assertEqual(len(buf), len(out.read()))
 
-        input = requests.get('https://www.volcengine.com')
+        if not object_endpoint.startswith('http://') or not object_endpoint.startswith('https://'):
+            object_endpoint = 'http://' + object_endpoint
+        input = requests.get(object_endpoint)
         self.client.put_object(bucket_name, key, content=input)
         out = self.client.get_object(bucket_name, key)
-        self.assertEqual(len(out.read()), len(requests.get('https://www.volcengine.com').text))
+        self.assertEqual(len(out.read()), len(requests.get(object_endpoint).text))
         conn.close()
 
     def test_object_with_iterm(self):
@@ -1096,11 +1108,26 @@ class TestObject(TosTestBase):
 
         self.client.create_bucket(bucket=bucket_fetch)
         self.client.put_object(bucket=bucket_fetch, key=key, acl=ACLType.ACL_Public_Read_Write)
-        url = 'http://{}.{}'.format(bucket_fetch, self.endpoint) + '/' + key
+        endpoint = self.endpoint
+        if self.endpoint.startswith('http://'):
+            endpoint = self.endpoint[7:]
+        elif self.endpoint.startswith('https://'):
+            endpoint = self.endpoint[:8]
+
+        url = 'http://{}.{}'.format(bucket_fetch, endpoint) + '/' + key
         self.client.create_bucket(bucket=bucket_name)
-        out = self.client.put_fetch_task(bucket=bucket_name, key=key, url=url)
+        raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
+        meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
+        out = self.client.put_fetch_task(bucket=bucket_name, key=key, url=url, meta=meta,
+                                         acl=ACLType.ACL_Public_Read_Write,
+                                         storage_class=StorageClassType.Storage_Class_Ia)
         self.assertIsNotNone(out.task_id)
-        time.sleep(10)
+        get_out = self.client.get_fetch_task(bucket=bucket_name, task_id=out.task_id)
+        self.assertEqual(get_out.task.meta['name'], meta['name'])
+        self.assertEqual(get_out.task.meta['special'], meta['special'])
+        self.assertEqual(get_out.task.meta[raw], meta[raw])
+        self.assertEqual(get_out.task.acl, ACLType.ACL_Public_Read_Write)
+        self.assertEqual(get_out.task.storage_class, StorageClassType.Storage_Class_Ia)
 
     def test_post_object(self):
         bucket_name = self.bucket_name + '-post-object'
@@ -1429,7 +1456,7 @@ class TestObject(TosTestBase):
         self.client2.create_bucket(bucket_name2)
         self.bucket_delete.append(bucket_name2)
 
-        dst_key = 'dst_key'
+        dst_key = 'abc中文测试%1 ? # */~'
         symlink_key = 'symlink_key'
         content = random_bytes(100)
         self.client2.put_object(bucket_name, dst_key, content=content)

@@ -8,7 +8,7 @@ from .enum import CannedType, GranteeType, PermissionType, StorageClassType, Red
     StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, \
     convert_storage_class_type, convert_az_redundancy_type, convert_permission_type, convert_grantee_type, \
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
-    convert_protocol_type, convert_cert_status, TierType, convert_tier_type
+    convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
@@ -1343,6 +1343,67 @@ class PutFetchTaskOutput(ResponseInfo):
         self.task_id = get_value(data, 'TaskId')
 
 
+class FetchTask(object):
+    def __init__(self, bucket: str = None, key: str = None, url: str = None, ignore_same_key: bool = None,
+                 content_md5: str = None, callback_url: str = None, callback_host: str = None,
+                 callback_body_type: str = None, callback_body: str = None, storage_class: StorageClassType = None,
+                 acl: ACLType = None, grant_full_control: str = None, grant_read: str = None,
+                 grant_read_acp: str = None, grant_write_acp: str = None, ssec_algorithm: str = None,
+                 ssec_key: str = None, ssec_key_md5: str = None, meta: dict = None):
+        self.bucket = bucket
+        self.key = key
+        self.url = url
+        self.ignore_same_key = ignore_same_key
+        self.content_md5 = content_md5
+        self.callback_url = callback_url
+        self.callback_host = callback_host
+        self.callback_body_type = callback_body_type
+        self.callback_body = callback_body
+        self.storage_class = storage_class
+        self.acl = acl
+        self.grant_full_control = grant_full_control
+        self.grant_read = grant_read
+        self.grant_read_acp = grant_read_acp
+        self.grant_write_acp = grant_write_acp
+        self.ssec_algorithm = ssec_algorithm
+        self.ssec_key = ssec_key
+        self.ssec_key_md5 = ssec_key_md5
+        self.meta = meta
+
+
+class GetFetchTaskOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetFetchTaskOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.state = get_value(data, 'State')
+        self.err = get_value(data, 'Err')
+        task = get_value(data, 'Task')
+        meta = {}
+        for m in task.get('UserMeta', []):
+            meta[m['Key']] = m['Value']
+        meta = meta_header_decode(meta)
+        self.task = FetchTask(
+            bucket=get_value(task, 'Bucket'),
+            key=get_value(task, 'Key'),
+            url=get_value(task, 'URL'),
+            ignore_same_key=get_value(task, 'IgnoreSameKey', lambda x: bool(x)),
+            callback_url=get_value(task, 'CallBackURL'),
+            callback_host=get_value(task, 'CallbackHost'),
+            callback_body=get_value(task, 'CallBackBody'),
+            callback_body_type=get_value(task, 'CallBackBodyType'),
+            storage_class=get_value(task, 'StorageClass', lambda x: StorageClassType(x)),
+            acl=get_value(task, 'Acl', lambda x: ACLType(x)),
+            grant_full_control=get_value(task, 'GrantFullControl'),
+            grant_read=get_value(task, 'GrantRead'),
+            grant_read_acp=get_value(task, 'GrantReadAcp'),
+            grant_write_acp=get_value(task, 'GrantWriteAcp'),
+            ssec_algorithm=get_value(task, 'SSECAlgorithm'),
+            ssec_key=get_value(task, 'SSECKey'),
+            ssec_key_md5=get_value(task, 'SSECKeyMd5'),
+            meta=meta
+        )
+
+
 class PutBucketReplicationOutput(ResponseInfo):
     def __init__(self, resp):
         super(PutBucketReplicationOutput, self).__init__(resp)
@@ -1824,7 +1885,7 @@ class GetSymlinkOutput(ResponseInfo):
     def __init__(self, resp):
         super(GetSymlinkOutput, self).__init__(resp)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
-        self.symlink_target_key = get_value(resp.headers, 'x-tos-symlink-target')
+        self.symlink_target_key = urllib.parse.unquote_plus(get_value(resp.headers, 'x-tos-symlink-target'))
         self.etag = get_etag(resp.headers)
         self.last_modified = get_value(resp.headers, 'last-modified')
         if self.last_modified:

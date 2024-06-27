@@ -69,7 +69,7 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       PolicySignatureCondition, RestoreObjectOutput, RestoreJobParameters, RenameObjectOutput,
                       PutBucketRenameOutput, DeleteBucketRenameOutput, GetBucketRenameOutput, PutBucketTaggingOutput,
                       DeleteBucketTaggingOutput, GetBucketTaggingOutput, PutSymlinkOutput, GetSymlinkOutput,
-                      GenericInput)
+                      GenericInput, GetFetchTaskOutput)
 from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
@@ -595,7 +595,7 @@ def _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWr
 
 
 def _get_put_symlink_headers(TargetKey, TargetBucket, ACL, StorageClass, Metadata, ForbidOverwrite):
-    headers = {"x-tos-symlink-target": TargetKey}
+    headers = {"x-tos-symlink-target": urllib.parse.quote(TargetKey, '/~')}
     if TargetBucket:
         headers["x-tos-symlink-bucket"] = TargetBucket
     if ACL:
@@ -3351,10 +3351,25 @@ class TosClientV2(TosClient):
         data = to_fetch_object(url, key, ignore_same_key, hex_md5)
         data = json.dumps(data)
 
-        resp = self._req(bucket=bucket, key=key, params={'fetchTask': ''}, headers=headers,
+        resp = self._req(bucket=bucket, params={'fetchTask': ''}, headers=headers,
                          method=HttpMethodType.Http_Method_Post.value, data=data, generic_input=generic_input)
 
         return PutFetchTaskOutput(resp)
+
+    def get_fetch_task(self, bucket: str, task_id: str,
+                       generic_input: GenericInput = None) -> GetFetchTaskOutput:
+        """ 获取 fetch 任务
+
+        :param bucket: 桶名
+        :param task_id: 任务id
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: GetFetchTaskOutput
+        """
+
+        param = {'fetchTask': '', 'taskId': task_id}
+        resp = self._req(bucket=bucket, params=param, method=HttpMethodType.Http_Method_Get.value,
+                         generic_input=generic_input)
+        return GetFetchTaskOutput(resp)
 
     def put_bucket_replication(self, bucket: str, role: str,
                                rules: list, generic_input: GenericInput = None) -> PutBucketReplicationOutput:
