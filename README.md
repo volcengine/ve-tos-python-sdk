@@ -51,7 +51,7 @@ You can put your file as an object into your own bucket.
 ```python
 # call put_object to upload you data to the TOS                     
 client.put_object(bucket_name, object_key, content="123")
-assert resp.status == 200       
+assert resp.status_code == 200       
 ```
 ## Get Object
 You can download objects in the TOS bucket through our SDK.

@@ -231,7 +231,7 @@ class TestBucket(TosTestBase):
             redirect=Redirect(
                 redirect_type=RedirectType.Mirror,
                 fetch_source_on_redirect=True,
-                public_source=PublicSource(SourceEndpoint(primary=['http://tosv.byted.org/obj/tostest/'])),
+                public_source=PublicSource(SourceEndpoint(primary=['http://test.com/obj/tostest/'])),
                 pass_query=True,
                 follow_redirect=True,
                 mirror_header=MirrorHeader(pass_all=True, pass_headers=['aaa', 'bbb'], remove=['xxx', 'xxx']),
@@ -253,7 +253,7 @@ class TestBucket(TosTestBase):
         self.assertEqual(get_out.rules[0].redirect.mirror_header.pass_headers, ['aaa', 'bbb'])
         self.assertEqual(get_out.rules[0].redirect.mirror_header.remove, ['xxx', 'xxx'])
         self.assertEqual(get_out.rules[0].redirect.public_source.source_endpoint.primary,
-                         ['http://tosv.byted.org/obj/tostest/'])
+                         ['http://test.com/obj/tostest/'])
         self.assertEqual(get_out.rules[0].redirect.public_source.fixed_endpoint, None)
         self.assertEqual(get_out.rules[0].redirect.transform.with_key_prefix, 'prefix')
         self.assertEqual(get_out.rules[0].redirect.transform.with_key_suffix, 'suffix')
