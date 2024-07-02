@@ -1377,31 +1377,33 @@ class GetFetchTaskOutput(ResponseInfo):
         data = resp.json_read()
         self.state = get_value(data, 'State')
         self.err = get_value(data, 'Err')
+        self.task = None
         task = get_value(data, 'Task')
-        meta = {}
-        for m in task.get('UserMeta', []):
-            meta[m['Key']] = m['Value']
-        meta = meta_header_decode(meta)
-        self.task = FetchTask(
-            bucket=get_value(task, 'Bucket'),
-            key=get_value(task, 'Key'),
-            url=get_value(task, 'URL'),
-            ignore_same_key=get_value(task, 'IgnoreSameKey', lambda x: bool(x)),
-            callback_url=get_value(task, 'CallBackURL'),
-            callback_host=get_value(task, 'CallbackHost'),
-            callback_body=get_value(task, 'CallBackBody'),
-            callback_body_type=get_value(task, 'CallBackBodyType'),
-            storage_class=get_value(task, 'StorageClass', lambda x: StorageClassType(x)),
-            acl=get_value(task, 'Acl', lambda x: ACLType(x)),
-            grant_full_control=get_value(task, 'GrantFullControl'),
-            grant_read=get_value(task, 'GrantRead'),
-            grant_read_acp=get_value(task, 'GrantReadAcp'),
-            grant_write_acp=get_value(task, 'GrantWriteAcp'),
-            ssec_algorithm=get_value(task, 'SSECAlgorithm'),
-            ssec_key=get_value(task, 'SSECKey'),
-            ssec_key_md5=get_value(task, 'SSECKeyMd5'),
-            meta=meta
-        )
+        if task:
+            meta = {}
+            for m in task.get('UserMeta', []):
+                meta[m['Key']] = m['Value']
+            meta = meta_header_decode(meta)
+            self.task = FetchTask(
+                bucket=get_value(task, 'Bucket'),
+                key=get_value(task, 'Key'),
+                url=get_value(task, 'URL'),
+                ignore_same_key=get_value(task, 'IgnoreSameKey', lambda x: bool(x)),
+                callback_url=get_value(task, 'CallbackURL'),
+                callback_host=get_value(task, 'CallbackHost'),
+                callback_body=get_value(task, 'CallbackBody'),
+                callback_body_type=get_value(task, 'CallbackBodyType'),
+                storage_class=get_value(task, 'StorageClass', lambda x: convert_storage_class_type(x)),
+                acl=get_value(task, 'Acl', lambda x: ACLType(x)),
+                grant_full_control=get_value(task, 'GrantFullControl'),
+                grant_read=get_value(task, 'GrantRead'),
+                grant_read_acp=get_value(task, 'GrantReadAcp'),
+                grant_write_acp=get_value(task, 'GrantWriteAcp'),
+                ssec_algorithm=get_value(task, 'SSECAlgorithm'),
+                ssec_key=get_value(task, 'SSECKey'),
+                ssec_key_md5=get_value(task, 'SSECKeyMd5'),
+                meta=meta
+            )
 
 
 class PutBucketReplicationOutput(ResponseInfo):
