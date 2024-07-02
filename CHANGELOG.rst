@@ -1,5 +1,9 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.6.11
+-------------
+- 修复：get_fetch_task接口
+
 Version 2.6.10
 -------------
 - 增加：get_fetch_task接口
