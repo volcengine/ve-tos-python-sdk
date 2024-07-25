@@ -26,6 +26,7 @@ from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirective
 from .exceptions import TosClientError
 from .log import get_logger
 from .mine_type import TYPES_MAP
+from io import StringIO
 
 REGION_MAP = {
     'cn-beijing': 'tos-cn-beijing.volces.com',
@@ -587,6 +588,10 @@ def init_content(data, can_reset=None, init_offset=None):
     if not (hasattr(data, 'seek') and hasattr(data, 'tell')):
         return add_Background_func(data, can_reset=True)
 
+    if isinstance(data, StringIO):
+        data = data.read()
+        return add_Background_func(data, can_reset=True)
+
     # 兜底不可reset
     return add_Background_func(data, can_reset=False)
 
@@ -600,6 +605,7 @@ def add_Background_func(data, can_reset=False, init_offset=None, size=None):
     3. size 为空 但具备 __iter__ 直接封装为_IterableAdapter、通过http chuck方式发送
     4. size 不为空，直接封装为 _ReaderAdapter
     """
+
     data = to_bytes(data)
     if size is None:
         size = _get_size(data)

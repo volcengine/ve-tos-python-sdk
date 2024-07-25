@@ -8,6 +8,7 @@ import time
 import unittest
 from io import StringIO, BytesIO
 
+import crcmod
 import requests
 
 import tos
@@ -40,6 +41,36 @@ def _get_host_schema(endpoint):
 
 
 class TestObject(TosTestBase):
+
+    def test_crc64(self):
+        bucket_name = self.bucket_name + "-test-crc"
+        self.bucket_delete.append(bucket_name)
+        key = self.random_key()
+        do_crc64 = crcmod.mkCrcFun(0x142F0E1EBA9EA3693, initCrc=0, xorOut=0xffffffffffffffff, rev=True)
+        data1 = "Hello TOS"
+        data2 = "Hello TOS 中文字符"
+        c1 = do_crc64(data1.encode())
+        c2 = do_crc64(data2.encode())
+        print("c1:{}, c2:{}".format(c1, c2))
+        content1 = StringIO(data1)
+        content2 = StringIO(data2)
+        self.client.create_bucket(bucket_name)
+        rsp = self.client.put_object(bucket=bucket_name, key=key, content=content1)
+        print('request_id_1: {}'.format(rsp.request_id))
+        print('crc64_1: {}'.format(rsp.hash_crc64_ecma))
+        assert rsp.hash_crc64_ecma == c1
+
+        rsp = self.client.put_object(bucket=bucket_name, key=key, content=content2)
+        print('request_id_2: {}'.format(rsp.request_id))
+        print('crc64_2: {}'.format(rsp.hash_crc64_ecma))
+        assert rsp.hash_crc64_ecma == c2
+        rsp = self.client.get_object(bucket=bucket_name, key=key)
+        value = rsp.read()
+        assert len(value) == len(data2.encode())
+        self.assertEqual(value.decode('utf-8'), data2)
+        self.client.delete_object(bucket=bucket_name, key=key)
+        self.client.delete_bucket(bucket=bucket_name)
+
     def test_object(self):
         bucket_name = self.bucket_name + '-test-object'
         self.bucket_delete.append(bucket_name)
