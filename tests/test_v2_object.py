@@ -6,8 +6,10 @@ import http.client as httplib
 import os
 import time
 import unittest
+import urllib.parse
 from io import StringIO, BytesIO
 
+import crcmod
 import requests
 
 import tos
@@ -17,11 +19,12 @@ from tos.consts import MIN_TRAFFIC_LIMIT
 from tos.credential import EnvCredentialsProvider
 from tos.enum import (ACLType, AzRedundancyType, DataTransferType,
                       GranteeType, MetadataDirectiveType, PermissionType,
-                      StorageClassType, VersioningStatusType, TierType, CopyEventType, HttpMethodType)
+                      StorageClassType, VersioningStatusType, TierType, CopyEventType, HttpMethodType,
+                      convert_storage_class_type)
 from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import Deleted, Grant, Grantee, ListObjectsOutput, Owner, ObjectTobeDeleted, Tag, \
     PostSignatureCondition, UploadedPart, PolicySignatureCondition, RestoreJobParameters, GenericInput
-from tos.utils import RateLimiter
+from tos.utils import RateLimiter, meta_header_encode, meta_header_decode
 
 
 def get_socket_io():
@@ -40,6 +43,36 @@ def _get_host_schema(endpoint):
 
 
 class TestObject(TosTestBase):
+
+    def test_crc64(self):
+        bucket_name = self.bucket_name + "-test-crc"
+        self.bucket_delete.append(bucket_name)
+        key = self.random_key()
+        do_crc64 = crcmod.mkCrcFun(0x142F0E1EBA9EA3693, initCrc=0, xorOut=0xffffffffffffffff, rev=True)
+        data1 = "Hello TOS"
+        data2 = "Hello TOS 中文字符"
+        c1 = do_crc64(data1.encode())
+        c2 = do_crc64(data2.encode())
+        print("c1:{}, c2:{}".format(c1, c2))
+        content1 = StringIO(data1)
+        content2 = StringIO(data2)
+        self.client.create_bucket(bucket_name)
+        rsp = self.client.put_object(bucket=bucket_name, key=key, content=content1)
+        print('request_id_1: {}'.format(rsp.request_id))
+        print('crc64_1: {}'.format(rsp.hash_crc64_ecma))
+        assert rsp.hash_crc64_ecma == c1
+
+        rsp = self.client.put_object(bucket=bucket_name, key=key, content=content2)
+        print('request_id_2: {}'.format(rsp.request_id))
+        print('crc64_2: {}'.format(rsp.hash_crc64_ecma))
+        assert rsp.hash_crc64_ecma == c2
+        rsp = self.client.get_object(bucket=bucket_name, key=key)
+        value = rsp.read()
+        assert len(value) == len(data2.encode())
+        self.assertEqual(value.decode('utf-8'), data2)
+        self.client.delete_object(bucket=bucket_name, key=key)
+        self.client.delete_bucket(bucket=bucket_name)
+
     def test_object(self):
         bucket_name = self.bucket_name + '-test-object'
         self.bucket_delete.append(bucket_name)
@@ -110,14 +143,23 @@ class TestObject(TosTestBase):
             content = content_io
 
     def test_with_string_io(self):
-        io = StringIO('a')
-        io.seek(0)
+        io = StringIO('哈哈')
+        io.seek(1)
         bucket_name = self.bucket_name + 'string-io'
         self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
         self.client.put_object(bucket=bucket_name, key="2", content=io)
         out = self.client.get_object(bucket=bucket_name, key='2')
-        self.assertEqual(out.read(), b'a')
+        self.assertEqual(out.read(), '哈'.encode('utf8'))
+        io.seek(2)
+        self.client.put_object(bucket=bucket_name, key="2", content=io)
+        out = self.client.get_object(bucket=bucket_name, key='2')
+        self.assertEqual(out.read(), b'')
+        io = StringIO('')
+        io.seek(1)
+        self.client.put_object(bucket=bucket_name, key="2", content=io)
+        out = self.client.get_object(bucket=bucket_name, key='2')
+        self.assertEqual(out.read(), b'')
         self.client.put_object(bucket=bucket_name, key='4', content=b'')
 
     def test_put_with_options(self):
@@ -335,7 +377,7 @@ class TestObject(TosTestBase):
         bucket_endpoint = '{}.{}'.format(bucket_name, endpoint)
         object_endpoint = bucket_endpoint + '/' + key2
         conn = http.client.HTTPConnection(bucket_endpoint)
-        conn.request('GET', '/'+key2)
+        conn.request('GET', '/' + key2)
         content = conn.getresponse()
 
         def generator():
@@ -620,22 +662,22 @@ class TestObject(TosTestBase):
         key = self.random_key('.js')
         content = random_bytes(1024)
 
-        self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Multi_Az)
+        self.client.create_bucket(bucket_name)
         self.bucket_delete.append(bucket_name)
-        self.client.put_object(bucket_name, key=key, content=content)
-        list_object_out = self.client.list_objects(bucket_name)
+        raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
+        meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
+        self.client.put_object(bucket_name, key=key, content=content, meta=meta)
+        list_object_out = self.client.list_objects(bucket_name, fetch_meta=True)
         self.assertEqual(list_object_out.name, bucket_name)
         self.assertFalse(list_object_out.is_truncated)
         self.assertEqual(list_object_out.max_keys, 1000)
         self.assertTrue(len(list_object_out.contents) > 0)
 
-        object = list_object_out.contents[0]
-        self.assertTrue(len(object.etag) > 0)
-        self.assertTrue(len(object.key) > 0)
-        self.assertTrue(object.last_modified is not None)
-        self.assertTrue(object.size == 1024)
-        self.assertTrue(len(object.owner.id) > 0)
-        self.assertTrue(object.storage_class, StorageClassType.Storage_Class_Standard)
+        obj = list_object_out.contents[0]
+        self.assertTrue(obj.storage_class, StorageClassType.Storage_Class_Standard)
+        self.assertTrue(obj.meta['name'], meta['name'])
+        self.assertTrue(obj.meta['special'], meta['special'])
+        self.assertTrue(obj.meta[raw], meta[raw])
 
     def test_list_object_full_func(self):
         bucket_name = self.bucket_name + '-test-list-object'
@@ -993,13 +1035,9 @@ class TestObject(TosTestBase):
                 for k in range(3):
                     path = '{}/{}/{}'.format(i, j, k)
                     self.client.put_object(bucket_name, path, content=b'1')
-        self.client.put_object(bucket_name, 'key')
-
-        # out_2 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2)
-        # out_2_reverse = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2)
-        # out_3 = self.client.list_objects_type2(bucket=bucket_name, prefix='0', start_after='0/1', max_keys=2,
-        #                                        delimiter='/', continuation_token=out_2.next_continuation_token)
-        #
+        raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
+        meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
+        self.client.put_object(bucket_name, 'key', meta=meta)
 
         out_base = self.client.list_objects_type2(bucket_name, delimiter='/', max_keys=1)
         self.assertEqual(out_base.name, bucket_name)
@@ -1076,6 +1114,13 @@ class TestObject(TosTestBase):
                 self.assertIsNotNone(continuation_token)
         self.assertEqual(count, 4)
 
+        list_object_out = self.client.list_objects_type2(bucket=bucket_name, prefix='key', max_keys=1, fetch_meta=True)
+        object = list_object_out.contents[0]
+        self.assertTrue(object.meta['age'], meta['age'])
+        self.assertTrue(object.meta['name'], meta['name'])
+        self.assertTrue(object.meta['special'], meta['special'])
+        self.assertTrue(object.meta[raw], meta[raw])
+
     def test_fetch_object(self):
         bucket_name = self.bucket_name + '-fetch-object'
         bucket_fetch = self.bucket_name + '-fetch-test'
@@ -1088,15 +1133,26 @@ class TestObject(TosTestBase):
         key = self.random_key('.js')
         self.client.create_bucket(bucket=bucket_name)
         meta = {'姓名': '张三'}
-        fetch_out = self.client.fetch_object(bucket=bucket_name, key=key,
-                                             url="https://{}.{}".format(bucket_fetch,
-                                                                        self.endpoint) + '/' + object_name,
-                                             meta=meta, acl=ACLType.ACL_Public_Read)
-        out = self.client.get_object(bucket=bucket_name, key=key)
+        self.client.fetch_object(bucket=bucket_name, key=key,
+                                 url="https://{}.{}".format(bucket_fetch,
+                                                            self.endpoint) + '/' + object_name,
+                                 meta=meta, acl=ACLType.ACL_Public_Read)
         acl_out = self.client.get_object_acl(bucket_name, key)
         self.assertEqual(acl_out.grants[0].permission, PermissionType.Permission_Read)
         get_out = self.client.get_object(bucket=bucket_name, key=key)
         get_out.meta['姓名'] = meta['姓名']
+
+        self.client.delete_object(bucket=bucket_name, key=key)
+        with self.assertRaises(TosServerError):
+            self.client.fetch_object(bucket=bucket_name, key=key,
+                                     url="https://{}.{}".format(bucket_fetch,
+                                                                self.endpoint) + '/' + object_name,
+                                     content_md5="123")
+        with self.assertRaises(TosServerError):
+            self.client.fetch_object(bucket=bucket_name, key=key,
+                                     url="https://{}.{}".format(bucket_fetch,
+                                                                self.endpoint) + '/' + object_name,
+                                     hex_md5="123")
 
     def test_fetch_task_object(self):
         bucket_name = self.bucket_name + '-fetch-object'
@@ -1118,9 +1174,13 @@ class TestObject(TosTestBase):
         self.client.create_bucket(bucket=bucket_name)
         raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
         meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
+        callback_body = '{"bucket":${bucket},"object":${object}}'
         out = self.client.put_fetch_task(bucket=bucket_name, key=key, url=url, meta=meta,
                                          acl=ACLType.ACL_Public_Read_Write,
-                                         storage_class=StorageClassType.Storage_Class_Ia)
+                                         storage_class=StorageClassType.Storage_Class_Ia,
+                                         callback_url=self.callback_url,
+                                         callback_body=callback_body,
+                                         callback_body_type='application/json')
         self.assertIsNotNone(out.task_id)
         get_out = self.client.get_fetch_task(bucket=bucket_name, task_id=out.task_id)
         self.assertEqual(get_out.task.meta['name'], meta['name'])
@@ -1128,6 +1188,9 @@ class TestObject(TosTestBase):
         self.assertEqual(get_out.task.meta[raw], meta[raw])
         self.assertEqual(get_out.task.acl, ACLType.ACL_Public_Read_Write)
         self.assertEqual(get_out.task.storage_class, StorageClassType.Storage_Class_Ia)
+        self.assertEqual(get_out.task.callback_url, self.callback_url)
+        self.assertEqual(get_out.task.callback_body_type, 'application/json')
+        self.assertEqual(get_out.task.callback_body, callback_body)
 
     def test_post_object(self):
         bucket_name = self.bucket_name + '-post-object'
@@ -1540,6 +1603,27 @@ class TestObject(TosTestBase):
             self.client.upload_file(bucket_name, key, file_name, generic_input=input)
         with self.assertRaises(TosServerError) as cm:
             self.client.resumable_copy_object(bucket_name, 'test', bucket_name, key, generic_input=input)
+
+    def test_disable_encoding_meta(self):
+        client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, disable_encoding_meta=True)
+        bucket_name = self.bucket_name + '-object-disable-encoding-meta'
+        client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        key = random_string(5)
+        special_key = "中文😋.pdf"
+        raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
+        meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
+        encode_meta = meta_header_encode(meta)
+        content_disposition = "attachment; filename='{}'".format(urllib.parse.quote(special_key))
+        client.put_object(bucket_name, key, meta=encode_meta, content_disposition=content_disposition)
+        out = client.head_object(bucket_name, key)
+        out_meta = meta_header_decode(out.meta)
+        self.assertEqual(out.content_disposition, content_disposition)
+        self.assertEqual(out_meta['name'], meta['name'])
+        self.assertEqual(out_meta['age'], meta['age'])
+        self.assertEqual(out_meta['special'], meta['special'])
+        self.assertEqual(out_meta[raw], meta[raw])
 
     def wrapper_socket_io(self, init, crc, use_data_transfer_listener, ues_limiter, bucket_name):
         def progress(consumed_bytes, total_bytes, rw_once_bytes,

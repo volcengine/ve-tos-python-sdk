@@ -1,20 +1,20 @@
 import urllib.parse
 from datetime import datetime
-
-from requests.structures import CaseInsensitiveDict
+from typing import List
 
 from . import utils
 from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType, \
     StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, \
     convert_storage_class_type, convert_az_redundancy_type, convert_permission_type, convert_grantee_type, \
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
-    convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType
+    convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType, convert_replication_status_type
 from .consts import CHUNK_SIZE
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
 from .utils import (get_etag, get_value, meta_header_decode,
                     parse_gmt_time_to_utc_datetime,
-                    parse_modify_time_to_utc_datetime, _param_to_quoted_query, _make_virtual_host_url)
+                    parse_modify_time_to_utc_datetime, _param_to_quoted_query, _make_virtual_host_url,
+                    convert_meta)
 
 
 class ResponseInfo(object):
@@ -198,7 +198,7 @@ class Grant(object):
 
 
 class HeadObjectOutput(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, disable_encoding_meta: bool = None):
         super(HeadObjectOutput, self).__init__(resp)
         self.etag = get_etag(resp.headers)
         self.version_id = get_value(resp.headers, "x-tos-version-id")
@@ -210,17 +210,17 @@ class HeadObjectOutput(ResponseInfo):
         self.restore = get_value(resp.headers, "x-tos-restore")
         self.restore_expiry_days = get_value(resp.headers, "x-tos-restore-expiry-days", lambda x: int(x))
         self.restore_tier = get_value(resp.headers, "x-tos-restore-tier", lambda x: convert_tier_type(x))
-        self.meta = CaseInsensitiveDict()
+
         self.object_type = get_value(resp.headers, "x-tos-object-type")
         self.symlink_target_size = get_value(resp.headers, "x-tos-symlink-target-size", lambda x: int(x))
         if not self.object_type:
             self.object_type = "Normal"
-
-        meta = {}
+        self.meta = {}
         for k in resp.headers:
             if k.startswith('x-tos-meta-'):
-                meta[k[11:]] = resp.headers[k]
-        self.meta = meta_header_decode(meta)
+                self.meta[k[11:]] = resp.headers[k]
+        if not disable_encoding_meta:
+            self.meta = meta_header_decode(self.meta)
 
         self.last_modified = get_value(resp.headers, 'last-modified')
         if self.last_modified:
@@ -239,15 +239,20 @@ class HeadObjectOutput(ResponseInfo):
         self.cache_control = get_value(resp.headers, "cache-control")
         content_dis_str = get_value(resp.headers, 'content-disposition')
         if content_dis_str:
-            self.content_disposition = urllib.parse.unquote(get_value(resp.headers, "content-disposition"))
+            if disable_encoding_meta:
+                self.content_disposition = get_value(resp.headers, "content-disposition")
+            else:
+                self.content_disposition = urllib.parse.unquote(get_value(resp.headers, "content-disposition"))
         else:
             self.content_disposition = ''
         self.content_encoding = get_value(resp.headers, "content-encoding")
         self.content_language = get_value(resp.headers, "content-language")
+        self.replication_status = get_value(resp.headers, "x-tos-replication-status",
+                                            lambda x: convert_replication_status_type(x))
 
 
 class ListObjectsOutput(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, disable_encoding_meta: bool = None):
         super(ListObjectsOutput, self).__init__(resp)
         data = resp.json_read()
 
@@ -285,7 +290,8 @@ class ListObjectsOutput(ResponseInfo):
                 size=get_value(object, 'Size', int),
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
-                object_type=get_value(object, 'Type')
+                object_type=get_value(object, 'Type'),
+                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta)
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -298,7 +304,7 @@ class ListObjectsOutput(ResponseInfo):
 
 class ListObjectsIterator(object):
     def __init__(self, req_func, max_key, bucket=None, key=None, method=None, data=None, headers=None, params=None,
-                 func=None):
+                 func=None, disable_encoding_meta: bool = None):
         self.req = req_func
         self.bucket = bucket
         self.key = key
@@ -310,6 +316,7 @@ class ListObjectsIterator(object):
         self.max_key = max_key
         self.number = 0
         self.is_truncated = True
+        self.disable_encoding_meta = disable_encoding_meta
 
     def __iter__(self):
         return self
@@ -321,7 +328,7 @@ class ListObjectsIterator(object):
         if self.is_truncated and self.new_max_key > 0:
             resp = self.req(bucket=self.bucket, method=self.method, key=self.key, data=self.data,
                             headers=self.headers, params=self.params)
-            info = ListObjectType2Output(resp)
+            info = ListObjectType2Output(resp, self.disable_encoding_meta)
             self.is_truncated = info.is_truncated
             self.number += len(info.contents) + len(info.common_prefixes)
             self.params['max-keys'] = self.new_max_key
@@ -336,7 +343,7 @@ class ListObjectsIterator(object):
 
 
 class ListObjectType2Output(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, disable_encoding_meta: bool = None):
         super(ListObjectType2Output, self).__init__(resp)
         data = resp.json_read()
         self.name = get_value(data, 'Name')
@@ -374,7 +381,8 @@ class ListObjectType2Output(ResponseInfo):
                 size=get_value(object, 'Size', int),
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
-                object_type=get_value(object, "Type")
+                object_type=get_value(object, "Type"),
+                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta)
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -400,7 +408,7 @@ class ListObjectType2Output(ResponseInfo):
 
 class ListedObject(object):
     def __init__(self, key: str, last_modified: datetime, etag: str, size: int, storage_class: StorageClassType,
-                 hash_crc64_ecma: str, owner: Owner = None, object_type=None):
+                 hash_crc64_ecma: str, owner: Owner = None, object_type=None, meta=None):
         self.key = key
         self.last_modified = last_modified
         self.etag = etag
@@ -409,6 +417,7 @@ class ListedObject(object):
         self.storage_class = storage_class
         self.hash_crc64_ecma = hash_crc64_ecma
         self.object_type = object_type
+        self.meta = meta
 
     def __str__(self):
         info = {"key": self.key, "last_modified": self.last_modified, "etag": self.etag, "size": self.size,
@@ -426,15 +435,15 @@ class ListedCommonPrefix(object):
 class ListedObjectVersion(ListedObject):
     def __init__(self, key: str, last_modified: datetime, etag: str, size: int, storage_class: StorageClassType,
                  hash_crc64_ecma, owner: Owner = None, version_id: str = None, is_latest: bool = None,
-                 object_type=None):
+                 object_type=None, meta=None):
         super(ListedObjectVersion, self).__init__(key, last_modified, etag, size, storage_class, hash_crc64_ecma, owner,
-                                                  object_type)
+                                                  object_type, meta)
         self.version_id = version_id
         self.is_latest = is_latest
 
 
 class ListObjectVersionsOutput(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, disable_encoding_meta: bool = None):
         super(ListObjectVersionsOutput, self).__init__(resp)
         self.name = ''
         self.prefix = ''
@@ -488,7 +497,8 @@ class ListObjectVersionsOutput(ResponseInfo):
                 version_id=get_value(object, 'VersionId'),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
                 is_latest=get_value(object, "IsLatest", lambda x: bool(x)),
-                object_type=get_value(object, 'Type')
+                object_type=get_value(object, 'Type'),
+                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta)
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -562,8 +572,8 @@ class SetObjectMetaOutput(ResponseInfo):
 
 
 class GetObjectOutput(HeadObjectOutput):
-    def __init__(self, resp, progress_callback=None, rate_limiter=None, enable_crc=False, discard=0):
-        super(GetObjectOutput, self).__init__(resp)
+    def __init__(self, resp, progress_callback=None, rate_limiter=None, enable_crc=False, disable_encoding_meta=0):
+        super(GetObjectOutput, self).__init__(resp, disable_encoding_meta)
         self.enable_crc = enable_crc
         self.content_range = get_value(resp.headers, "content-range")
         self.content = resp
@@ -830,10 +840,12 @@ class DeleteBucketCorsOutput(ResponseInfo):
 
 
 class Condition(object):
-    def __init__(self, http_code: int = None, key_prefix: str = None, key_suffix: str = None):
+    def __init__(self, http_code: int = None, key_prefix: str = None, key_suffix: str = None,
+                 http_method: List[str] = None):
         self.http_code = http_code
         self.key_prefix = key_prefix
         self.key_suffix = key_suffix
+        self.http_method = http_method
 
 
 class ReplaceKeyPrefix(object):
@@ -872,7 +884,8 @@ class MirrorHeader(object):
 class Redirect(object):
     def __init__(self, redirect_type: RedirectType = None, public_source: PublicSource = None,
                  fetch_source_on_redirect: bool = None, pass_query: bool = None, follow_redirect: bool = None,
-                 mirror_header: MirrorHeader = None, transform: Transform = None):
+                 mirror_header: MirrorHeader = None, transform: Transform = None,
+                 fetch_header_to_meta_data_rules: list = None):
         self.redirect_type = redirect_type
         self.fetch_source_on_redirect = fetch_source_on_redirect
         self.public_source = public_source
@@ -880,6 +893,13 @@ class Redirect(object):
         self.follow_redirect = follow_redirect
         self.mirror_header = mirror_header
         self.transform = transform
+        self.fetch_header_to_meta_data_rules = fetch_header_to_meta_data_rules
+
+
+class FetchHeaderToMetaDataRule(object):
+    def __init__(self, source_header: str = None, meta_data_suffix: str = None):
+        self.source_header = source_header
+        self.meta_data_suffix = meta_data_suffix
 
 
 class Rule(object):
@@ -1041,8 +1061,9 @@ class BucketLifeCycleExpiration(object):
 
 
 class BucketLifeCycleNoCurrentVersionExpiration(object):
-    def __init__(self, no_current_days: int = None):
+    def __init__(self, no_current_days: int = None, non_current_date: datetime = None):
         self.no_current_days = no_current_days
+        self.non_current_date = non_current_date
 
 
 class BucketLifeCycleAbortInCompleteMultipartUpload(object):
@@ -1058,9 +1079,20 @@ class BucketLifeCycleTransition(object):
 
 
 class BucketLifeCycleNonCurrentVersionTransition(object):
-    def __init__(self, storage_class: StorageClassType = None, non_current_days: int = None):
+    def __init__(self, storage_class: StorageClassType = None, non_current_days: int = None,
+                 non_current_date: datetime = None):
         self.storage_class = storage_class
         self.non_current_days = non_current_days
+        self.non_current_date = non_current_date
+
+
+class BucketLifecycleFilter(object):
+    def __init__(self, object_size_greater_than: int = None, greater_than_include_equal: StatusType = None,
+                 object_size_less_than: int = None, less_than_include_equal: StatusType = None):
+        self.object_size_greater_than = object_size_greater_than
+        self.object_size_less_than = object_size_less_than
+        self.greater_than_include_equal = greater_than_include_equal
+        self.less_than_include_equal = less_than_include_equal
 
 
 class BucketLifeCycleRule(object):
@@ -1073,7 +1105,8 @@ class BucketLifeCycleRule(object):
                  transitions: [] = None,
                  non_current_version_transitions: [] = None,
                  id: str = None,
-                 prefix: str = None):
+                 prefix: str = None,
+                 filter: BucketLifecycleFilter = None):
         self.id = id
         self.prefix = prefix
         self.status = status
@@ -1083,6 +1116,7 @@ class BucketLifeCycleRule(object):
         self.tags = tags
         self.transitions = transitions
         self.non_current_version_transitions = non_current_version_transitions
+        self.filter = filter
 
 
 class PutBucketLifecycleOutput(ResponseInfo):
@@ -1095,6 +1129,7 @@ class GetBucketLifecycleOutput(ResponseInfo):
         self.rules = []
         super(GetBucketLifecycleOutput, self).__init__(resp)
         data = resp.json_read()
+        self.allow_same_action_overlap = get_value(resp.headers, 'x-tos-allow-same-action-overlap', lambda x: bool(x))
         rules_json = get_value(data, 'Rules') or []
         for rule_json in rules_json:
             rule = BucketLifeCycleRule()
@@ -1109,6 +1144,7 @@ class GetBucketLifecycleOutput(ResponseInfo):
             tags_json = get_value(rule_json, 'Tags') or []
             transitions_json = get_value(rule_json, 'Transitions') or []
             non_current_version_transitions_json = get_value(rule_json, 'NoncurrentVersionTransitions') or []
+            filter_json = get_value(rule_json, 'Filter')
 
             if expiration_json:
                 bucket_expiration = BucketLifeCycleExpiration()
@@ -1123,6 +1159,9 @@ class GetBucketLifecycleOutput(ResponseInfo):
                     tr = BucketLifeCycleNonCurrentVersionTransition()
                     tr.storage_class = get_value(vt, 'StorageClass', lambda x: convert_storage_class_type(x))
                     tr.non_current_days = get_value(vt, 'NoncurrentDays', int)
+                    if get_value(vt, 'NoncurrentDate'):
+                        tr.non_current_date = parse_modify_time_to_utc_datetime(
+                            get_value(vt, 'NoncurrentDate'))
                     rule.non_current_version_transitions.append(tr)
 
             if transitions_json:
@@ -1153,7 +1192,24 @@ class GetBucketLifecycleOutput(ResponseInfo):
             if non_current_version_expiration_json:
                 exp = BucketLifeCycleNoCurrentVersionExpiration()
                 exp.no_current_days = get_value(non_current_version_expiration_json, 'NoncurrentDays', int)
+                if get_value(non_current_version_expiration_json, 'NoncurrentDate'):
+                    exp.non_current_date = parse_modify_time_to_utc_datetime(
+                        get_value(non_current_version_expiration_json, 'NoncurrentDate'))
                 rule.no_current_version_expiration = exp
+
+            if filter_json:
+                lifecycle_filter = BucketLifecycleFilter()
+                if get_value(filter_json, 'ObjectSizeGreaterThan'):
+                    lifecycle_filter.object_size_greater_than = get_value(filter_json, 'ObjectSizeGreaterThan', int)
+                if get_value(filter_json, 'ObjectSizeLessThan'):
+                    lifecycle_filter.object_size_less_than = get_value(filter_json, 'ObjectSizeLessThan', int)
+                if get_value(filter_json, 'GreaterThanIncludeEqual'):
+                    lifecycle_filter.greater_than_include_equal = get_value(filter_json, 'GreaterThanIncludeEqual',
+                                                                            lambda x: convert_status_type(x))
+                if get_value(filter_json, 'LessThanIncludeEqual'):
+                    lifecycle_filter.less_than_include_equal = get_value(filter_json, 'LessThanIncludeEqual',
+                                                                         lambda x: convert_status_type(x))
+                rule.filter = lifecycle_filter
             self.rules.append(rule)
 
 
@@ -1194,7 +1250,8 @@ class GetBucketMirrorBackOutput(ResponseInfo):
                 condition = Condition(
                     http_code=get_value(cond, 'HttpCode', int),
                     key_prefix=get_value(cond, 'KeyPrefix', str),
-                    key_suffix=get_value(cond, 'KeySuffix', str)
+                    key_suffix=get_value(cond, 'KeySuffix', str),
+                    http_method=get_value(cond, 'HttpMethod', list)
                 )
             if red:
                 redirect = Redirect()
@@ -1229,6 +1286,14 @@ class GetBucketMirrorBackOutput(ResponseInfo):
                             replace_with=get_value(get_value(get_value(red, 'Transform'), 'ReplaceKeyPrefix'),
                                                    'ReplaceWith')
                         )
+                if get_value(red, 'FetchHeaderToMetaDataRules'):
+                    meta_data_rules = []
+                    for r in get_value(red, 'FetchHeaderToMetaDataRules'):
+                        meta_data_rules.append(FetchHeaderToMetaDataRule(
+                            source_header=get_value(r, 'SourceHeader'),
+                            meta_data_suffix=get_value(r, 'MetaDataSuffix'),
+                        ))
+                    redirect.fetch_header_to_meta_data_rules = meta_data_rules
                 r = Rule(id=id, condition=condition, redirect=redirect)
                 self.rules.append(r)
 
@@ -1372,36 +1437,35 @@ class FetchTask(object):
 
 
 class GetFetchTaskOutput(ResponseInfo):
-    def __init__(self, resp):
+    def __init__(self, resp, disable_encoding_meta: bool = None):
         super(GetFetchTaskOutput, self).__init__(resp)
         data = resp.json_read()
         self.state = get_value(data, 'State')
         self.err = get_value(data, 'Err')
+        self.task = None
         task = get_value(data, 'Task')
-        meta = {}
-        for m in task.get('UserMeta', []):
-            meta[m['Key']] = m['Value']
-        meta = meta_header_decode(meta)
-        self.task = FetchTask(
-            bucket=get_value(task, 'Bucket'),
-            key=get_value(task, 'Key'),
-            url=get_value(task, 'URL'),
-            ignore_same_key=get_value(task, 'IgnoreSameKey', lambda x: bool(x)),
-            callback_url=get_value(task, 'CallBackURL'),
-            callback_host=get_value(task, 'CallbackHost'),
-            callback_body=get_value(task, 'CallBackBody'),
-            callback_body_type=get_value(task, 'CallBackBodyType'),
-            storage_class=get_value(task, 'StorageClass', lambda x: StorageClassType(x)),
-            acl=get_value(task, 'Acl', lambda x: ACLType(x)),
-            grant_full_control=get_value(task, 'GrantFullControl'),
-            grant_read=get_value(task, 'GrantRead'),
-            grant_read_acp=get_value(task, 'GrantReadAcp'),
-            grant_write_acp=get_value(task, 'GrantWriteAcp'),
-            ssec_algorithm=get_value(task, 'SSECAlgorithm'),
-            ssec_key=get_value(task, 'SSECKey'),
-            ssec_key_md5=get_value(task, 'SSECKeyMd5'),
-            meta=meta
-        )
+        if task:
+            meta = convert_meta(task.get('UserMeta'), disable_encoding_meta)
+            self.task = FetchTask(
+                bucket=get_value(task, 'Bucket'),
+                key=get_value(task, 'Key'),
+                url=get_value(task, 'URL'),
+                ignore_same_key=get_value(task, 'IgnoreSameKey', lambda x: bool(x)),
+                callback_url=get_value(task, 'CallbackURL'),
+                callback_host=get_value(task, 'CallbackHost'),
+                callback_body=get_value(task, 'CallbackBody'),
+                callback_body_type=get_value(task, 'CallbackBodyType'),
+                storage_class=get_value(task, 'StorageClass', lambda x: convert_storage_class_type(x)),
+                acl=get_value(task, 'Acl', lambda x: ACLType(x)),
+                grant_full_control=get_value(task, 'GrantFullControl'),
+                grant_read=get_value(task, 'GrantRead'),
+                grant_read_acp=get_value(task, 'GrantReadAcp'),
+                grant_write_acp=get_value(task, 'GrantWriteAcp'),
+                ssec_algorithm=get_value(task, 'SSECAlgorithm'),
+                ssec_key=get_value(task, 'SSECKey'),
+                ssec_key_md5=get_value(task, 'SSECKeyMd5'),
+                meta=meta
+            )
 
 
 class PutBucketReplicationOutput(ResponseInfo):
@@ -1896,3 +1960,135 @@ class GetSymlinkOutput(ResponseInfo):
 class GenericInput(object):
     def __init__(self, request_date: datetime = None):
         self.request_date = request_date
+
+
+class ApplyServerSideEncryptionByDefault(object):
+    def __init__(self, sse_algorithm: str = None, kms_master_key_id: str = None):
+        self.sse_algorithm = sse_algorithm
+        self.kms_master_key_id = kms_master_key_id
+
+
+class BucketEncryptionRule(object):
+    def __init__(self, apply_server_side_encryption_by_default: ApplyServerSideEncryptionByDefault = None):
+        self.apply_server_side_encryption_by_default = apply_server_side_encryption_by_default
+
+
+class PutBucketEncryptionOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketEncryptionOutput, self).__init__(resp)
+
+
+class GetBucketEncryptionOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketEncryptionOutput, self).__init__(resp)
+        self.rule = None
+        data = resp.json_read()
+        rule = get_value(get_value(data, 'Rule'), 'ApplyServerSideEncryptionByDefault')
+        if rule:
+            self.rule = BucketEncryptionRule(
+                apply_server_side_encryption_by_default=ApplyServerSideEncryptionByDefault(
+                    sse_algorithm=get_value(rule, 'SSEAlgorithm'),
+                    kms_master_key_id=get_value(rule, 'KMSMasterKeyID')
+                )
+            )
+
+
+class DeleteBucketEncryptionOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketEncryptionOutput, self).__init__(resp)
+
+
+class NotificationFilterRule(object):
+    def __init__(self, name: str = None, value: str = None):
+        self.name = name
+        self.value = value
+
+
+class NotificationFilterKey(object):
+    def __init__(self, filter_rules: [] = None):
+        self.filter_rules = filter_rules
+
+
+class NotificationFilter(object):
+    def __init__(self, tos_key: NotificationFilterKey = None):
+        self.tos_key = tos_key
+
+
+class DestinationRocketMQ(object):
+    def __init__(self, role: str = None, instance_id: str = None, topic: str = None, access_key_id: str = None):
+        self.role = role
+        self.instance_id = instance_id
+        self.topic = topic
+        self.access_key_id = access_key_id
+
+
+class DestinationVeFaaS(object):
+    def __init__(self, function_id: str = None):
+        self.function_id = function_id
+
+
+class NotificationDestination(object):
+    def __init__(self, rocket_mq: [] = None, ve_faas: [] = None):
+        self.rocket_mq = rocket_mq
+        self.ve_faas = ve_faas
+
+
+class NotificationRule(object):
+    def __init__(self, rule_id: str = None, events: [] = None, filter: NotificationFilter = None,
+                 destination: NotificationDestination = None):
+        self.rule_id = rule_id
+        self.events = events
+        self.filter = filter
+        self.destination = destination
+
+
+class PutBucketNotificationType2Output(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketNotificationType2Output, self).__init__(resp)
+
+
+class GetBucketNotificationType2Output(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketNotificationType2Output, self).__init__(resp)
+        data = resp.json_read()
+        self.version = get_value(data, 'Version')
+        self.rules = []
+        rules = get_value(data, 'Rules') or []
+        for rule in rules:
+            config = NotificationRule(
+                rule_id=get_value(rule, 'RuleId'),
+                events=get_value(rule, 'Events'),
+            )
+            if get_value(rule, 'Destination'):
+                config.destination = NotificationDestination()
+                destination_json = get_value(rule, 'Destination')
+                if get_value(destination_json, 'RocketMQ'):
+                    rocket_mqs = []
+                    for r in get_value(destination_json, 'RocketMQ'):
+                        rocket_mqs.append(DestinationRocketMQ(
+                            role=get_value(r, 'Role'),
+                            instance_id=get_value(r, 'InstanceId'),
+                            topic=get_value(r, 'Topic'),
+                            access_key_id=get_value(r, 'AccessKeyId')
+                        ))
+                    config.destination.rocket_mq = rocket_mqs
+                if get_value(destination_json, 'VeFaaS'):
+                    ve_faas = []
+                    for r in get_value(destination_json, 'VeFaaS'):
+                        ve_faas.append(DestinationVeFaaS(function_id=get_value(r, 'FunctionId')))
+                    config.destination.ve_faas = ve_faas
+            if get_value(rule, 'Filter') and get_value(get_value(rule, 'Filter'), 'TOSKey') and get_value(
+                    get_value(get_value(rule, 'Filter'), 'TOSKey'), 'FilterRules'):
+                filter_rules = get_value(get_value(get_value(rule, 'Filter'), 'TOSKey'), 'FilterRules')
+                config_rules = []
+                for r in filter_rules:
+                    config_rules.append(NotificationFilterRule(
+                        name=get_value(r, 'Name'),
+                        value=get_value(r, 'Value')
+                    ))
+                config.filter = NotificationFilter(
+                    tos_key=NotificationFilterKey(
+                        filter_rules=config_rules
+                    )
+                )
+            self.rules.append(config)

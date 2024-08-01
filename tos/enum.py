@@ -250,3 +250,17 @@ def convert_tier_type(s: str):
         if t.value == s:
             return t
     return TierType.Tier_Unknown
+
+
+class ReplicationStatusType(Enum):
+    ReplicationStatusType_Pending = "PENDING"
+    ReplicationStatusType_Complete = "COMPLETE"
+    ReplicationStatusType_Failed = "FAILED"
+    ReplicationStatusType_Replica = "REPLICA"
+
+
+def convert_replication_status_type(s: str):
+    for t in ReplicationStatusType:
+        if t.value == s:
+            return t
+    return ""

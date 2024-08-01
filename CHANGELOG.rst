@@ -1,5 +1,23 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.7.0
+-------------
+- 新增：桶配置服务端加密的相关接口
+- 新增：事件通知配置type2接口
+- 新增：桶生命周期规则支持指定按size范围过滤及历史版本指定具体日期
+- 新增：桶生命周期规则支持按前缀重叠参数
+- 新增：初始化client参数disable_encoding_meta/except100_continue_threshold
+- 新增：异步抓取支持设置回调
+- 新增：镜像回源支持配置将源端的头域写入自定义元数据
+- 新增：get_object/head_object支持CRR复制状态(replication_status)
+- 新增：列举对象新增fetch_meta参数
+- 修改：同步/异步抓取接口适配content_md5
+- 修复：content-disposition编码问题
+
+Version 2.6.11
+-------------
+- 修复：get_fetch_task接口
+
 Version 2.6.10
 -------------
 - 增加：get_fetch_task接口

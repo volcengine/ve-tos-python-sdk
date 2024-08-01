@@ -38,7 +38,8 @@ from .json_utils import (to_complete_multipart_upload_request,
                          to_put_acl_request, to_delete_multi_objects_request, to_put_bucket_cors_request,
                          to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_tagging, to_fetch_object,
                          to_put_replication, to_put_bucket_website, to_put_bucket_notification, to_put_custom_domain,
-                         to_put_bucket_real_time_log, to_restore_object)
+                         to_put_bucket_real_time_log, to_restore_object, to_bucket_encrypt, to_put_fetch_object,
+                         to_put_bucket_notification_type2)
 from .log import get_logger
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       CompleteMultipartUploadOutput, CopyObjectOutput,
@@ -69,7 +70,9 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       PolicySignatureCondition, RestoreObjectOutput, RestoreJobParameters, RenameObjectOutput,
                       PutBucketRenameOutput, DeleteBucketRenameOutput, GetBucketRenameOutput, PutBucketTaggingOutput,
                       DeleteBucketTaggingOutput, GetBucketTaggingOutput, PutSymlinkOutput, GetSymlinkOutput,
-                      GenericInput, GetFetchTaskOutput)
+                      GenericInput, GetFetchTaskOutput, BucketEncryptionRule, GetBucketEncryptionOutput,
+                      DeleteBucketEncryptionOutput, PutBucketEncryptionOutput, PutBucketNotificationType2Output,
+                      GetBucketNotificationType2Output)
 from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
@@ -79,7 +82,7 @@ from .utils import (SizeAdapter, _make_copy_source,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
                     check_client_encryption_algorithm, check_server_encryption_algorithm, try_make_file_dir,
                     _IterableAdapter, init_checkpoint_dir, resolve_ip_list,
-                    UploadEventHandler, ResumableCopyObject, DownloadEventHandler, LogInfo)
+                    UploadEventHandler, ResumableCopyObject, DownloadEventHandler, LogInfo, content_disposition_encode)
 
 _dns_cache = DnsCacheService()
 _orig_create_connection = connection.create_connection
@@ -119,12 +122,14 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
                              GrantRead, GrantReadACP, GrantWriteACP, Metadata, MetadataDirective,
                              SSECustomerAlgorithm, SSECustomerKey, SSECustomerKeyMD5, server_side_encryption,
                              website_redirect_location, storage_class: StorageClassType,
-                             SSECAlgorithm, SSECKey, SSECKeyMD5, TrafficLimit, ForbidOverwrite, IfMatch):
+                             SSECAlgorithm, SSECKey, SSECKeyMD5, TrafficLimit, ForbidOverwrite, IfMatch,
+                             DisableEncodingMeta):
     headers = {}
     if Metadata:
         for k in Metadata:
             headers['x-tos-meta-' + k] = Metadata[k]
-        headers = meta_header_encode(headers)
+        if not DisableEncodingMeta:
+            headers = meta_header_encode(headers)
     if isinstance(CopySource, str):
         headers['x-tos-copy-source'] = CopySource
     elif isinstance(CopySource, dict):
@@ -137,7 +142,8 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
     if CacheControl:
         headers['cache-control'] = CacheControl
     if ContentDisposition:
-        headers['content-disposition'] = urllib.parse.quote(ContentDisposition)
+        headers['content-disposition'] = ContentDisposition if DisableEncodingMeta else content_disposition_encode(
+            ContentDisposition)
     if ContentEncoding:
         headers['content-encoding'] = ContentEncoding
     if ContentLanguage:
@@ -191,7 +197,7 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
     return headers
 
 
-def _get_list_object_params(Delimiter, EncodingType, Marker, MaxKeys, Prefix, Reverse):
+def _get_list_object_params(Delimiter, EncodingType, Marker, MaxKeys, Prefix, Reverse, FetchMeta):
     params = {}
     if Delimiter:
         params['delimiter'] = Delimiter
@@ -206,10 +212,12 @@ def _get_list_object_params(Delimiter, EncodingType, Marker, MaxKeys, Prefix, Re
 
     if Reverse:
         params['reverse'] = Reverse
+    if FetchMeta:
+        params['fetch-meta'] = FetchMeta
     return params
 
 
-def _get_list_object_version_params(Delimiter, EncodingType, KeyMarker, MaxKeys, Prefix, VersionIdMarker):
+def _get_list_object_version_params(Delimiter, EncodingType, KeyMarker, MaxKeys, Prefix, VersionIdMarker, FetchMeta):
     params = {'versions': ''}
     if Delimiter:
         params['delimiter'] = Delimiter
@@ -223,10 +231,13 @@ def _get_list_object_version_params(Delimiter, EncodingType, KeyMarker, MaxKeys,
         params['key-marker'] = KeyMarker
     if VersionIdMarker:
         params['version-id-marker'] = VersionIdMarker
+    if FetchMeta:
+        params['fetch-meta'] = FetchMeta
     return params
 
 
-def _get_list_object_v2_params(Delimiter, Start_After, ContinueToken, Reverse, MaxKeys, EncodingType, Prefix):
+def _get_list_object_v2_params(Delimiter, Start_After, ContinueToken, Reverse, MaxKeys, EncodingType, Prefix,
+                               FetchMeta):
     params = {'list-type': '2', "fetch-owner": "true"}
     if Delimiter:
         params['delimiter'] = Delimiter
@@ -242,7 +253,8 @@ def _get_list_object_v2_params(Delimiter, Start_After, ContinueToken, Reverse, M
         params['reverse'] = Reverse
     if Prefix:
         params['prefix'] = Prefix
-
+    if FetchMeta:
+        params['fetch-meta'] = FetchMeta
     return params
 
 
@@ -328,16 +340,17 @@ def _get_upload_part_copy_headers(CopySource, CopySourceIfMatch, CopySourceIfMod
 
 
 def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDisposition, ContentEncoding,
-                            ContentLanguage,
-                            ContentLength, ContentMD5, ContentSha256, ContentType, Expires, GrantFullControl,
-                            GrantRead, GrantReadACP, GrantWriteACP, Key, Metadata, SSECustomerAlgorithm,
-                            SSECustomerKey, SSECustomerKeyMD5, ServerSideEncryption, StorageClass,
-                            WebsiteRedirectLocation, TrafficLimit, Callback, CallbackVar, ForbidOverwrite, IfMatch):
+                            ContentLanguage, ContentLength, ContentMD5, ContentSha256, ContentType, Expires,
+                            GrantFullControl, GrantRead, GrantReadACP, GrantWriteACP, Key, Metadata,
+                            SSECustomerAlgorithm, SSECustomerKey, SSECustomerKeyMD5, ServerSideEncryption, StorageClass,
+                            WebsiteRedirectLocation, TrafficLimit, Callback, CallbackVar, ForbidOverwrite, IfMatch,
+                            DisableEncodingMeta):
     headers = {}
     if Metadata:
         for k in Metadata:
             headers['x-tos-meta-' + k] = Metadata[k]
-        headers = meta_header_encode(headers)
+        if not DisableEncodingMeta:
+            headers = meta_header_encode(headers)
     if ContentLength:
         headers['Content-Length'] = str(ContentLength)
     if ACL:
@@ -355,7 +368,8 @@ def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDi
     if CacheControl:
         headers['cache-control'] = CacheControl
     if ContentDisposition:
-        headers['content-disposition'] = urllib.parse.quote(ContentDisposition)
+        headers['content-disposition'] = ContentDisposition if DisableEncodingMeta else content_disposition_encode(
+            ContentDisposition)
     if ContentEncoding:
         headers['content-encoding'] = ContentEncoding
     if ContentLanguage:
@@ -420,14 +434,16 @@ def _get_object_headers(IfMatch, IfModifiedSince, IfNoneMatch, IfUnmodifiedSince
 
 def _get_object_params(ResponseCacheControl, ResponseContentDisposition, ResponseContentEncoding,
                        ResponseContentLanguage, ResponseContentType, ResponseExpires, VersionId, Process,
-                       SaveAsBucket, SaveAsObject):
+                       SaveAsBucket, SaveAsObject, DisableEncodingMeta):
     params = {}
     if VersionId:
         params['versionId'] = VersionId
     if ResponseCacheControl:
         params['response-cache-control'] = ResponseCacheControl
     if ResponseContentDisposition:
-        params['response-content-disposition'] = urllib.parse.quote(ResponseContentDisposition)
+        params[
+            'response-content-disposition'] = ResponseContentDisposition if DisableEncodingMeta else urllib.parse.quote(
+            ResponseContentDisposition)
     if ResponseContentEncoding:
         params['response-content-encoding'] = ResponseContentEncoding
     if ResponseContentLanguage:
@@ -446,15 +462,16 @@ def _get_object_params(ResponseCacheControl, ResponseContentDisposition, Respons
 
 
 def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl, ContentDisposition,
-                                      ContentEncoding, ContentLanguage,
-                                      ContentLength, ContentType, Expires, GrantFullControl, GrantRead,
-                                      GrantReadACP, GrantWriteACP, Key, Metadata, StorageClass,
-                                      WebsiteRedirectLocation, TrafficLimit, IfMatch):
+                                      ContentEncoding, ContentLanguage, ContentLength, ContentType, Expires,
+                                      GrantFullControl, GrantRead, GrantReadACP, GrantWriteACP, Key, Metadata,
+                                      StorageClass, WebsiteRedirectLocation, TrafficLimit, IfMatch,
+                                      DisableEncodingMeta):
     headers = {}
     if Metadata:
         for k in Metadata:
             headers['x-tos-meta-' + k] = Metadata[k]
-        headers = meta_header_encode(headers)
+        if not DisableEncodingMeta:
+            headers = meta_header_encode(headers)
     if ACL:
         headers['x-tos-acl'] = ACL.value
     if GrantFullControl:
@@ -468,7 +485,8 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
     if CacheControl:
         headers['cache-control'] = CacheControl
     if ContentDisposition:
-        headers['content-disposition'] = urllib.parse.quote(ContentDisposition)
+        headers['content-disposition'] = ContentDisposition if DisableEncodingMeta else content_disposition_encode(
+            ContentDisposition)
     if ContentEncoding:
         headers['content-encoding'] = ContentEncoding
     if ContentLanguage:
@@ -493,16 +511,17 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
 
 
 def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheControl, ContentDisposition, ContentEncoding,
-                                         ContentLanguage, ContentType,
-                                         Expires, GrantFullControl, GrantRead, GrantReadACP,
-                                         GrantWriteACP, Key, Metadata, SSECustomerAlgorithm, SSECustomerKey,
-                                         SSECustomerKeyMD5, ServerSideEncryption, WebsiteRedirectLocation,
-                                         StorageClass: StorageClassType, ForbidOverwrite):
+                                         ContentLanguage, ContentType, Expires, GrantFullControl, GrantRead,
+                                         GrantReadACP, GrantWriteACP, Key, Metadata, SSECustomerAlgorithm,
+                                         SSECustomerKey, SSECustomerKeyMD5, ServerSideEncryption,
+                                         WebsiteRedirectLocation, StorageClass: StorageClassType, ForbidOverwrite,
+                                         DisableEncodingMeta):
     headers = {}
     if Metadata:
         for k in Metadata:
             headers['x-tos-meta-' + k] = Metadata[k]
-        headers = meta_header_encode(headers)
+        if not DisableEncodingMeta:
+            headers = meta_header_encode(headers)
     if ACL:
         headers['x-tos-acl'] = ACL.value
     if GrantFullControl:
@@ -516,7 +535,8 @@ def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheContr
     if CacheControl:
         headers['cache-control'] = CacheControl
     if ContentDisposition:
-        headers['content-disposition'] = urllib.parse.quote(ContentDisposition)
+        headers['content-disposition'] = ContentDisposition if DisableEncodingMeta else content_disposition_encode(
+            ContentDisposition)
     if ContentEncoding:
         headers['content-encoding'] = ContentEncoding
     if ContentLanguage:
@@ -545,17 +565,18 @@ def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheContr
 
 
 def _get_set_object_meta_headers(recognize_content_type, cache_control, content_disposition, content_encoding,
-                                 content_language,
-                                 content_type, expires, key, meta):
+                                 content_language, content_type, expires, key, meta, disable_encoding_meta):
     headers = {}
     if meta:
         for k in meta:
             headers['x-tos-meta-' + k] = meta[k]
-        headers = meta_header_encode(headers)
+        if not disable_encoding_meta:
+            headers = meta_header_encode(headers)
     if cache_control:
         headers['cache-control'] = cache_control
     if content_disposition:
-        headers['content-disposition'] = urllib.parse.quote(content_disposition)
+        headers['content-disposition'] = content_disposition if disable_encoding_meta else content_disposition_encode(
+            content_disposition)
     if content_encoding:
         headers['content-encoding'] = content_encoding
     if content_language:
@@ -594,7 +615,8 @@ def _get_put_acl_headers(ACL, GrantFullControl, GrantRead, GrantReadACP, GrantWr
     return headers
 
 
-def _get_put_symlink_headers(TargetKey, TargetBucket, ACL, StorageClass, Metadata, ForbidOverwrite):
+def _get_put_symlink_headers(TargetKey, TargetBucket, ACL, StorageClass, Metadata, ForbidOverwrite,
+                             DisableEncodingMeta):
     headers = {"x-tos-symlink-target": urllib.parse.quote(TargetKey, '/~')}
     if TargetBucket:
         headers["x-tos-symlink-bucket"] = TargetBucket
@@ -605,7 +627,8 @@ def _get_put_symlink_headers(TargetKey, TargetBucket, ACL, StorageClass, Metadat
     if Metadata:
         for k in Metadata:
             headers['x-tos-meta-' + k] = Metadata[k]
-        headers = meta_header_encode(headers)
+        if not DisableEncodingMeta:
+            headers = meta_header_encode(headers)
     if ForbidOverwrite:
         headers['x-tos-forbid-overwrite'] = ForbidOverwrite
     return headers
@@ -635,12 +658,13 @@ def _get_upload_part_headers(content_length, content_md5, server_side_encryption
 def _get_fetch_headers(storage_class, acl, grant_full_control,
                        grant_read, grant_read_acp, grant_write_acp, meta,
                        ssec_customer_algorithm,
-                       ssec_customer_key, sse_customer_key_md5):
+                       ssec_customer_key, sse_customer_key_md5, disable_encoding_meta):
     headers = {}
     if meta:
         for k in meta:
             headers['x-tos-meta-' + k] = meta[k]
-        headers = meta_header_encode(headers)
+        if not disable_encoding_meta:
+            headers = meta_header_encode(headers)
     if acl:
         headers['x-tos-acl'] = acl.value
     if grant_full_control:
@@ -803,7 +827,9 @@ class TosClientV2(TosClient):
                  is_custom_domain: bool = False,
                  high_latency_log_threshold: int = 100,
                  socket_timeout=30,
-                 credentials_provider=None):
+                 credentials_provider=None,
+                 disable_encoding_meta: bool = None,
+                 except100_continue_threshold: int = 65536):
 
         """创建client
 
@@ -828,6 +854,8 @@ class TosClientV2(TosClient):
         :param high_latency_log_threshold: 大于 0 时，代表开启高延迟日志，单位：KB，默认为 100，当单次请求传输总速率低于该值且总请求耗时大于 500 毫秒时打印 WARN 级别日志
         :param socket_timeout: 连接建立成功后，单个请求的 Socket 读写超时时间，单位：秒，默认 30 秒，参考: https://requests.readthedocs.io/en/latest/user/quickstart/#timeouts
         :param credentials_provider: 通过 credentials_provider 实现永久访问密钥、临时访问密钥、ECS免密登陆、环境变量获取访问密钥等方式
+        :param disable_encoding_meta: 是否对用户自定义元数据x-tos-meta-*/Content-Disposition进行编码，默认编码，设置为true时不进行编码
+        :param except100_continue_threshold: 大于0时，表示上传对象相关接口对与待上传数据长度大于该阈值的请求（无法预测数据长度的情况统一判断为大于阈值）开启100-continue机制，单位字节，默认65536
         :return TosClientV2:
         """
 
@@ -870,6 +898,8 @@ class TosClientV2(TosClient):
         self.is_custom_domain = is_custom_domain
         self.high_latency_log_threshold = high_latency_log_threshold if high_latency_log_threshold >= 0 else 0
         self.socket_timeout = socket_timeout if socket_timeout > 0 else self.request_timeout if self.request_timeout > 0 else 30
+        self.disable_encoding_meta = disable_encoding_meta
+        self.except100_continue_threshold = except100_continue_threshold
 
         # 通过 hook 机制实现in-request log
         self.session.hooks['response'].append(hook_request_log)
@@ -1164,7 +1194,7 @@ class TosClientV2(TosClient):
                                            metadata_directive, copy_source_ssec_algorithm, copy_source_ssec_key,
                                            copy_source_ssec_key_md5, server_side_encryption, website_redirect_location,
                                            storage_class, ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit,
-                                           forbid_overwrite, if_match)
+                                           forbid_overwrite, if_match, self.disable_encoding_meta)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, headers=headers,
                          generic_input=generic_input)
@@ -1273,7 +1303,7 @@ class TosClientV2(TosClient):
                          headers=headers,
                          generic_input=generic_input)
 
-        return HeadObjectOutput(resp)
+        return HeadObjectOutput(resp, self.disable_encoding_meta)
 
     def list_objects(self, bucket: str,
                      prefix: str = None,
@@ -1282,7 +1312,8 @@ class TosClientV2(TosClient):
                      max_keys: int = None,
                      reverse: bool = None,
                      encoding_type: str = None,
-                     generic_input: GenericInput = None) -> ListObjectsOutput:
+                     generic_input: GenericInput = None,
+                     fetch_meta: bool = None) -> ListObjectsOutput:
         """列举对象
 
         :param bucket: 桶名
@@ -1293,14 +1324,15 @@ class TosClientV2(TosClient):
         :param prefix: 前缀
         :param reverse: 反转列举
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param fetch_meta: 是否获取对象的自定义meta
         :return: ListObjectsOutput
         """
-        params = _get_list_object_params(delimiter, encoding_type, marker, max_keys, prefix, reverse)
+        params = _get_list_object_params(delimiter, encoding_type, marker, max_keys, prefix, reverse, fetch_meta)
 
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params,
                          generic_input=generic_input)
 
-        return ListObjectsOutput(resp)
+        return ListObjectsOutput(resp, self.disable_encoding_meta)
 
     def list_object_versions(self, bucket: str,
                              prefix: str = None,
@@ -1309,7 +1341,8 @@ class TosClientV2(TosClient):
                              version_id_marker: str = None,
                              max_keys: int = None,
                              encoding_type: str = None,
-                             generic_input: GenericInput = None) -> ListObjectVersionsOutput:
+                             generic_input: GenericInput = None,
+                             fetch_meta: bool = None) -> ListObjectVersionsOutput:
         """列举多版本对象
 
         :param bucket: 桶名
@@ -1320,15 +1353,16 @@ class TosClientV2(TosClient):
         :param prefix: 前缀
         :param version_id_marker: 版本号分页标志
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param fetch_meta: 是否获取对象的自定义meta
         :return: ListObjectVersionsOutput
         """
         params = _get_list_object_version_params(delimiter, encoding_type, key_marker, max_keys, prefix,
-                                                 version_id_marker)
+                                                 version_id_marker, fetch_meta)
 
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params,
                          generic_input=generic_input)
 
-        return ListObjectVersionsOutput(resp)
+        return ListObjectVersionsOutput(resp, self.disable_encoding_meta)
 
     def put_object_acl(self, bucket: str, key: str,
                        version: str = None,
@@ -1466,7 +1500,11 @@ class TosClientV2(TosClient):
                                           grant_full_control, grant_read, grant_read_acp, grant_writeAcp, key, meta,
                                           ssec_algorithm, ssec_key, ssec_key_md5,
                                           server_side_encryption, storage_class, website_redirect_location,
-                                          traffic_limit, callback, callback_var, forbid_overwrite, if_match)
+                                          traffic_limit, callback, callback_var, forbid_overwrite, if_match,
+                                          self.disable_encoding_meta)
+        if self.except100_continue_threshold > 0 and (
+                content_length is None or content_length > self.except100_continue_threshold):
+            headers['Expect'] = "100-continue"
 
         if content:
             content = init_content(content)
@@ -1644,7 +1682,11 @@ class TosClientV2(TosClient):
                                                     content_language, content_length, content_type,
                                                     expires, grant_full_control, grant_read, grant_read_acp,
                                                     grant_write_acp, key, meta, storage_class,
-                                                    website_redirect_location, traffic_limit, if_match)
+                                                    website_redirect_location, traffic_limit, if_match,
+                                                    self.disable_encoding_meta)
+        if self.except100_continue_threshold > 0 and (
+                content_length is None or content_length > self.except100_continue_threshold):
+            headers['Expect'] = "100-continue"
 
         if content:
             content = init_content(content)
@@ -1698,8 +1740,8 @@ class TosClientV2(TosClient):
         """
 
         headers = _get_set_object_meta_headers(self.recognize_content_type, cache_control, content_disposition,
-                                               content_encoding,
-                                               content_language, content_type, expires, key, meta)
+                                               content_encoding, content_language, content_type, expires, key, meta,
+                                               self.disable_encoding_meta)
 
         params = {'metadata': ''}
 
@@ -1778,13 +1820,13 @@ class TosClientV2(TosClient):
 
         params = _get_object_params(response_cache_control, response_content_disposition, response_content_encoding,
                                     response_content_language, response_content_type, response_expires, version_id,
-                                    process, save_bucket, save_object)
+                                    process, save_bucket, save_object, self.disable_encoding_meta)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Get.value, headers=headers,
                          params=params, generic_input=generic_input)
 
         return GetObjectOutput(resp, progress_callback=data_transfer_listener, rate_limiter=rate_limiter,
-                               enable_crc=self.enable_crc)
+                               enable_crc=self.enable_crc, disable_encoding_meta=self.disable_encoding_meta)
 
     @high_latency_log
     def _get_object_by_part(self, bucket: str, key: str, part, file, if_match=None, data_transfer_listener=None,
@@ -1958,7 +2000,7 @@ class TosClientV2(TosClient):
                                                        grant_read, grant_read_acp, grant_write_acp, key, meta,
                                                        ssec_algorithm, ssec_key, ssec_key_md5,
                                                        server_side_encryption, website_redirect_location, storage_class,
-                                                       forbid_overwrite)
+                                                       forbid_overwrite, self.disable_encoding_meta)
 
         params = {'uploads': ''}
         if encoding_type:
@@ -2280,6 +2322,8 @@ class TosClientV2(TosClient):
                                            generic_input=generic_input)
             return ResumableCopyObjectOutput(copy_resp=copy_output, bucket=bucket, key=key)
         size = head_out.content_length
+        if not copy_source_if_match:
+            copy_source_if_match = head_out.etag
 
         # if size == 0:
         #     raise TosClientError('object size is 0, please use copy_object')
@@ -2381,7 +2425,7 @@ class TosClientV2(TosClient):
                                                   record=record, size=size, ssec_key=ssec_key,
                                                   ssec_key_md5=ssec_key_md5,
                                                   ssec_algorithm=ssec_algorithm,
-                                                  copy_source_if_match=head_out.etag,
+                                                  copy_source_if_match=copy_source_if_match,
                                                   upload_event_listener=copy_event_listener,
                                                   cancel_hook=cancel_hook,
                                                   copy_source_ssec_algorithm=copy_source_ssec_algorithm,
@@ -2469,6 +2513,8 @@ class TosClientV2(TosClient):
         content_length = result.content_length
         if result.object_type == 'Symlink':
             content_length = int(result.header.get('x-tos-symlink-target-size'))
+        if not if_match:
+            if_match = result.etag
 
         if checkpoint_file:
             dir, file = os.path.split(checkpoint_file)
@@ -2585,6 +2631,9 @@ class TosClientV2(TosClient):
         headers = _get_upload_part_headers(content_length, content_md5, server_side_encryption, ssec_algorithm,
                                            ssec_key, ssec_key_md5, traffic_limit)
 
+        if self.except100_continue_threshold > 0 and (
+                content_length is None or content_length > self.except100_continue_threshold):
+            headers['Expect'] = "100-continue"
         if content:
             content = init_content(content)
             patch_content(content)
@@ -2880,7 +2929,8 @@ class TosClientV2(TosClient):
                            max_keys: int = 1000,
                            encoding_type: str = None,
                            list_only_once: bool = False,
-                           generic_input: GenericInput = None) -> ListObjectType2Output:
+                           generic_input: GenericInput = None,
+                           fetch_meta: bool = None) -> ListObjectType2Output:
         """ 列举 bucket 中所有 objects 信息
 
         :param bucket: 桶名
@@ -2893,18 +2943,20 @@ class TosClientV2(TosClient):
         :param encoding_type: 返回key编码类型
         :param list_only_once: 是否只列举一次
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param fetch_meta: 是否获取对象的自定义meta
         :return: ListObjectType2Output
         """
         params = _get_list_object_v2_params(delimiter, start_after, continuation_token, reverse, max_keys,
-                                            encoding_type, prefix)
+                                            encoding_type, prefix, fetch_meta)
 
         if list_only_once:
             resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params,
                              generic_input=generic_input)
-            return ListObjectType2Output(resp)
+            return ListObjectType2Output(resp, self.disable_encoding_meta)
 
         iterator = ListObjectsIterator(self._req, max_keys, bucket=bucket, method=HttpMethodType.Http_Method_Get.value,
-                                       params=params, func='list_objects_type2')
+                                       params=params, func='list_objects_type2',
+                                       disable_encoding_meta=self.disable_encoding_meta)
         result_arr = []
         for iterm in iterator:
             result_arr.append(iterm)
@@ -2934,7 +2986,7 @@ class TosClientV2(TosClient):
         """
 
         headers = _get_put_symlink_headers(symlink_target_key, symlink_target_bucket, acl, storage_class, meta,
-                                           forbid_overwrite)
+                                           forbid_overwrite, self.disable_encoding_meta)
 
         params = {'symlink': ''}
 
@@ -2993,17 +3045,22 @@ class TosClientV2(TosClient):
         return GetBucketLocationOutput(resp)
 
     def put_bucket_lifecycle(self, bucket: str, rules: [],
-                             generic_input: GenericInput = None) -> PutBucketLifecycleOutput:
+                             generic_input: GenericInput = None,
+                             allow_same_action_overlap: bool = None) -> PutBucketLifecycleOutput:
         """ 设置 bucket 的生命周期规则
 
         :param bucket: 桶名
         :param rules: 生命周期规则
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param allow_same_action_overlap: 是否支持前缀重叠
         :return: PutBucketLifecycleOutput
         """
         data = to_put_bucket_lifecycle(rules)
         data = json.dumps(data)
-        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        if allow_same_action_overlap:
+            allow_same_action_overlap = str(allow_same_action_overlap).lower()
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest())),
+                   "x-tos-allow-same-action-overlap": allow_same_action_overlap}
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, data=data, headers=headers,
                          params={'lifecycle': ''}, generic_input=generic_input)
 
@@ -3266,8 +3323,9 @@ class TosClientV2(TosClient):
                      ssec_key_md5: str = None,
                      meta: Dict = None,
                      ignore_same_key: bool = False,
-                     hex_md5: str = None,
-                     generic_input: GenericInput = None) -> FetchObjectOutput:
+                     hex_md5: str = None,  # deprecated
+                     generic_input: GenericInput = None,
+                     content_md5: str = None) -> FetchObjectOutput:
         """ fetch 拉取对象
 
         :param bucket: 桶名
@@ -3290,15 +3348,17 @@ class TosClientV2(TosClient):
         :param ssec_key_md5: 该头域表示加密目标对象使用的密钥的MD5值。MD5值用于消息完整性检查，确认加密密钥传输过程中没有出错。
         :param meta: 对象元数据
         :param ignore_same_key: 是否忽略相同的对象名
-        :param hex_md5: 对象md5值
+        :param hex_md5: deprecated，该参数不再使用，请用content_md5，deprecated
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param content_md5: 对象md5值
         :return: FetchObjectOutput
         """
 
-        data = to_fetch_object(url, key, ignore_same_key, hex_md5)
+        data = to_fetch_object(url, key, ignore_same_key, hex_md5, content_md5)
         data = json.dumps(data)
         headers = _get_fetch_headers(storage_class, acl, grant_full_control, grant_read, grant_read_acp,
-                                     grant_write_acp, meta, ssec_algorithm, ssec_key, ssec_key_md5)
+                                     grant_write_acp, meta, ssec_algorithm, ssec_key, ssec_key_md5,
+                                     self.disable_encoding_meta)
         headers['Content-Length'] = str(len(data))
         resp = self._req(bucket=bucket, key=key, params={'fetch': ''}, headers=headers,
                          method=HttpMethodType.Http_Method_Post.value, data=data, generic_input=generic_input)
@@ -3318,7 +3378,12 @@ class TosClientV2(TosClient):
                        meta: Dict = None,
                        ignore_same_key: bool = False,
                        hex_md5: str = None,
-                       generic_input: GenericInput = None) -> PutFetchTaskOutput:
+                       generic_input: GenericInput = None,
+                       content_md5: str = None,
+                       callback_url: str = None,
+                       callback_host: str = None,
+                       callback_body: str = None,
+                       callback_body_type: str = None) -> PutFetchTaskOutput:
         """ 添加 fetch 拉起对象任务
 
         :param bucket: 桶名
@@ -3341,14 +3406,21 @@ class TosClientV2(TosClient):
         :param ssec_key_md5: 该头域表示加密目标对象使用的密钥的MD5值。MD5值用于消息完整性检查，确认加密密钥传输过程中没有出错。
         :param meta: 对象元数据
         :param ignore_same_key: 是否忽略相同的对象名
-        :param hex_md5: 对象md5值
+        :param hex_md5: deprecated，该参数不再使用，请用content_md5，deprecated
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param content_md5: 对象md5值
+        :param callback_url
+        :param callback_host
+        :param callback_body
+        :param callback_body_type
         :return: PutFetchTaskOutput
         """
 
         headers = _get_fetch_headers(storage_class, acl, grant_full_control, grant_read, grant_read_acp,
-                                     grant_write_acp, meta, ssec_algorithm, ssec_key, ssec_key_md5)
-        data = to_fetch_object(url, key, ignore_same_key, hex_md5)
+                                     grant_write_acp, meta, ssec_algorithm, ssec_key, ssec_key_md5,
+                                     self.disable_encoding_meta)
+        data = to_put_fetch_object(url, key, ignore_same_key, hex_md5, content_md5, callback_url, callback_host,
+                                   callback_body, callback_body_type)
         data = json.dumps(data)
 
         resp = self._req(bucket=bucket, params={'fetchTask': ''}, headers=headers,
@@ -3519,6 +3591,37 @@ class TosClientV2(TosClient):
                          generic_input=generic_input)
         return GetBucketNotificationOutput(resp)
 
+    def put_bucket_notification_type2(self, bucket: str, rule: [] = None, version: str = None,
+                                      generic_input: GenericInput = None) -> PutBucketNotificationType2Output:
+        """设置桶事件通知规则
+
+        :param: bucket: 桶名
+        :param: rules: 配置
+        :param: version: 事件通知规则的版本号
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: PutBucketNotificationType2Output
+        """
+        data = to_put_bucket_notification_type2(rule, version)
+        data = json.dumps(data)
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params={'notification_v2': ''},
+                         data=data,
+                         headers=headers,
+                         generic_input=generic_input)
+        return PutBucketNotificationType2Output(resp)
+
+    def get_bucket_notification_type2(self, bucket,
+                                      generic_input: GenericInput = None) -> GetBucketNotificationType2Output:
+        """获取桶事件通知规则
+
+        :param: bucket: 桶名
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: GetBucketNotificationType2Output
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params={'notification_v2': ''},
+                         generic_input=generic_input)
+        return GetBucketNotificationType2Output(resp)
+
     def put_bucket_custom_domain(self, bucket: str, rule: CustomDomainRule,
                                  generic_input: GenericInput = None) -> PutBucketCustomDomainOutput:
         """ 设置自定义域名
@@ -3681,6 +3784,46 @@ class TosClientV2(TosClient):
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={"rename": ""},
                          generic_input=generic_input)
         return DeleteBucketRenameOutput(resp)
+
+    def put_bucket_encryption(self, bucket: str, rule: BucketEncryptionRule,
+                              generic_input: GenericInput = None) -> PutBucketReplicationOutput:
+        """ 设置桶加密规则
+
+        :param bucket: 桶名
+        :param rule: 规则
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: PutBucketEncryptionOutput
+        """
+        data = to_bucket_encrypt(rule)
+        data = json.dumps(data)
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        resp = self._req(bucket=bucket, data=data, params={'encryption': ''}, headers=headers,
+                         method=HttpMethodType.Http_Method_Put.value, generic_input=generic_input)
+        return PutBucketEncryptionOutput(resp)
+
+    def get_bucket_encryption(self, bucket, generic_input: GenericInput = None) -> GetBucketReplicationOutput:
+        """ 获取桶加密规则
+
+        :param bucket: 桶名
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: GetBucketEncryptionOutput
+        """
+
+        resp = self._req(bucket=bucket, params={'encryption': ''}, method=HttpMethodType.Http_Method_Get.value,
+                         generic_input=generic_input)
+        return GetBucketEncryptionOutput(resp)
+
+    def delete_bucket_encryption(self, bucket: str,
+                                 generic_input: GenericInput = None) -> DeleteBucketReplicationOutput:
+        """ 删除桶加密规则
+
+        :param bucket: 桶名
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: DeleteBucketEncryptionOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params={'encryption': ''},
+                         generic_input=generic_input)
+        return DeleteBucketEncryptionOutput(resp)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None,
              generic_input=None):
