@@ -8,7 +8,9 @@ import socket
 import sys
 import threading
 import time
+import urllib.parse
 from hashlib import sha256
+from io import StringIO
 from urllib.parse import unquote_to_bytes, quote
 
 import crcmod as crcmod
@@ -26,6 +28,7 @@ from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirective
 from .exceptions import TosClientError
 from .log import get_logger
 from .mine_type import TYPES_MAP
+from io import StringIO
 
 REGION_MAP = {
     'cn-beijing': 'tos-cn-beijing.volces.com',
@@ -328,6 +331,33 @@ def meta_header_decode(headers):
     return decode_headers
 
 
+def convert_meta(meta_list, disable_encoding_meta=None):
+    if not meta_list:
+        return meta_list
+    meta = {}
+    for m in meta_list:
+        meta[m['Key']] = m['Value']
+    if disable_encoding_meta:
+        return meta
+    return meta_header_decode(meta)
+
+
+def content_disposition_encode(s):
+    if not s:
+        return s
+    content_dispositions = s.split(';')
+    result = []
+    for content_disposition in content_dispositions:
+        if "=" in content_disposition:
+            i = content_disposition.index("=")
+            if content_disposition[:i].strip().lower() == "filename":
+                value = urllib.parse.quote(content_disposition[i + 1:], safe=" \"\'")
+                result.append(content_disposition[:i] + "=" + value)
+                continue
+        result.append(content_disposition)
+    return ";".join(result)
+
+
 def makedir_p(dirpath):
     try:
         os.makedirs(dirpath)
@@ -587,6 +617,10 @@ def init_content(data, can_reset=None, init_offset=None):
     if not (hasattr(data, 'seek') and hasattr(data, 'tell')):
         return add_Background_func(data, can_reset=True)
 
+    if isinstance(data, StringIO):
+        data = data.read()
+        return add_Background_func(data, can_reset=True)
+
     # 兜底不可reset
     return add_Background_func(data, can_reset=False)
 
@@ -600,6 +634,7 @@ def add_Background_func(data, can_reset=False, init_offset=None, size=None):
     3. size 为空 但具备 __iter__ 直接封装为_IterableAdapter、通过http chuck方式发送
     4. size 不为空，直接封装为 _ReaderAdapter
     """
+
     data = to_bytes(data)
     if size is None:
         size = _get_size(data)
@@ -656,6 +691,8 @@ def add_crc_func(data, init_crc=0, discard=0, size=None, can_reset=False, is_res
 
 
 def _get_size(data):
+    if isinstance(data, StringIO):
+        return len(to_bytes(data.getvalue()[data.tell():]))
     if hasattr(data, '__len__') or hasattr(data, 'len') or (hasattr(data, 'seek') and hasattr(data, 'tell')) or hasattr(
             data, 'read'):
         if hasattr(data, '__len__'):
