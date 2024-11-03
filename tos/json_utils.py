@@ -1,6 +1,6 @@
 from .consts import LAST_MODIFY_TIME_DATE_FORMAT
 from .models2 import Owner, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, CustomDomainRule, \
-    RealTimeLogConfiguration, RestoreJobParameters
+    RealTimeLogConfiguration, RestoreJobParameters, BucketEncryptionRule
 from .utils import check_enum_type
 
 
@@ -86,6 +86,8 @@ def to_put_bucket_mirror_back(rules: []):
                 info['Condition']['KeyPrefix'] = rule.condition.key_prefix
             if rule.condition.key_suffix:
                 info['Condition']['KeySuffix'] = rule.condition.key_suffix
+            if rule.condition.http_method:
+                info['Condition']['HttpMethod'] = rule.condition.http_method
         if rule.redirect:
             info['Redirect'] = {}
             if rule.redirect.redirect_type:
@@ -130,7 +132,15 @@ def to_put_bucket_mirror_back(rules: []):
                     if rule.redirect.transform.replace_key_prefix.replace_with:
                         info['Redirect']['Transform']['ReplaceKeyPrefix'][
                             'ReplaceWith'] = rule.redirect.transform.replace_key_prefix.replace_with
-
+            if rule.redirect.fetch_header_to_meta_data_rules:
+                meta_data_rules = []
+                for r in rule.redirect.fetch_header_to_meta_data_rules:
+                    meta_data_rule = {
+                        'SourceHeader': r.source_header,
+                        'MetaDataSuffix': r.meta_data_suffix
+                    }
+                    meta_data_rules.append(meta_data_rule)
+                info['Redirect']['FetchHeaderToMetaDataRules'] = meta_data_rules
         arr.append(info)
 
     data['Rules'] = arr
@@ -161,9 +171,14 @@ def to_put_bucket_lifecycle(rules: []):
                 info['Expiration']['Date'] = rule.expiration.date.strftime(LAST_MODIFY_TIME_DATE_FORMAT)
 
         if rule.no_current_version_expiration:
-            info['NoncurrentVersionExpiration'] = {
-                'NoncurrentDays': rule.no_current_version_expiration.no_current_days
-            }
+            info['NoncurrentVersionExpiration'] = {}
+            if rule.no_current_version_expiration.no_current_days:
+                info['NoncurrentVersionExpiration'][
+                    'NoncurrentDays'] = rule.no_current_version_expiration.no_current_days
+            if rule.no_current_version_expiration.non_current_date:
+                info['NoncurrentVersionExpiration'][
+                    'NoncurrentDate'] = rule.no_current_version_expiration.non_current_date.strftime(
+                    LAST_MODIFY_TIME_DATE_FORMAT)
 
         if rule.abort_in_complete_multipart_upload and rule.abort_in_complete_multipart_upload.days_after_init:
             info['AbortIncompleteMultipartUpload'] = {
@@ -198,18 +213,29 @@ def to_put_bucket_lifecycle(rules: []):
                 non_current_version_transition_info = {}
                 if tr.non_current_days:
                     non_current_version_transition_info['NoncurrentDays'] = tr.non_current_days
-
                 if tr.storage_class:
                     non_current_version_transition_info['StorageClass'] = tr.storage_class.value
+                if tr.non_current_date:
+                    non_current_version_transition_info['NoncurrentDate'] = tr.non_current_date.strftime(
+                        LAST_MODIFY_TIME_DATE_FORMAT)
 
                 current_version_transition_arr.append(non_current_version_transition_info)
 
             info['NoncurrentVersionTransitions'] = current_version_transition_arr
 
+        if rule.filter:
+            info['Filter'] = {}
+            if rule.filter.object_size_greater_than:
+                info['Filter']['ObjectSizeGreaterThan'] = rule.filter.object_size_greater_than
+            if rule.filter.greater_than_include_equal.value:
+                info['Filter']['GreaterThanIncludeEqual'] = rule.filter.greater_than_include_equal.value
+            if rule.filter.object_size_less_than:
+                info['Filter']['ObjectSizeLessThan'] = rule.filter.object_size_less_than
+            if rule.filter.less_than_include_equal.value:
+                info['Filter']['LessThanIncludeEqual'] = rule.filter.less_than_include_equal.value
         arr.append(info)
 
     data['Rules'] = arr
-
     return data
 
 
@@ -226,15 +252,31 @@ def to_put_tagging(tags: []):
     return data
 
 
-def to_fetch_object(url: str, object: str = None, ignore_same_key=None, content_md5=None):
+def to_fetch_object(url: str, object: str = None, ignore_same_key=None, hex_md5=None, content_md5=None):
     info = {'URL': url}
     if object:
         info['Object'] = object
     if ignore_same_key:
         info['IgnoreSameKey'] = ignore_same_key
+    if not content_md5 and hex_md5:
+        content_md5 = hex_md5
     if content_md5:
         info['ContentMD5'] = content_md5
 
+    return info
+
+
+def to_put_fetch_object(url: str, object: str = None, ignore_same_key=None, hex_md5=None, content_md5=None,
+                        callback_url=None, callback_host=None, callback_body=None, callback_body_type=None):
+    info = to_fetch_object(url, object, ignore_same_key, hex_md5, content_md5, )
+    if callback_url:
+        info['CallbackUrl'] = callback_url
+    if callback_host:
+        info['CallbackHost'] = callback_host
+    if callback_body:
+        info['CallbackBody'] = callback_body
+    if callback_body_type:
+        info['CallbackBodyType'] = callback_body_type
     return info
 
 
@@ -429,4 +471,62 @@ def to_restore_object(days: int, tier: RestoreJobParameters):
     if tier and tier.tier:
         info['RestoreJobParameters'] = {"Tier": tier.tier.value}
 
+    return info
+
+
+def to_bucket_encrypt(rule: BucketEncryptionRule):
+    info = {}
+    if rule and rule.apply_server_side_encryption_by_default:
+        info['Rule'] = {}
+        info['Rule']['ApplyServerSideEncryptionByDefault'] = {
+            'SSEAlgorithm': rule.apply_server_side_encryption_by_default.sse_algorithm,
+            'KMSMasterKeyID': rule.apply_server_side_encryption_by_default.kms_master_key_id
+        }
+    return info
+
+
+def to_put_bucket_notification_type2(rules: [], version: str):
+    info = {}
+    if version:
+        info['Version'] = version
+    if rules:
+        info['Rules'] = []
+        for rule in rules:
+            config = {'RuleID': rule.rule_id}
+            if rule.events:
+                config['Events'] = rule.events
+            if rule.filter and rule.filter.tos_key and rule.filter.tos_key.filter_rules:
+                config['Filter'] = {'TOSKey': {}}
+                config_filter_rules = []
+                for filter_rule in rule.filter.tos_key.filter_rules:
+                    config_filter_rules.append({
+                        'Name': filter_rule.name,
+                        'Value': filter_rule.value,
+                    })
+                config['Filter']['TOSKey'] = {'FilterRules': config_filter_rules}
+            if rule.destination:
+                config['Destination'] = {}
+                if rule.destination.rocket_mq:
+                    rocket_mqs = []
+                    for r in rule.destination.rocket_mq:
+                        rocket_mq = {}
+                        if r.role:
+                            rocket_mq['Role'] = r.role
+                        if r.instance_id:
+                            rocket_mq['InstanceID'] = r.instance_id
+                        if r.topic:
+                            rocket_mq['Topic'] = r.topic
+                        if r.access_key_id:
+                            rocket_mq['AccessKeyID'] = r.access_key_id
+                        rocket_mqs.append(rocket_mq)
+                    config['Destination']['RocketMQ'] = rocket_mqs
+                if rule.destination.ve_faas:
+                    ve_faas = []
+                    for r in rule.destination.ve_faas:
+                        ve_faas.append({
+                            'FunctionID': r.function_id
+                        })
+                    config['Destination']['VeFaaS'] = ve_faas
+
+            info['Rules'].append(config)
     return info

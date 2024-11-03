@@ -297,6 +297,10 @@ class _BreakpointUploader(BreakpointBase):
                 download_crc = cal_crc_from_upload_parts(parts)
                 check_crc("upload_file", download_crc, result.hash_crc64_ecma, result.request_id)
             return result
+        except TosServerError as e:
+            if e.status_code and (e.status_code == 404 or e.status_code == 203):
+                self._delete_checkpoint()
+            raise TaskCompleteMultipartError(e)
         except Exception as e:
             raise TaskCompleteMultipartError(e)
 
@@ -409,6 +413,10 @@ class _BreakpointResumableCopyObject(BreakpointBase):
             result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts,
                                                            generic_input=self.generic_input)
             return result
+        except TosServerError as e:
+            if e.status_code and (e.status_code == 404 or e.status_code == 203):
+                self._delete_checkpoint()
+            raise TaskCompleteMultipartError(e)
         except Exception as e:
             raise TaskCompleteMultipartError(e)
 
@@ -490,7 +498,7 @@ class _BreakpointDownloader(BreakpointBase):
         with open(self.temp, 'rb+') as f:
             try:
                 f.seek(part.start, os.SEEK_SET)
-                crc = self.client._get_object_by_part(bucket=self.bucket, key=self.key, part=part, file=f,
+                result = self.client._get_object_by_part(bucket=self.bucket, key=self.key, part=part, file=f,
                                                       if_match=self.etag,
                                                       data_transfer_listener=self.datatransfer_listener,
                                                       rate_limiter=self.rate_limiter,
@@ -501,7 +509,7 @@ class _BreakpointDownloader(BreakpointBase):
                                                       traffic_limit=self.traffic_limit,
                                                       generic_input=self.generic_input)
                 if self.client.enable_crc:
-                    part.part_crc = crc
+                    part.part_crc = result.content.crc
             except Exception as e:
                 self._callback_part_fail(e, part)
                 raise e
