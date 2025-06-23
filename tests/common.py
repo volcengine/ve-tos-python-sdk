@@ -74,6 +74,8 @@ class TosTestBase(unittest.TestCase):
         self.sseKey = "Y2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2M="
         self.sseKeyMd5 = "ACdH+Fu9K3HlXdIUBu8GdA=="
         self.sseAlg = "AES256"
+        self.callback_url = os.getenv('CallbackUrl')
+        self.cloud_function = os.getenv('CloudFunction')
 
     def setUp(self):
         self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2)

@@ -82,11 +82,13 @@ class TestWithVersion(TosTestBase):
         self.client.create_bucket(bucket_name)
         self.version_client.put_bucket_versioning(bucket_name, True)
         time.sleep(30)
+        raw = "!@#$%^&*()_+-=[]{}|;':\",./<>?中文测试编码%20%%%^&abcd /\\"
+        meta = {'name': ' %张/三%', 'age': '12', 'special': raw, raw: raw}
         self.client.put_object(bucket_name, 'test.txt', content=content,
-                               storage_class=tos.StorageClassType.Storage_Class_Ia)
+                               storage_class=tos.StorageClassType.Storage_Class_Ia, meta=meta)
         self.client.put_object(bucket_name, 'test.txt', content=content,
-                               storage_class=tos.StorageClassType.Storage_Class_Ia)
-        out = self.client.list_object_versions(bucket_name)
+                               storage_class=tos.StorageClassType.Storage_Class_Ia, meta=meta)
+        out = self.client.list_object_versions(bucket_name, fetch_meta=True)
         for version in out.versions:
             self.assertIsNotNone(version.version_id)
             self.assertIsNotNone(version.etag)
@@ -94,6 +96,10 @@ class TestWithVersion(TosTestBase):
             self.assertIsNotNone(version.is_latest)
             self.assertEqual(version.key, 'test.txt')
             self.assertEqual(version.storage_class, tos.StorageClassType.Storage_Class_Ia)
+            self.assertTrue(version.meta['name'], meta['name'])
+            self.assertTrue(version.meta['age'], meta['age'])
+            self.assertTrue(version.meta['special'], meta['special'])
+            self.assertTrue(version.meta[raw], meta[raw])
 
         self.client.put_object(bucket_name, 'test2.txt', content='123')
         out_1 = self.client.list_object_versions(bucket_name, max_keys=1)
