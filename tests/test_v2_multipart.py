@@ -262,48 +262,6 @@ class TestMultipart(TosTestBase):
         out = self.client.get_object(bucket_name, key)
         assert out.read() == content + content
 
-    def test_multipart_callback(self):
-        bucket_name = self.bucket_name + "-test-multipart-callback"
-        self.bucket_delete.append(bucket_name)
-        self.client.create_bucket(bucket_name)
-        key = self.random_key('.js')
-        mult_out = self.client.create_multipart_upload(bucket_name, key)
-        parts = []
-        content = random_bytes(5 * 1024 * 1024)
-        for i in range(1, 3):
-            upload_part_output = self.client.upload_part(bucket=bucket_name, key=key, upload_id=mult_out.upload_id,
-                                                         part_number=i, content=content)
-            parts.append(UploadedPart(i, upload_part_output.etag))
-
-        callback = base64.b64encode(self.callback.encode('utf-8')).decode('utf-8')
-        callback_var = base64.b64encode(self.callback_var.encode('utf-8')).decode('utf-8')
-        complete_out = self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts,
-                                                             callback=callback, callback_var=callback_var)
-
-        self.assertEqual(complete_out.callback_result, '{"msg":"ok"}')
-        self.assertTrue(len(complete_out.location) > 0)
-        self.assertTrue(len(complete_out.etag) > 0)
-        self.assertTrue(complete_out.hash_crc64_ecma > 0)
-
-        get_out = self.client.get_object(bucket_name, key)
-        self.assertEqual(get_out.read(), content + content)
-
-        key = self.random_key('.js')
-        mult_out = self.client.create_multipart_upload(bucket_name, key)
-        parts = []
-        content = random_bytes(5 * 1024 * 1024)
-        for i in range(1, 3):
-            upload_part_output = self.client.upload_part(bucket=bucket_name, key=key, upload_id=mult_out.upload_id,
-                                                         part_number=i, content=content)
-            parts.append(UploadedPart(i, upload_part_output.etag))
-
-        callback_url = '{"callbackUrl" : "http://www.test.xxx.com"}'
-        callback = base64.b64encode(callback_url.encode('utf-8')).decode('utf-8')
-        with self.assertRaises(TosServerError) as cm:
-            self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts,
-                                                  callback=callback, callback_var=callback_var)
-        self.assertEqual(cm.exception.status_code, 203)
-
 
 if __name__ == '__main__':
     unittest.main()

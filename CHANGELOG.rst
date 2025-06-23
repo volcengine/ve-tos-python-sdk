@@ -1,5 +1,56 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.8.4
+-------------
+- 修改:支持深度冷归档对象类型
+- 修改:PutObject/CopyObject/CreateMultipartUpload/UploadFile 支持指定对象标签
+- 修改:GetObject/HeadObject 支持返回标签个数
+- 修改:配置/查询镜像回源接口规则 Condition 支持 AllowHost，Redirect 支持 FetchSourceOnRedirectWithQuery，Redirect.MirrorHeader 支持 Set
+
+Version 2.8.3
+-------------
+- 新增：delete_object和delete_multi_objects增加recursive参数
+
+Version 2.8.2
+-------------
+- 新增：优化桶类型缓存时间
+
+Version 2.8.1
+-------------
+- 新增：优化分层命名空间append_object
+
+Version 2.8.0
+-------------
+- 新增：get_object/head_object 新增is_directory
+- 新增：扩展user_agent内容
+
+Version 2.7.2
+-------------
+- 修改：优化append_object缓存
+- 修改：优化head_object性能
+
+Version 2.7.1
+-------------
+- 修改：适配分层命令空间的相关接口
+
+Version 2.7.0
+-------------
+- 新增：桶配置服务端加密的相关接口
+- 新增：事件通知配置type2接口
+- 新增：桶生命周期规则支持指定按size范围过滤及历史版本指定具体日期
+- 新增：桶生命周期规则支持按前缀重叠参数
+- 新增：初始化client参数disable_encoding_meta/except100_continue_threshold
+- 新增：异步抓取支持设置回调
+- 新增：镜像回源支持配置将源端的头域写入自定义元数据
+- 新增：get_object/head_object支持CRR复制状态(replication_status)
+- 新增：列举对象新增fetch_meta参数
+- 修改：同步/异步抓取接口适配content_md5
+- 修复：content-disposition编码问题
+
+Version 2.6.11
+-------------
+- 修复：get_fetch_task接口
+
 Version 2.6.10
 -------------
 - 增加：get_fetch_task接口

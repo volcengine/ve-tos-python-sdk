@@ -23,12 +23,24 @@ def convert_acl_type(acl: str):
     return ACLType.ACL_Unknown
 
 
+class InventoryFormatType(Enum):
+    InventoryFormatCsv = "CSV"
+
+class InventoryFrequencyType(Enum):
+    InventoryFrequencyTypeDaily = "Daily"
+    InventoryFrequencyTypeWeekly = "Weekly"
+
+class InventoryIncludedObjType(Enum):
+    InventoryIncludedObjTypeAll = "All"
+    InventoryIncludedObjTypeCurrent = "Current"
+
 class StorageClassType(Enum):
     Storage_Unknown = "Unknown"
     # 标准存储
     Storage_Class_Standard = "STANDARD"
     # 低频访问存储
     Storage_Class_Ia = "IA"
+    # 智能分层存储
     Storage_Class_INTELLIGENT_TIERING = "INTELLIGENT_TIERING"
     # 归档闪回存储
     Storage_Class_Archive_Fr = 'ARCHIVE_FR'
@@ -36,7 +48,12 @@ class StorageClassType(Enum):
     Storage_Class_Cold_Archive = 'COLD_ARCHIVE'
     # 归档存储
     Storage_Class_Archive = 'ARCHIVE'
+    # 深度冷归档存储
+    Storage_Class_DEEP_COLD_ARCHIVE = 'DEEP_COLD_ARCHIVE'
 
+class TaggingDirectiveType(Enum):
+    TaggingDirectiveTypeCopy = "Copy"
+    TaggingDirectiveTypeReplace = "Replace"
 
 def convert_storage_class_type(storage_class: str):
     for t in StorageClassType:
@@ -250,3 +267,17 @@ def convert_tier_type(s: str):
         if t.value == s:
             return t
     return TierType.Tier_Unknown
+
+
+class ReplicationStatusType(Enum):
+    ReplicationStatusType_Pending = "PENDING"
+    ReplicationStatusType_Complete = "COMPLETE"
+    ReplicationStatusType_Failed = "FAILED"
+    ReplicationStatusType_Replica = "REPLICA"
+
+
+def convert_replication_status_type(s: str):
+    for t in ReplicationStatusType:
+        if t.value == s:
+            return t
+    return ""
