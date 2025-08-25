@@ -30,17 +30,23 @@ from .models import (AppendObjectResult, CreateBucketResult, GetObjectResult,
                      HeadBucketResult, HeadObjectResult, PutObjectResult,
                      RequestResult)
 from .utils import get_content_type, get_value, to_bytes, to_str, _format_endpoint, _get_host, _get_scheme, _if_map, \
-    _make_virtual_host_uri, _get_virtual_host, _make_virtual_host_url, _cal_content_sha256
+    _make_virtual_host_uri, _get_virtual_host, _make_virtual_host_url, _cal_content_sha256,_get_control_endpoint,\
+    _make_control_host_url
 
 USER_AGENT = 'volc-tos-sdk-python/{0}'.format(__version__)
 
 
 class TosClient():
-    def __init__(self, auth, endpoint, connect_timeout=None, connection_pool_size=10, recognize_content_type=True):
+    def __init__(self, auth, endpoint, connect_timeout=None, connection_pool_size=10, recognize_content_type=True,control_endpoint=None):
+        if control_endpoint is None:
+            control_endpoint = ''
         self.auth = auth
         self.endpoint = _format_endpoint(_if_map(auth.region, endpoint))
+        self.control_endpoint = _format_endpoint(_get_control_endpoint(auth.region,control_endpoint))
         self.host = _get_host(self.endpoint)
+        self.control_host = _format_endpoint(self.control_endpoint)
         self.scheme = _get_scheme(self.endpoint)
+        self.control_scheme = _get_scheme(self.control_endpoint)
         self.timeout = connect_timeout or CONNECT_TIMEOUT
         self.recognize_content_type = recognize_content_type
 
@@ -1005,6 +1011,9 @@ class TosClient():
         get_logger().info(
             'delete_objects, bucket: {0}, req id: {1}, status code: {2}'.format(Bucket, resp.request_id, resp.status))
         return convert_delete_objects_result(resp)
+
+    def _make_control_url(self,account_id=None,key=None):
+        return _make_control_host_url(self.control_host,self.control_scheme,account_id=account_id,key=key)
 
     def _make_virtual_host_url(self, bucket=None, key=None):
         return _make_virtual_host_url(self.host, self.scheme, bucket, key)

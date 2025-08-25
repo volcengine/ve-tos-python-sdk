@@ -59,7 +59,7 @@ class TosTestBase(unittest.TestCase):
         self.endpoint2 = os.getenv('Endpoint2')
         self.region = os.getenv('Region')
         self.region2 = os.getenv('Region2')
-        self.bucket_name = "sun-" + random_string(10)
+        self.bucket_name = "py-sdk-" + random_string(10)
 
         self.mq_instance_id = os.getenv('MqInstanceId')
         self.account_id = os.getenv('AccountId')

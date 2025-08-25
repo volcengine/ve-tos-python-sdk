@@ -3,6 +3,7 @@ import base64
 import datetime
 import http
 import http.client as httplib
+import json
 import os
 import random
 import threading
@@ -100,6 +101,11 @@ class TestObject(TosTestBase):
         self.assertTrue(head_object_out.delete_marker is False)
         self.assertTrue(head_object_out.content_length == 1024)
 
+        try:
+            head_object_out = self.client.head_object(bucket_name, "obj404")
+        except TosServerError as e:
+            self.assertTrue(e.key == 'obj404')
+
         get_object_out = self.client.get_object(bucket_name, key)
         res = b''
         for chuck in get_object_out:
@@ -111,44 +117,45 @@ class TestObject(TosTestBase):
         read_content = range_out.read()
         self.assertEqual(read_content, content[1:101])
 
-    def test_hns_delete_object(self):
-        bucket_name = self.bucket_name + '-test-hns'
-        bucket_name = "sun-xouyrugovx-test-hns"
-        # self.bucket_delete.append(bucket_name)
-        # rsp = self.client.create_bucket(bucket_name, bucket_type="hns")
+    # hns桶不再支持未开启回收站的递归删除请求
+    # def test_hns_delete_object(self):
+    #     bucket_name = self.bucket_name + '-test-hns'
+    #     bucket_name = "sun-xouyrugovx-test-hns"
+    #     # self.bucket_delete.append(bucket_name)
+    #     rsp = self.client.create_bucket(bucket_name, bucket_type="hns")
         # assert rsp.status_code == 200
-        rsp = self.client.put_object(bucket=bucket_name, key="dir1/a", content=random_bytes(1024))
-        assert rsp.status_code == 200
-        rsp = self.client.put_object(bucket=bucket_name, key="dir1/b", content=random_bytes(1024))
-        assert rsp.status_code == 200
-        rsp = self.client.put_object(bucket=bucket_name, key="dir1/c", content=random_bytes(1024))
-        assert rsp.status_code == 200
-        rsp = self.client.delete_object(bucket=bucket_name, key="dir1", recursive=True)
-        assert rsp.status_code == 204
+        # rsp = self.client.put_object(bucket=bucket_name, key="dir1/a", content=random_bytes(1024))
+        # assert rsp.status_code == 200
+        # rsp = self.client.put_object(bucket=bucket_name, key="dir1/b", content=random_bytes(1024))
+        # assert rsp.status_code == 200
+        # rsp = self.client.put_object(bucket=bucket_name, key="dir1/c", content=random_bytes(1024))
+        # assert rsp.status_code == 200
+        # rsp = self.client.delete_object(bucket=bucket_name, key="dir1", recursive=True)
+        # assert rsp.status_code == 204
 
-        rsp = self.client.list_objects(bucket_name, prefix="dir1")
-        assert rsp.status_code == 200
-        assert len(rsp.contents)  == 0
+        # rsp = self.client.list_objects(bucket_name, prefix="dir1")
+        # assert rsp.status_code == 200
+        # assert len(rsp.contents)  == 0
 
-        dir = self.random_key()
-        key_1 = dir + '/a'
-        key_2 = dir + '/b'
-        key_3 = dir + '/c'
-        content = random_bytes(20)
-
-        rsp = self.client.put_object(bucket=bucket_name, key=key_1, content=content)
-        assert rsp.status_code == 200
-        rsp =  self.client.put_object(bucket=bucket_name, key=key_2, content=content)
-        assert rsp.status_code == 200
-        rsp =  self.client.put_object(bucket=bucket_name, key=key_3, content=content)
-        assert rsp.status_code == 200
-        object = []
-        object.append(ObjectTobeDeleted(dir))
-        rsp = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False, recursive=True)
-        assert rsp.status_code == 200
-        rsp = self.client.list_objects(bucket_name, prefix=dir)
-        assert rsp.status_code == 200
-        assert len(rsp.contents)  == 0
+        # dir = self.random_key()
+        # key_1 = dir + '/a'
+        # key_2 = dir + '/b'
+        # key_3 = dir + '/c'
+        # content = random_bytes(20)
+        #
+        # rsp = self.client.put_object(bucket=bucket_name, key=key_1, content=content)
+        # assert rsp.status_code == 200
+        # rsp =  self.client.put_object(bucket=bucket_name, key=key_2, content=content)
+        # assert rsp.status_code == 200
+        # rsp =  self.client.put_object(bucket=bucket_name, key=key_3, content=content)
+        # assert rsp.status_code == 200
+        # object = []
+        # object.append(ObjectTobeDeleted(dir))
+        # rsp = self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False, recursive=True)
+        # assert rsp.status_code == 200
+        # rsp = self.client.list_objects(bucket_name, prefix=dir)
+        # assert rsp.status_code == 200
+        # assert len(rsp.contents)  == 0
 
     def test_put_with_meta(self):
         bucket_name = self.bucket_name + '-put-object-with-meta'
@@ -962,6 +969,60 @@ class TestObject(TosTestBase):
         get_object_out = self.client.get_object(bucket_name, key=key, data_transfer_listener=progress,
                                                 rate_limiter=limiter)
         self.assertEqual(get_object_out.read(), content)
+
+    def test_put_object_image_operations(self):
+        bucket_name = self.bucket_name + '-test-image-operations'
+        key = "test.png"
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        img_op = {
+            "is_image_info": 1,
+            "rules": [
+                {
+                    "bucket": bucket_name,
+                    "key": "test.png",
+                    "rule": "image/format,png"
+                }
+            ]
+        }
+
+        with open("./test/test.png", 'rb') as f:
+            res = self.client.put_object(bucket_name, key=key, content=f,image_operations=json.dumps(img_op))
+            self.assertEqual(res.ImageOperationsResult.OriginalInfo.ETag, '"9e7b47a510aceb066475c8c41ce01c2a"')
+            self.assertEqual(res.ImageOperationsResult.OriginalInfo.ImageInfo.ImgFormat, "png")
+
+
+    def test_put_object_ttl(self):
+        bucket_name = self.bucket_name + '-test-put-object-ttl'
+        key = self.random_key()
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        self.client.put_object(bucket_name, key, content=random_bytes(5))
+        head_obj_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(head_obj_out.expires, None)
+
+        self.client.put_object(bucket_name, key, content=random_bytes(5),object_expires=3)
+        head_obj_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(head_obj_out.expires!="", True)
+
+    def test_set_object_expires(self):
+        bucket_name = self.bucket_name + '-test-put-object-ttl'
+        key = self.random_key()
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object(bucket_name, key, content=random_bytes(5))
+
+        head_obj_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(head_obj_out.expires, None)
+
+        self.client.set_object_expires(bucket_name, key, object_expires=3)
+        head_obj_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(head_obj_out.expires != "", True)
+
+        self.client.set_object_expires(bucket_name, key, object_expires=0)
+        head_obj_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(head_obj_out.expires, None)
 
     def test_put_object_acl(self):
         bucket_name = self.bucket_name + '-test-put-object-acl'

@@ -74,6 +74,7 @@ class TosServerError(TosError):
         self.host_id = host_id
         self.resource = resource
         self.ec = ec
+        self.key = ''
 
     def __str__(self):
         error = {'message': self.message,
@@ -91,9 +92,11 @@ class TosServerError(TosError):
         return str(error)
 
 
-def make_server_error(resp):
+def make_server_error(resp,key=''):
     details = _parse_error_body(resp)
-    return make_server_error_with_exception(resp, details)
+    e = make_server_error_with_exception(resp, details)
+    e.key = key
+    return e
 
 
 def make_server_error_with_exception(resp, body):
