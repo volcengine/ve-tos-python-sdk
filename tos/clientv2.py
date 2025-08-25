@@ -34,7 +34,8 @@ from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
                      WHITE_LIST_FUNCTION, CALLBACK_FUNCTION, BUCKET_TYPE_FNS, BUCKET_TYPE_HNS)
 from .credential import StaticCredentialsProvider
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
-                   MetadataDirectiveType, StorageClassType, UploadEventType, VersioningStatusType, CopyEventType,InventoryIncludedObjType,TaggingDirectiveType)
+                   MetadataDirectiveType, StorageClassType, UploadEventType, VersioningStatusType, CopyEventType,
+                   TaggingDirectiveType)
 from .exceptions import TosClientError, TosServerError, TosError
 from .http import Request, Response
 from .json_utils import (to_complete_multipart_upload_request,
@@ -42,7 +43,7 @@ from .json_utils import (to_complete_multipart_upload_request,
                          to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_tagging, to_fetch_object,
                          to_put_replication, to_put_bucket_website, to_put_bucket_notification, to_put_custom_domain,
                          to_put_bucket_real_time_log, to_restore_object, to_bucket_encrypt, to_put_fetch_object,
-                         to_put_bucket_notification_type2)
+                         to_put_bucket_notification_type2,to_simple_query)
 from .log import get_logger
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       CompleteMultipartUploadOutput, CopyObjectOutput,
@@ -75,7 +76,7 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       DeleteBucketTaggingOutput, GetBucketTaggingOutput, PutSymlinkOutput, GetSymlinkOutput,
                       GenericInput, GetFetchTaskOutput, BucketEncryptionRule, GetBucketEncryptionOutput,
                       DeleteBucketEncryptionOutput, PutBucketEncryptionOutput, PutBucketNotificationType2Output,
-                      GetBucketNotificationType2Output, FileStatusOutput, ModifyObjectOutput,InventoryFilter,InventoryDestination,InventorySchedule,InventoryOptionalFields,PutBucketInventoryOutput)
+                      GetBucketNotificationType2Output, FileStatusOutput, ModifyObjectOutput,SetObjectExpiresOutput)
 from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
@@ -84,7 +85,7 @@ from .utils import (SizeAdapter, _make_copy_source,
                     meta_header_encode, to_bytes, to_str,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
                     check_client_encryption_algorithm, check_server_encryption_algorithm, try_make_file_dir,
-                    _IterableAdapter, init_checkpoint_dir, resolve_ip_list,
+                    _IterableAdapter, init_checkpoint_dir, resolve_ip_list,_get_control_host,
                     UploadEventHandler, ResumableCopyObject, DownloadEventHandler, LogInfo, content_disposition_encode)
 
 _dns_cache = DnsCacheService()
@@ -355,7 +356,7 @@ def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDi
                             GrantFullControl, GrantRead, GrantReadACP, GrantWriteACP, Key, Metadata,
                             SSECustomerAlgorithm, SSECustomerKey, SSECustomerKeyMD5, ServerSideEncryption, StorageClass,
                             WebsiteRedirectLocation, TrafficLimit, Callback, CallbackVar, ForbidOverwrite, IfMatch,
-                            DisableEncodingMeta,Tagging):
+                            DisableEncodingMeta,Tagging,ObjectExpires,ImageOperations):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -417,6 +418,10 @@ def _get_put_object_headers(recognize_content_type, ACL, CacheControl, ContentDi
         headers['x-tos-if-match'] = IfMatch
     if Tagging:
         headers['x-tos-tagging'] = Tagging
+    if ObjectExpires:
+        headers['x-tos-object-expires'] = str(ObjectExpires)
+    if ImageOperations:
+        headers['x-tos-image-operations'] = ImageOperations
     return headers
 
 
@@ -901,7 +906,8 @@ class TosClientV2(TosClient):
                  user_agent_product_name: str = None,
                  user_agent_soft_name: str = None,
                  user_agent_soft_version: str = None,
-                 user_agent_customized_key_values: Dict[str, str] = None):
+                 user_agent_customized_key_values: Dict[str, str] = None,
+                 control_endpoint: str = ''):
 
         """创建client
 
@@ -932,6 +938,7 @@ class TosClientV2(TosClient):
         :param user_agent_soft_name: user_agent扩展，软件名
         :param user_agent_soft_version: user_agent扩展，软件版本号
         :param user_agent_customized_key_values: user_agent扩展，自定义扩展 KV 键值对
+        :param control_endpoint: TOS 服务端控制面域名，完整格式：https://{host}:{port}
         :return TosClientV2:
         """
 
@@ -939,6 +946,10 @@ class TosClientV2(TosClient):
             endpoint)
 
         endpoint = endpoint.strip()
+
+        if control_endpoint:
+            control_endpoint = control_endpoint.strip()
+
 
         if utils.is_s3_endpoint(endpoint):
             raise TosClientError("invalid endpoint, please use Tos endpoint rather than S3 endpoint")
@@ -950,7 +961,8 @@ class TosClientV2(TosClient):
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
-                                              connect_timeout=connection_time)
+                                              connect_timeout=connection_time,
+                                              control_endpoint=control_endpoint)
         else:
             if credentials_provider is None:
                 credentials_provider = StaticCredentialsProvider(ak, sk, security_token)
@@ -958,7 +970,8 @@ class TosClientV2(TosClient):
                                               endpoint=endpoint,
                                               recognize_content_type=auto_recognize_content_type,
                                               connection_pool_size=max_connections,
-                                              connect_timeout=connection_time)
+                                              connect_timeout=connection_time,
+                                              control_endpoint=control_endpoint)
 
         self.max_retry_count = max_retry_count if max_retry_count >= 0 else 0
         self.dns_cache_time = dns_cache_time * 60 if dns_cache_time > 0 else 0
@@ -978,9 +991,12 @@ class TosClientV2(TosClient):
         self.except100_continue_threshold = except100_continue_threshold
         user_agent = USER_AGENT
         if user_agent_product_name is not None or user_agent_soft_name is not None or user_agent_soft_version is not None:
-            user_agent = f'{USER_AGENT} --{user_agent_product_name if user_agent_product_name else UNDEFINED}/' \
-                         f'{user_agent_soft_name if user_agent_product_name else UNDEFINED}/' \
-                         f'{user_agent_soft_version if user_agent_soft_version else UNDEFINED}'
+            user_agent = '{} --{}/{}/{}'.format(
+                USER_AGENT,
+                (user_agent_product_name if user_agent_product_name else UNDEFINED),
+                (user_agent_soft_name if user_agent_product_name else UNDEFINED),
+                (user_agent_soft_version if user_agent_soft_version else UNDEFINED)
+            )
         if user_agent_customized_key_values:
             user_agent = user_agent + ' ('
             for k, v in user_agent_customized_key_values.items():
@@ -1600,7 +1616,9 @@ class TosClientV2(TosClient):
                    forbid_overwrite: bool = None,
                    if_match: str = None,
                    generic_input: GenericInput = None,
-                   tagging: str = None) -> PutObjectOutput:
+                   tagging: str = None,
+                   object_expires: int = None,
+                   image_operations: str = None) -> PutObjectOutput:
         """上传对象
 
         :param bucket: 桶名
@@ -1637,6 +1655,8 @@ class TosClientV2(TosClient):
         :param if_match: 只有在匹配时，才put对象
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
         :param tagging: 指定上传对象的标签
+        :param object_expires: 指定上传对象的过期时间，单位：天
+        :param image_operations: 上传时支持同时执行图片处理
         :return: PutObjectOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -1654,7 +1674,7 @@ class TosClientV2(TosClient):
                                           ssec_algorithm, ssec_key, ssec_key_md5,
                                           server_side_encryption, storage_class, website_redirect_location,
                                           traffic_limit, callback, callback_var, forbid_overwrite, if_match,
-                                          self.disable_encoding_meta,tagging)
+                                          self.disable_encoding_meta,tagging,object_expires,image_operations)
         if self.except100_continue_threshold > 0 and (
                 content_length is None or content_length > self.except100_continue_threshold):
             headers['Expect'] = "100-continue"
@@ -1675,7 +1695,7 @@ class TosClientV2(TosClient):
         try:
             resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, data=content,
                              headers=headers, generic_input=generic_input)
-            result = PutObjectOutput(resp, callback=callback)
+            result = PutObjectOutput(resp, callback=callback,image_operation=image_operations)
             if self.enable_crc and content:
                 utils.check_crc('put_object', content.crc, result.hash_crc64_ecma, result.request_id)
             return result
@@ -4099,13 +4119,38 @@ class TosClientV2(TosClient):
                          generic_input=generic_input)
         return DeleteBucketEncryptionOutput(resp)
 
+    def set_object_expires(self,bucket: str,
+                           key: str,
+                           object_expires:int,
+                           version_id: str = None,
+                           generic_input: GenericInput = None):
+        """ 设置对象生命周期
+        :param bucket: 桶名
+        :param key: 对象名
+        :param object_expires: 过期时间，设置为N表示N天后过期，设置为0表示清除对象TTL，设置为负数非法
+        :param version_id: 版本号
+        :param generic_input: 通用请求参数
+        :return: SetObjectExpiresOutput
+        """
+        _is_valid_object_name(key)
+
+        params = {'objectExpires': ''}
+        if version_id:
+            params['versionId'] = version_id
+
+        data = {"ObjectExpires": object_expires}
+        data = json.dumps(data)
+
+        resp = self._req(bucket,key,HttpMethodType.Http_Method_Post.value,data,params=params,generic_input=generic_input)
+
+        return SetObjectExpiresOutput(resp)
 
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None,
-             generic_input=None):
+             generic_input=None,account_id=None,is_control_req=None):
         consume_body()
         # 获取调用方法的名称
         func_name = func or traceback.extract_stack()[-2][2]
-        if key is not None:
+        if key is not None and is_control_req is None:
             _is_valid_object_name(key)
         key = to_str(key)
 
@@ -4118,12 +4163,16 @@ class TosClientV2(TosClient):
         # 通过变量赋值,防止动态调整 auth endpoint 出现并发问题
         auth = self.auth
         endpoint = self.endpoint
+        control_endpoint = self.control_endpoint
         if not self.is_custom_domain and bucket is not None:
             _is_valid_bucket_name(bucket)
         req_bucket = None if self.is_custom_domain else bucket
-        req = Request(method, self._make_virtual_host_url(req_bucket, key),
+
+        req_url = self._make_virtual_host_url(req_bucket, key) if is_control_req is None else self._make_control_url(account_id, key)
+        req_host = _get_virtual_host(req_bucket, endpoint) if is_control_req is None else _get_control_host(account_id, control_endpoint)
+        req = Request(method, req_url,
                       _make_virtual_host_uri(key),
-                      _get_virtual_host(req_bucket, endpoint),
+                      req_host,
                       data=data,
                       params=params,
                       headers=headers,
@@ -4172,7 +4221,7 @@ class TosClientV2(TosClient):
                                            allow_redirects=False)
                 rsp = Response(res)
                 if rsp.status >= 300 or (rsp.status == 203 and func_name in CALLBACK_FUNCTION):
-                    raise exceptions.make_server_error(rsp)
+                    raise exceptions.make_server_error(rsp,key)
 
                 content_length = get_value(rsp.headers, 'content-length', int)
                 if content_length is not None and content_length == 0:
@@ -4384,7 +4433,7 @@ def _is_func_can_retry(method, fun_name,
                        server_exp: TosServerError = None) -> bool:
     if client_exp:
         return True
-    if server_exp and (server_exp.status_code >= 500 or server_exp.status_code == 429):
+    if server_exp and (server_exp.status_code >= 500 or server_exp.status_code == 429 or server_exp.status_code == 408):
         # 对GET、HEAD直接返回
         if method in ["GET", "HEAD"]:
             return True

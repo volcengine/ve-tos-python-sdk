@@ -42,6 +42,14 @@ S3_REGION_LIST = ['tos-s3-cn-beijing.volces.com',
                   'tos-s3-cn-shanghai.volces.com',
                   'tos-s3-ap-southeast-1.volces.com']
 
+REGION_CONTROL_MAP = {
+        "cn-beijing":     "tos-control-cn-beijing.volces.com",
+		"cn-guangzhou":   "tos-control-cn-guangzhou.volces.com",
+		"cn-shanghai":    "tos-control-cn-shanghai.volces.com",
+		"cn-beijing2":    "tos-control-cn-beijing2.volces.com",
+		"ap-southeast-1": "tos-control-ap-southeast-1.volces.com",
+}
+
 
 def get_value(kv, key, handler=lambda x: x):
     if key in kv:
@@ -1260,6 +1268,12 @@ def _if_map(region: str, endpoint: str):
     else:
         return endpoint
 
+def _get_control_endpoint(region:str,control_endpoint:str):
+    if region in REGION_CONTROL_MAP and not control_endpoint:
+        return REGION_CONTROL_MAP[region]
+    else:
+        return control_endpoint
+
 
 def _format_endpoint(endpoint):
     if not endpoint.startswith('http://') and not endpoint.startswith('https://'):
@@ -1297,6 +1311,11 @@ def _get_scheme(endpoint):
         return 'https://'
     return 'https://'
 
+def _get_control_host(account_id,endpoint):
+    if account_id:
+        return account_id+'.'+_get_host(endpoint)
+    else:
+        return _get_host(endpoint)
 
 def _get_virtual_host(bucket, endpoint):
     if bucket:
@@ -1321,6 +1340,13 @@ def _cal_content_sha256(data):
     else:
         return EMPTY_SHA256_HASH
 
+def _make_control_host_url(host,scheme,account_id=None,key=None):
+    url = host
+    if account_id and key:
+        url = '{0}.{1}/{2}'.format(account_id, host, quote(key, '/~'))
+    elif account_id and not key:
+        url = '{0}.{1}'.format(account_id, host)
+    return _format_endpoint(scheme+url)
 
 def _make_virtual_host_url(host, scheme, bucket=None, key=None):
     url = host

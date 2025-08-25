@@ -3,8 +3,9 @@ from typing import Dict
 
 from .consts import LAST_MODIFY_TIME_DATE_FORMAT
 from .models2 import Owner, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, CustomDomainRule, \
-    RealTimeLogConfiguration, RestoreJobParameters, BucketEncryptionRule
+    RealTimeLogConfiguration, RestoreJobParameters, BucketEncryptionRule,QueryOrderType,QueryRequest,AggregationRequest
 from .utils import check_enum_type
+from typing import List
 
 
 def to_complete_multipart_upload_request(parts: list):
@@ -487,6 +488,35 @@ def to_restore_object(days: int, tier: RestoreJobParameters):
         info['RestoreJobParameters'] = {"Tier": tier.tier.value}
 
     return info
+
+def to_simple_query(dataset_name:str = None,
+                     sort:str= None,
+                     order:QueryOrderType= None,
+                     max_results:int= None,
+                     next_token:str = None,
+                     with_fields:List[str] = None,
+                     query:QueryRequest = None,
+                     aggregations: List[AggregationRequest] = None):
+    info = {}
+    if dataset_name:
+        info['DatasetName'] = dataset_name
+    if sort:
+        info['Sort'] = sort
+    if order:
+        info['Order'] = order
+    if max_results:
+        info['MaxResults'] = max_results
+    if next_token:
+        info['NextToken'] = next_token
+    if with_fields:
+        info['WithFields'] = json.dumps(with_fields)
+    if query:
+        info['Query'] = json.dumps(query)
+    if aggregations:
+        info['Aggregations'] = json.dumps(aggregations)
+
+    return info
+
 
 
 def to_bucket_encrypt(rule: BucketEncryptionRule):

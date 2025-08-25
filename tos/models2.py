@@ -2,13 +2,16 @@ import json
 import urllib.parse
 from datetime import datetime
 from typing import List
+from typing import Dict
 
 from . import utils
 from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType, \
     StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, \
     convert_storage_class_type, convert_az_redundancy_type, convert_permission_type, convert_grantee_type, \
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
-    convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType, convert_replication_status_type,InventoryFormatType,InventoryFrequencyType
+    convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType, convert_replication_status_type,\
+    InventoryFormatType,InventoryFrequencyType,QueryOrderType,QueryOperationType,AggregationOperationType,\
+    ReplicationStatusType
 from .consts import CHUNK_SIZE, BUCKET_TYPE_HNS, BUCKET_TYPE_FNS
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
@@ -31,6 +34,8 @@ class CreateBucketOutput(ResponseInfo):
     def __init__(self, resp):
         super(CreateBucketOutput, self).__init__(resp)
         self.location = get_value(self.header, "Location")
+        bucket_type = get_value(self.header, "x-tos-bucket-type")
+        self.bucket_type = BUCKET_TYPE_FNS if bucket_type is None else bucket_type
 
 
 class HeadBucketOutput(ResponseInfo):
@@ -118,9 +123,99 @@ class ListBucketsOutput(ResponseInfo):
                 get_value(bkt, 'BucketType')
             ))
 
+class ImageInfo:
+    def __init__(self, img_format, width, height, quality, ave, orientation, frame_count):
+        self.ImgFormat = img_format
+        self.Width = width
+        self.Height = height
+        self.Quality = quality
+        self.Ave = ave
+        self.Orientation = orientation
+        self.FrameCount = frame_count
+
+
+class OriginalInfo:
+    def __init__(self, bucket, key, image_info=None, etag=None):
+        self.Bucket = bucket
+        self.Key = key
+        self.ImageInfo = image_info # 应为ImageInfo实例或None
+        self.ETag = etag
+
+
+class ProcessInfo:
+    def __init__(self, bucket, key, image_info=None):
+        self.Bucket = bucket
+        self.Key = key
+        self.ImageInfo = image_info  # 应为ImageInfo实例或None
+
+
+class ProcessResults:
+    def __init__(self, objects=None):
+        self.Objects = objects if objects is not None else []  # 默认为空列表
+
+class ImageOperationsResult:
+    def __init__(self, original_info=None, process_results=None):
+        self.OriginalInfo = original_info  # 应为OriginalInfo实例或None
+        self.ProcessResults = process_results  # 应为ProcessResults实例或None
+
+
+def parse_image_info(image_info_json):
+    if not image_info_json:
+        return None
+    return ImageInfo(
+        img_format=image_info_json.get('Format'),
+        width=get_value(image_info_json, 'Width',lambda x: int(x)),
+        height=get_value(image_info_json, 'Height',lambda x: int(x)),
+        quality=get_value(image_info_json, 'Quality',lambda x: int(x)),
+        ave=image_info_json.get('Ave'),
+        orientation=get_value(image_info_json, 'Orientation',lambda x: int(x)),
+        frame_count=get_value(image_info_json, 'FrameCount',lambda x: int(x)),
+    )
+
+
+def parse_original_info(original_info_json):
+    if not original_info_json:
+        return None
+    return OriginalInfo(
+        bucket=original_info_json.get('Bucket'),
+        key=original_info_json.get('Key'),
+        image_info=parse_image_info(original_info_json.get('ImageInfo')),
+        etag=original_info_json.get('ETag')
+    )
+
+
+def parse_process_info(process_info_json):
+    if not process_info_json:
+        return None
+    return ProcessInfo(
+        bucket=process_info_json.get('Bucket'),
+        key=process_info_json.get('Key'),
+        image_info=parse_image_info(process_info_json.get('ImageInfo'))
+    )
+
+
+def parse_process_results(process_results_json):
+    if not process_results_json:
+        return None
+    # 解析Objects列表
+    objects = []
+    for obj_json in process_results_json.get('Objects', []):
+        obj = parse_process_info(obj_json)
+        if obj:
+            objects.append(obj)
+    return ProcessResults(objects=objects)
+
+
+def get_image_operations_result(resp):
+    data = resp.json_read()
+
+    original_info = parse_original_info(data.get('OriginalInfo'))
+    process_results = parse_process_results(data.get('ProcessResults'))
+
+    return ImageOperationsResult(original_info=original_info, process_results=process_results)
 
 class PutObjectOutput(ResponseInfo):
-    def __init__(self, resp, callback=None):
+    def __init__(self, resp, callback=None,image_operation=None):
         super(PutObjectOutput, self).__init__(resp)
         self.request_info = resp
         self.etag = get_etag(resp.headers)
@@ -130,6 +225,8 @@ class PutObjectOutput(ResponseInfo):
         self.hash_crc64_ecma = get_value(resp.headers, "x-tos-hash-crc64ecma", lambda x: int(x))
         if callback:
             self.callback_result = resp.read().decode("utf-8")
+        elif image_operation:
+            self.ImageOperationsResult = get_image_operations_result(resp)
 
 
 class CopyObjectOutput(ResponseInfo):
@@ -278,6 +375,8 @@ class HeadObjectOutput(ResponseInfo):
         is_directory = get_value(resp.headers, "x-tos-directory")
         self.is_directory = True if is_directory is not None and is_directory == 'true' else False
 
+        self.expiration = get_value(resp.headers, 'x-tos-expiration')
+
 
 class ListObjectsOutput(ResponseInfo):
     def __init__(self, resp, disable_encoding_meta: bool = None):
@@ -319,7 +418,8 @@ class ListObjectsOutput(ResponseInfo):
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
                 object_type=get_value(object, 'Type'),
-                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta)
+                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta),
+                hash_crc32_c=get_value(object, "HashCrc32c", lambda x: int(x))
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -410,7 +510,8 @@ class ListObjectType2Output(ResponseInfo):
                 storage_class=get_value(object, 'StorageClass', lambda x: convert_storage_class_type(x)),
                 hash_crc64_ecma=get_value(object, "HashCrc64ecma", lambda x: int(x)),
                 object_type=get_value(object, "Type"),
-                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta)
+                meta=convert_meta(get_value(object, "UserMeta"), disable_encoding_meta),
+                hash_crc32_c=get_value(object, "HashCrc32c", lambda x: int(x)),
             )
             owner_info = get_value(object, 'Owner')
             if owner_info:
@@ -436,7 +537,7 @@ class ListObjectType2Output(ResponseInfo):
 
 class ListedObject(object):
     def __init__(self, key: str, last_modified: datetime, etag: str, size: int, storage_class: StorageClassType,
-                 hash_crc64_ecma: str, owner: Owner = None, object_type=None, meta=None):
+                 hash_crc64_ecma: str, owner: Owner = None, object_type=None, meta=None,hash_crc32_c:str = None):
         self.key = key
         self.last_modified = last_modified
         self.etag = etag
@@ -446,6 +547,7 @@ class ListedObject(object):
         self.hash_crc64_ecma = hash_crc64_ecma
         self.object_type = object_type
         self.meta = meta
+        self.hash_crc32c = hash_crc32_c
 
     def __str__(self):
         info = {"key": self.key, "last_modified": self.last_modified, "etag": self.etag, "size": self.size,
@@ -2009,8 +2111,9 @@ class GetSymlinkOutput(ResponseInfo):
 
 
 class GenericInput(object):
-    def __init__(self, request_date: datetime = None):
+    def __init__(self, request_date: datetime = None,request_host: str = None):
         self.request_date = request_date
+        self.request_host = request_host
 
 
 class ApplyServerSideEncryptionByDefault(object):
@@ -2173,3 +2276,90 @@ class InventoryOptionalFields:
 class PutBucketInventoryOutput(ResponseInfo):
     def __init__(self, resp):
         super(PutBucketInventoryOutput, self).__init__(resp)
+
+class SetObjectExpiresOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(SetObjectExpiresOutput, self).__init__(resp)
+
+
+
+class QueryRequest:
+    def __init__(self, operation: QueryOperationType,
+                 field: str,
+                 value: str = None,
+                 sub_queries: List['QueryRequest'] = None):
+        self.Operation = operation  # 枚举类型
+        self.Field = field
+        self.Value = value
+        self.SubQueries = sub_queries if sub_queries is not None else []
+
+
+class AggregationRequest:
+    def __init__(self, field: str, operation: AggregationOperationType):
+        self.Field = field
+        self.Operation = operation  # 枚举类型
+
+
+# 响应相关类
+class SimpleQueryOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(SimpleQueryOutput, self).__init__(resp)
+
+
+class AggregationResponse():
+    def __init__(self, field: str,
+                 operation: AggregationOperationType,
+                 value: float,
+                 groups: List['GroupResponse'] = None):
+        self.Field = field
+        self.Operation = operation
+        self.Value = value
+        self.Groups = groups if groups is not None else []
+
+
+class GroupResponse:
+    def __init__(self, value: str, count: int):
+        self.Value = value
+        self.Count = count
+
+class FileResponse:
+    def __init__(self, tos_bucket_name: str,
+                 file_name: str,
+                 etag: str,
+                 tos_storage_class: StorageClassType,
+                 tos_crc64: str,
+                 server_side_encryption: str,
+                 server_side_encryption_customer_algorithm: str,
+                 file_modified_time: datetime,
+                 size: int,
+                 score: float,
+                 tos_tagging_count: int,
+                 tos_tagging: Dict[str, str],
+                 tos_user_meta: Dict[str, str],
+                 tos_version_id: str,
+                 tos_object_type: str,
+                 content_type: str,
+                 tos_replication_status: ReplicationStatusType,
+                 tos_is_delete_marker: bool,
+                 account_id: str,
+                 create_time: datetime):
+        self.TOSBucketName = tos_bucket_name
+        self.FileName = file_name
+        self.ETag = etag
+        self.TOSStorageClass = tos_storage_class  # 枚举类型
+        self.TOSCRC64 = tos_crc64
+        self.ServerSideEncryption = server_side_encryption
+        self.ServerSideEncryptionCustomerAlgorithm = server_side_encryption_customer_algorithm
+        self.FileModifiedTime = file_modified_time  # time.Time类型
+        self.Size = size  # int64在Python中用int表示
+        self.Score = score  # float32在Python中用float表示
+        self.TOSTaggingCount = tos_tagging_count
+        self.TOSTagging = tos_tagging
+        self.TOSUserMeta = tos_user_meta
+        self.TOSVersionID = tos_version_id
+        self.TOSObjectType = tos_object_type
+        self.ContentType = content_type
+        self.TOSReplicationStatus = tos_replication_status  # 枚举类型
+        self.TOSIsDeleteMarker = tos_is_delete_marker
+        self.AccountID = account_id
+        self.CreateTime = create_time  # time.Time类型

@@ -385,7 +385,7 @@ class TestBucket(TosTestBase):
         rules = []
         rules.append(Rule(
             id='1',
-            condition=Condition(http_code=404,allow_host=["example.com"]),
+            condition=Condition(http_code=404,allow_host=["example.com"],http_method=["GET","HEAD"]),
             redirect=Redirect(
                 redirect_type=RedirectType.Mirror,
                 fetch_source_on_redirect=True,
@@ -417,6 +417,8 @@ class TestBucket(TosTestBase):
         self.assertEqual("value1",get_out.rules[0].redirect.mirror_header.set_header[0].value)
         self.assertEqual("key2", get_out.rules[0].redirect.mirror_header.set_header[1].key)
         self.assertEqual("value2", get_out.rules[0].redirect.mirror_header.set_header[1].value)
+        self.assertEqual('GET',get_out.rules[0].condition.http_method[0])
+        self.assertEqual('HEAD', get_out.rules[0].condition.http_method[1])
         self.assertEqual(1, len(get_out.rules[0].condition.allow_host))
         self.assertEqual('example.com',get_out.rules[0].condition.allow_host[0])
         self.assertEqual(True, get_out.rules[0].redirect.fetch_source_on_redirect_with_query)
@@ -986,53 +988,53 @@ class TestBucket(TosTestBase):
         self.client.delete_bucket_encryption(bucket_name)
         with self.assertRaises(TosServerError):
             self.client.get_bucket_encryption(bucket_name)
-
-    def test_bucket_notification_type2(self):
-        bucket_name = self.bucket_name + "-notification-type2"
-        self.client.create_bucket(bucket_name)
-        self.bucket_delete.append(bucket_name)
-
-        rules = [
-            NotificationRule(
-                rule_id="test1",
-                events=["tos:ObjectCreated:Post", "tos:ObjectCreated:Origin"],
-                filter=NotificationFilter(
-                    tos_key=NotificationFilterKey(
-                        filter_rules=[
-                            NotificationFilterRule(name="prefix", value="test-")
-                        ]
-                    )
-                ),
-                destination=NotificationDestination(
-                    ve_faas=[DestinationVeFaaS(function_id=self.cloud_function)],
-                    rocket_mq=[
-                        DestinationRocketMQ(
-                            role="trn:iam::{}:role/{}".format(self.account_id, self.mq_role_name),
-                            instance_id=self.mq_instance_id,
-                            topic="SDK",
-                            access_key_id=self.mq_access_key_id
-                        )
-                    ]
-                )
-            )
-        ]
-        self.client.put_bucket_notification_type2(bucket_name, rules)
-        out = self.client.get_bucket_notification_type2(bucket_name)
-
-        self.assertTrue(out.version != '')
-        self.assertEqual(len(out.rules), 1)
-        self.assertEqual(out.rules[0].rule_id, rules[0].rule_id)
-        self.assertEqual(out.rules[0].events, rules[0].events)
-        self.assertEqual(out.rules[0].filter.tos_key.filter_rules[0].name, rules[0].filter.tos_key.filter_rules[0].name)
-        self.assertEqual(out.rules[0].filter.tos_key.filter_rules[0].value,
-                         rules[0].filter.tos_key.filter_rules[0].value)
-        self.assertEqual(out.rules[0].destination.ve_faas[0].function_id, rules[0].destination.ve_faas[0].function_id)
-        self.assertEqual(out.rules[0].destination.rocket_mq[0].role, rules[0].destination.rocket_mq[0].role)
-        self.assertEqual(out.rules[0].destination.rocket_mq[0].topic, rules[0].destination.rocket_mq[0].topic)
-        self.assertEqual(out.rules[0].destination.rocket_mq[0].access_key_id,
-                         rules[0].destination.rocket_mq[0].access_key_id)
-        self.assertEqual(out.rules[0].destination.rocket_mq[0].instance_id,
-                         rules[0].destination.rocket_mq[0].instance_id)
+    # UT所用实例不可用
+    # def test_bucket_notification_type2(self):
+    #     bucket_name = self.bucket_name + "-notification-type2"
+    #     self.client.create_bucket(bucket_name)
+    #     self.bucket_delete.append(bucket_name)
+    #
+    #     rules = [
+    #         NotificationRule(
+    #             rule_id="test1",
+    #             events=["tos:ObjectCreated:Post", "tos:ObjectCreated:Origin"],
+    #             filter=NotificationFilter(
+    #                 tos_key=NotificationFilterKey(
+    #                     filter_rules=[
+    #                         NotificationFilterRule(name="prefix", value="test-")
+    #                     ]
+    #                 )
+    #             ),
+    #             destination=NotificationDestination(
+    #                 ve_faas=[DestinationVeFaaS(function_id=self.cloud_function)],
+    #                 rocket_mq=[
+    #                     DestinationRocketMQ(
+    #                         role="trn:iam::{}:role/{}".format(self.account_id, self.mq_role_name),
+    #                         instance_id=self.mq_instance_id,
+    #                         topic="SDK",
+    #                         access_key_id=self.mq_access_key_id
+    #                     )
+    #                 ]
+    #             )
+    #         )
+    #     ]
+    #     self.client.put_bucket_notification_type2(bucket_name, rules)
+    #     out = self.client.get_bucket_notification_type2(bucket_name)
+    #
+    #     self.assertTrue(out.version != '')
+    #     self.assertEqual(len(out.rules), 1)
+    #     self.assertEqual(out.rules[0].rule_id, rules[0].rule_id)
+    #     self.assertEqual(out.rules[0].events, rules[0].events)
+    #     self.assertEqual(out.rules[0].filter.tos_key.filter_rules[0].name, rules[0].filter.tos_key.filter_rules[0].name)
+    #     self.assertEqual(out.rules[0].filter.tos_key.filter_rules[0].value,
+    #                      rules[0].filter.tos_key.filter_rules[0].value)
+    #     self.assertEqual(out.rules[0].destination.ve_faas[0].function_id, rules[0].destination.ve_faas[0].function_id)
+    #     self.assertEqual(out.rules[0].destination.rocket_mq[0].role, rules[0].destination.rocket_mq[0].role)
+    #     self.assertEqual(out.rules[0].destination.rocket_mq[0].topic, rules[0].destination.rocket_mq[0].topic)
+    #     self.assertEqual(out.rules[0].destination.rocket_mq[0].access_key_id,
+    #                      rules[0].destination.rocket_mq[0].access_key_id)
+    #     self.assertEqual(out.rules[0].destination.rocket_mq[0].instance_id,
+    #                      rules[0].destination.rocket_mq[0].instance_id)
 
     def retry_assert(self, func):
         for i in range(5):

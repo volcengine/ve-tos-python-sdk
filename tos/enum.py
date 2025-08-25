@@ -281,3 +281,28 @@ def convert_replication_status_type(s: str):
         if t.value == s:
             return t
     return ""
+
+class QueryOrderType(Enum):
+    ASC = "asc"
+    DESC = "desc"
+
+class QueryOperationType(Enum):
+    NOT = "not"
+    OR = "or"
+    AND = "and"
+    LT = "lt"
+    GT = "gt"
+    GTE = "gte"
+    EQ = "eq"
+    EXIST = "exist"
+    PREFIX = "prefix"
+    MatchPhrase = "match-phrase"
+
+class AggregationOperationType(Enum):
+    MIN = "min"
+    MAX = "max"
+    AVERAGE = "average"
+    SUM = "sum"
+    COUNT = "count"
+    DISTINCT = "distinct"
+    GROUP = "group"
