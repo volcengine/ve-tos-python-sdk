@@ -3,9 +3,11 @@ from typing import Dict
 
 from .consts import LAST_MODIFY_TIME_DATE_FORMAT
 from .models2 import Owner, RedirectAllRequestsTo, IndexDocument, ErrorDocument, RoutingRules, CustomDomainRule, \
-    RealTimeLogConfiguration, RestoreJobParameters, BucketEncryptionRule,QueryOrderType,QueryRequest,AggregationRequest
+    RealTimeLogConfiguration, RestoreJobParameters, BucketEncryptionRule, QueryOrderType, QueryRequest, \
+    AggregationRequest, BucketInventoryConfiguration, SemanticQueryType, ReplicationRule, Tag,Rule
 from .utils import check_enum_type
 from typing import List
+
 
 
 def to_complete_multipart_upload_request(parts: list):
@@ -75,7 +77,8 @@ def to_put_bucket_cors_request(cors_rules: []):
     return data
 
 
-def to_put_bucket_mirror_back(rules: []):
+def to_put_bucket_mirror_back(rules: List[Rule]):
+    rules = rules or []
     data = {}
     arr = []
     for rule in rules:
@@ -114,6 +117,8 @@ def to_put_bucket_mirror_back(rules: []):
                             'Follower'] = rule.redirect.public_source.source_endpoint.follower
                 if rule.redirect.public_source.fixed_endpoint is not None:
                     info['Redirect']['PublicSource']['FixedEndpoint'] = rule.redirect.public_source.fixed_endpoint
+            if rule.redirect.private_source:
+                info['Redirect']['PrivateSource'] = rule.redirect.private_source.to_dict()
             if rule.redirect.pass_query is not None:
                 info['Redirect']['PassQuery'] = rule.redirect.pass_query
             if rule.redirect.follow_redirect is not None:
@@ -296,7 +301,8 @@ def to_put_fetch_object(url: str, object: str = None, ignore_same_key=None, hex_
     return info
 
 
-def to_put_replication(role: str, rules: []):
+def to_put_replication(role: str, rules:List[ReplicationRule]):
+    rules = rules or []
     info = {}
     if role:
         info['Role'] = role
@@ -328,7 +334,10 @@ def to_put_replication(role: str, rules: []):
                 data['Progress']['HistoricalObject'] = rule.progress.historical_object
             if rule.progress.new_object:
                 data['Progress']['NewObject'] = rule.progress.new_object
-
+        if rule.tags:
+            data['Tags'] = [Tag.to_dict(t) for t in rule.tags]
+        if rule.access_control_translation and rule.access_control_translation.owner:
+            data['AccessControlTranslation'] = {"Owner": rule.access_control_translation.owner}
         r.append(data)
     info['Rules'] = r
     return info
@@ -489,10 +498,31 @@ def to_restore_object(days: int, tier: RestoreJobParameters):
 
     return info
 
+def to_semantic_query(dataset_name:str = None,
+                      semantic_query_input:str =None,
+                      semantic_query_type:SemanticQueryType =None,
+                       max_results:int=100,with_fields:List[str]=None,query:QueryRequest=None):
+    info = {}
+    if dataset_name:
+        info['DatasetName'] = dataset_name
+    if semantic_query_input:
+        info['SemanticQueryInput'] = semantic_query_input
+    if semantic_query_type:
+        info['SemanticQueryType'] = semantic_query_type.value
+    if max_results > 0:
+        info['MaxResults'] = max_results
+    if with_fields:
+        info['WithFields'] = with_fields
+    if query:
+        info['Query'] = query.to_dict()
+
+    return json.dumps(info)
+
+
 def to_simple_query(dataset_name:str = None,
                      sort:str= None,
                      order:QueryOrderType= None,
-                     max_results:int= None,
+                     max_results:int= 100,
                      next_token:str = None,
                      with_fields:List[str] = None,
                      query:QueryRequest = None,
@@ -503,19 +533,19 @@ def to_simple_query(dataset_name:str = None,
     if sort:
         info['Sort'] = sort
     if order:
-        info['Order'] = order
-    if max_results:
+        info['Order'] = order.value
+    if max_results>0:
         info['MaxResults'] = max_results
     if next_token:
         info['NextToken'] = next_token
     if with_fields:
-        info['WithFields'] = json.dumps(with_fields)
+        info['WithFields'] = with_fields
     if query:
-        info['Query'] = json.dumps(query)
+        info['Query'] = query.to_dict()
     if aggregations:
-        info['Aggregations'] = json.dumps(aggregations)
+        info['Aggregations'] = [a.to_dict() for a in aggregations]
 
-    return info
+    return json.dumps(info)
 
 
 

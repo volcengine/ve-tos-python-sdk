@@ -143,6 +143,8 @@ class AuthBase():
         req.headers['Date'] = date
         req.headers['x-tos-date'] = date
 
+        if req.generic_input and req.generic_input.request_host:
+            req.headers['host'] = req.generic_input.request_host
         signed_headers = _get_signed_headers(req.headers)
         signature = self._make_signature(req=req, date=date, signed_headers=signed_headers)
         req.headers['Authorization'] = self._inject_signature_to_request(signature, date, signed_headers)

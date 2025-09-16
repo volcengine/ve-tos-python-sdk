@@ -44,7 +44,7 @@ class TosClient():
         self.endpoint = _format_endpoint(_if_map(auth.region, endpoint))
         self.control_endpoint = _format_endpoint(_get_control_endpoint(auth.region,control_endpoint))
         self.host = _get_host(self.endpoint)
-        self.control_host = _format_endpoint(self.control_endpoint)
+        self.control_host = _get_host(self.control_endpoint)
         self.scheme = _get_scheme(self.endpoint)
         self.control_scheme = _get_scheme(self.control_endpoint)
         self.timeout = connect_timeout or CONNECT_TIMEOUT

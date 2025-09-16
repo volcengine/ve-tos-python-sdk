@@ -1,5 +1,12 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.8.6
+-------------
+- 新增:支持桶清单相关接口
+- 新增:支持 标量精确查询 和 向量混合查询接口
+- 修改:配置/查询镜像回源接口 支持私有桶、MirrorHeader.Set
+- 修改:跨区域复制 PutBucketReplication/GetBucketReplication 支持 Tag 过滤条件和跨账号场景授予目标桶 Ower 的写入对象的 ACL 权限
+
 Version 2.8.5
 -------------
 - 新增:支持SetObjectExpires接口

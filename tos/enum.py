@@ -306,3 +306,6 @@ class AggregationOperationType(Enum):
     COUNT = "count"
     DISTINCT = "distinct"
     GROUP = "group"
+class SemanticQueryType(Enum):
+    SemanticQueryTypeText = "text"
+    SemanticQueryTypeImage = "image"

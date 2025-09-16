@@ -53,6 +53,53 @@ class TestMultipart(TosTestBase):
 
         get_out = self.client.get_object(bucket_name, key)
         self.assertEqual(get_out.read(), content + content)
+        self.assertEqual(True, get_out.expiration is None)
+
+    def test_multipart_expires(self):
+        bucket_name = self.bucket_name + "-test-multipart-expires"
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name)
+        key = self.random_key('.js')
+        mult_out = self.client.create_multipart_upload(bucket_name, key,object_expires=3)
+        parts = []
+        content = random_bytes(5 * 1024 * 1024)
+        for i in range(1, 3):
+            upload_part_output = self.client.upload_part(bucket=bucket_name, key=key, upload_id=mult_out.upload_id,
+                                                         part_number=i, content=content)
+            parts.append(UploadedPart(i, upload_part_output.etag))
+
+        list_parts = self.client.list_parts(bucket_name, key, mult_out.upload_id, max_parts=1)
+        self.assertEqual(list_parts.bucket, bucket_name)
+        self.assertEqual(list_parts.key, key)
+        self.assertEqual(list_parts.upload_id, mult_out.upload_id)
+        self.assertEqual(list_parts.max_parts, 1)
+        self.assertEqual(list_parts.is_truncated, True)
+        self.assertIsNotNone(list_parts.next_part_number_marker)
+        self.assertEqual(list_parts.storage_class, StorageClassType.Storage_Class_Standard)
+        self.assertTrue(list_parts.owner is not None)
+        self.assertTrue(len(list_parts.parts), 1)
+
+        part = list_parts.parts[0]
+        self.assertTrue(part.part_number is not None)
+        self.assertTrue(len(part.etag) > 0)
+        self.assertTrue(part.size is not None)
+        self.assertTrue(part.last_modified is not None)
+
+        list_parts_2 = self.client.list_parts(bucket_name, key, mult_out.upload_id,
+                                              part_number_marker=list_parts.next_part_number_marker)
+        self.assertEqual(len(list_parts_2.parts), 1)
+        self.assertEqual(list_parts_2.is_truncated, False)
+
+        complete_out = self.client.complete_multipart_upload(bucket_name, key, mult_out.upload_id, parts=parts)
+        self.assertEqual(complete_out.bucket, bucket_name)
+        self.assertTrue(len(complete_out.key) > 0)
+        self.assertTrue(len(complete_out.etag) > 0)
+        self.assertTrue(complete_out.hash_crc64_ecma > 0)
+
+        get_out = self.client.get_object(bucket_name, key)
+        self.assertEqual(get_out.read(), content + content)
+        self.assertEqual(True, get_out.expiration is not None)
+
 
     def test_multipart_with_options(self):
         bucket_name = self.bucket_name + "-test-multipart-with-option"

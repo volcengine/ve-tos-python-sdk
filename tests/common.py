@@ -76,13 +76,15 @@ class TosTestBase(unittest.TestCase):
         self.sseAlg = "AES256"
         self.callback_url = os.getenv('CallbackUrl')
         self.cloud_function = os.getenv('CloudFunction')
-
+        self.control_endpoint = os.getenv('ControlEndpoint')
     def setUp(self):
-        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2)
+        self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2,
+                                  control_endpoint=self.control_endpoint)
         self.version_client = TestClient2(self.ak, self.sk, self.endpoint, self.region,
-                                          max_retry_count=2)
+                                          max_retry_count=2,control_endpoint=self.control_endpoint)
         self.client2 = TosClientV2(endpoint=self.endpoint2, region=self.region2, enable_crc=True, max_retry_count=2,
-                                   credentials_provider=StaticCredentialsProvider(self.ak, self.sk))
+                                   credentials_provider=StaticCredentialsProvider(self.ak, self.sk),
+                                   control_endpoint=self.control_endpoint)
 
     def tearDown(self):
         for file in self.temp_files:
