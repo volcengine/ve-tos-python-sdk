@@ -22,7 +22,7 @@ from urllib3.util.connection import allowed_gai_family
 from .consts import (DEFAULT_MIMETYPE, GMT_DATE_FORMAT,
                      MAX_PART_NUMBER, MAX_PART_SIZE, MIN_PART_SIZE, CHUNK_SIZE,
                      CLIENT_ENCRYPTION_ALGORITHM, SERVER_ENCRYPTION_ALGORITHM, LAST_MODIFY_TIME_DATE_FORMAT,
-                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER)
+                     EMPTY_SHA256_HASH, PAYLOAD_BUFFER,ECS_DATE_FORMAT)
 from .enum import DataTransferType, ACLType, StorageClassType, MetadataDirectiveType, AzRedundancyType, PermissionType, \
     GranteeType, CannedType
 from .exceptions import TosClientError
@@ -88,6 +88,9 @@ def parse_modify_time_to_utc_datetime(value):
 
 def parse_gmt_time_to_utc_datetime(value):
     return datetime.datetime.strptime(value, GMT_DATE_FORMAT).replace(tzinfo=pytz.utc)
+
+def parse_iso_time_to_utc_datetime(value):
+    return datetime.datetime.strptime(value,ECS_DATE_FORMAT).astimezone(pytz.utc)
 
 
 def get_content_type(key):

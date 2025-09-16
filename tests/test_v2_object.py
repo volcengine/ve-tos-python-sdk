@@ -513,6 +513,32 @@ class TestObject(TosTestBase):
         object.append(ObjectTobeDeleted(key_1))
         self.client.delete_multi_objects(bucket=bucket_name, objects=object, quiet=False)
 
+    def test_copy_object_expires(self):
+        bucket_name_1 = self.bucket_name + '-copy-object1'
+        bucket_name_2 = self.bucket_name + '-copy-object2'
+        key = self.random_key(".java")
+        content = random_bytes(1024 * 1024 * 5)
+        self.client.create_bucket(bucket_name_1)
+        self.bucket_delete.append(bucket_name_1)
+        self.client.create_bucket(bucket_name_2)
+        self.bucket_delete.append(bucket_name_2)
+        self.client.put_object(bucket_name_1, key, content=content)
+        self.client.copy_object(bucket_name_2, key, bucket_name_1, key,tagging="Key1=Value1&Key2=Value2",
+                                tagging_directive=TaggingDirectiveType.TaggingDirectiveTypeReplace,object_expires=3)
+        ho = self.client.head_object(bucket_name_2, key)
+        self.assertEqual(2,ho.tagging_count)
+        self.assertObjectContent(bucket_name_2, key, content)
+        self.assertEqual(True, ho.expiration is not None)
+        with self.assertRaises(TosServerError):
+            self.client.copy_object(bucket_name_2, key, bucket_name_1, key, forbid_overwrite=True)
+        with self.assertRaises(TosServerError):
+            self.client.copy_object(bucket_name_2, key, bucket_name_1, key, if_match='123')
+
+        self.client.delete_object(bucket_name_1, key)
+
+        with self.assertRaises(TosServerError):
+            self.client.copy_object(bucket_name_2, key, bucket_name_1, key)
+
     def test_copy_object(self):
         bucket_name_1 = self.bucket_name + '-copy-object1'
         bucket_name_2 = self.bucket_name + '-copy-object2'
@@ -528,6 +554,7 @@ class TestObject(TosTestBase):
         ho = self.client.head_object(bucket_name_2, key)
         self.assertEqual(2,ho.tagging_count)
         self.assertObjectContent(bucket_name_2, key, content)
+        self.assertEqual(True, ho.expiration is None)
         with self.assertRaises(TosServerError):
             self.client.copy_object(bucket_name_2, key, bucket_name_1, key, forbid_overwrite=True)
         with self.assertRaises(TosServerError):
@@ -649,6 +676,21 @@ class TestObject(TosTestBase):
     #     self.assertEqual(list_object_out.max_keys, 50)
     #     self.assertTrue(list_object_out.is_truncated)
 
+    def test_append_expires(self):
+        bucket_name = self.bucket_name + '-test-append-object'
+        key = self.random_key('.js')
+        content = random_bytes(1024)
+
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        append_object_out = self.client.append_object(bucket_name, key, 0, content=content,object_expires=3)
+        self.assertTrue(append_object_out.hash_crc64_ecma > 0)
+        self.assertEqual(append_object_out.next_append_offset, 1024)
+        head_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(True, head_out.expiration is not None)
+        self.client.delete_object(bucket_name, key)
+
     def test_append(self):
         bucket_name = self.bucket_name + '-test-append-object'
         key = self.random_key('.js')
@@ -659,6 +701,8 @@ class TestObject(TosTestBase):
         append_object_out = self.client.append_object(bucket_name, key, 0, content=content)
         self.assertTrue(append_object_out.hash_crc64_ecma > 0)
         self.assertEqual(append_object_out.next_append_offset, 1024)
+        head_out = self.client.head_object(bucket_name, key)
+        self.assertEqual(True, head_out.expiration is None)
         self.client.delete_object(bucket_name, key)
 
         key = self.random_key('.js')
@@ -1000,11 +1044,11 @@ class TestObject(TosTestBase):
 
         self.client.put_object(bucket_name, key, content=random_bytes(5))
         head_obj_out = self.client.head_object(bucket_name, key)
-        self.assertEqual(head_obj_out.expires, None)
+        self.assertEqual(head_obj_out.expiration, None)
 
         self.client.put_object(bucket_name, key, content=random_bytes(5),object_expires=3)
         head_obj_out = self.client.head_object(bucket_name, key)
-        self.assertEqual(head_obj_out.expires!="", True)
+        self.assertEqual(head_obj_out.expiration!="", True)
 
     def test_set_object_expires(self):
         bucket_name = self.bucket_name + '-test-put-object-ttl'
@@ -1022,7 +1066,7 @@ class TestObject(TosTestBase):
 
         self.client.set_object_expires(bucket_name, key, object_expires=0)
         head_obj_out = self.client.head_object(bucket_name, key)
-        self.assertEqual(head_obj_out.expires, None)
+        self.assertEqual(head_obj_out.expiration, None)
 
     def test_put_object_acl(self):
         bucket_name = self.bucket_name + '-test-put-object-acl'

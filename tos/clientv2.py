@@ -14,6 +14,7 @@ import tempfile
 import time
 import traceback
 import urllib.parse
+import uuid
 from datetime import datetime
 from typing import Dict
 
@@ -21,6 +22,7 @@ import requests
 from requests.structures import CaseInsensitiveDict
 from urllib3.util import connection
 from urllib3.util.connection import _set_socket_options
+from typing import List
 
 from . import TosClient
 from . import __version__
@@ -35,7 +37,7 @@ from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
 from .credential import StaticCredentialsProvider
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType, VersioningStatusType, CopyEventType,
-                   TaggingDirectiveType)
+                   TaggingDirectiveType,InventoryIncludedObjType,SemanticQueryType)
 from .exceptions import TosClientError, TosServerError, TosError
 from .http import Request, Response
 from .json_utils import (to_complete_multipart_upload_request,
@@ -43,7 +45,7 @@ from .json_utils import (to_complete_multipart_upload_request,
                          to_put_bucket_mirror_back, to_put_bucket_lifecycle, to_put_tagging, to_fetch_object,
                          to_put_replication, to_put_bucket_website, to_put_bucket_notification, to_put_custom_domain,
                          to_put_bucket_real_time_log, to_restore_object, to_bucket_encrypt, to_put_fetch_object,
-                         to_put_bucket_notification_type2,to_simple_query)
+                         to_put_bucket_notification_type2, to_simple_query, to_semantic_query)
 from .log import get_logger
 from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       CompleteMultipartUploadOutput, CopyObjectOutput,
@@ -76,7 +78,11 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       DeleteBucketTaggingOutput, GetBucketTaggingOutput, PutSymlinkOutput, GetSymlinkOutput,
                       GenericInput, GetFetchTaskOutput, BucketEncryptionRule, GetBucketEncryptionOutput,
                       DeleteBucketEncryptionOutput, PutBucketEncryptionOutput, PutBucketNotificationType2Output,
-                      GetBucketNotificationType2Output, FileStatusOutput, ModifyObjectOutput,SetObjectExpiresOutput)
+                      GetBucketNotificationType2Output, FileStatusOutput, ModifyObjectOutput, SetObjectExpiresOutput,
+                      PutBucketInventoryOutput, GetBucketInventoryOutput, ListBucketInventoryOutput,
+                      DeleteBucketInventoryOutput,
+                      BucketInventoryConfiguration, QueryOrderType, AggregationRequest, QueryRequest, SimpleQueryOutput,
+                      SemanticQueryOutput, ReplicationRule)
 from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
@@ -130,7 +136,7 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
                              SSECustomerAlgorithm, SSECustomerKey, SSECustomerKeyMD5, server_side_encryption,
                              website_redirect_location, storage_class: StorageClassType,
                              SSECAlgorithm, SSECKey, SSECKeyMD5, TrafficLimit, ForbidOverwrite, IfMatch,
-                             DisableEncodingMeta,Tagging,TaggingDirective):
+                             DisableEncodingMeta,Tagging,TaggingDirective,ObjectExpires):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -205,6 +211,9 @@ def _get_copy_object_headers(ACL, CacheControl, ContentDisposition, ContentEncod
         headers['x-tos-tagging'] = Tagging
     if TaggingDirective:
         headers['x-tos-tagging-directive'] = TaggingDirective.value
+    if ObjectExpires:
+        headers['x-tos-object-expires'] = str(ObjectExpires)
+
     return headers
 
 
@@ -536,7 +545,7 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
                                       ContentEncoding, ContentLanguage, ContentLength, ContentType, Expires,
                                       GrantFullControl, GrantRead, GrantReadACP, GrantWriteACP, Key, Metadata,
                                       StorageClass, WebsiteRedirectLocation, TrafficLimit, IfMatch,
-                                      DisableEncodingMeta):
+                                      DisableEncodingMeta,ObjectExpires):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -578,6 +587,8 @@ def _get_append_object_headers_params(recognize_content_type, ACL, CacheControl,
         headers['x-tos-traffic-limit'] = str(TrafficLimit)
     if IfMatch:
         headers['x-tos-if-match'] = IfMatch
+    if ObjectExpires:
+        headers['x-tos-object-expires'] = str(ObjectExpires)
     return headers
 
 
@@ -586,7 +597,7 @@ def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheContr
                                          GrantReadACP, GrantWriteACP, Key, Metadata, SSECustomerAlgorithm,
                                          SSECustomerKey, SSECustomerKeyMD5, ServerSideEncryption,
                                          WebsiteRedirectLocation, StorageClass: StorageClassType, ForbidOverwrite,
-                                         DisableEncodingMeta,Tagging):
+                                         DisableEncodingMeta,Tagging,ObjectExpires):
     headers = {}
     if Metadata:
         for k in Metadata:
@@ -634,6 +645,8 @@ def _get_create_multipart_upload_headers(recognize_content_type, ACL, CacheContr
         headers['x-tos-forbid-overwrite'] = ForbidOverwrite
     if Tagging:
         headers['x-tos-tagging'] = Tagging
+    if ObjectExpires:
+        headers['x-tos-object-expires'] = str(ObjectExpires)
     return headers
 
 
@@ -1288,7 +1301,8 @@ class TosClientV2(TosClient):
                     if_match: str = None,
                     generic_input: GenericInput = None,
                     tagging:str = None,
-                    tagging_directive:TaggingDirectiveType = None):
+                    tagging_directive:TaggingDirectiveType = None,
+                    object_expires: int = None,):
         """拷贝对象
 
         此接口用于在同一地域下同一个桶或者不同桶之间对象的拷贝操作。桶开启多版本场景，如果需要恢复对象的早期版本为当前版本，
@@ -1332,6 +1346,7 @@ class TosClientV2(TosClient):
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
         :param tagging: 指定上传对象的标签
         :param tagging_directive: 设置复制对象时对象标签的处理方式
+        :param object_expires: 设置对象的过期时间
         :return: CopyObjectOutput
         """
         check_enum_type(acl=acl, metadata_directive=metadata_directive, storage_class=storage_class)
@@ -1352,7 +1367,8 @@ class TosClientV2(TosClient):
                                            metadata_directive, copy_source_ssec_algorithm, copy_source_ssec_key,
                                            copy_source_ssec_key_md5, server_side_encryption, website_redirect_location,
                                            storage_class, ssec_algorithm, ssec_key, ssec_key_md5, traffic_limit,
-                                           forbid_overwrite, if_match, self.disable_encoding_meta,tagging,tagging_directive)
+                                           forbid_overwrite, if_match, self.disable_encoding_meta,tagging,tagging_directive,
+                                           object_expires)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, headers=headers,
                          generic_input=generic_input)
@@ -1879,7 +1895,8 @@ class TosClientV2(TosClient):
                       pre_hash_crc64_ecma: int = None,
                       traffic_limit: int = None,
                       if_match: str = None,
-                      generic_input: GenericInput = None) -> AppendObjectOutput:
+                      generic_input: GenericInput = None,
+                      object_expires: int = None) -> AppendObjectOutput:
         """追加写对象
 
         :param bucket: 桶名
@@ -1907,6 +1924,7 @@ class TosClientV2(TosClient):
         :param pre_hash_crc64_ecma: 上一次crc值，第一次上传设置为0
         :param if_match: 只有在匹配时，才追加对象
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param object_expires: 设置对象过期时间
         :return: AppendObjectOutput
         """
 
@@ -1935,7 +1953,8 @@ class TosClientV2(TosClient):
                         put_output = self.put_object(bucket=bucket, key=key, content=content,
                                                      content_length=content_length,
                                                      data_transfer_listener=data_transfer_listener,
-                                                     rate_limiter=rate_limiter, forbid_overwrite=True)
+                                                     rate_limiter=rate_limiter, forbid_overwrite=True,
+                                                     object_expires=object_expires)
                         if content_length is None:
                             content_length = 0
                         result = AppendObjectOutput(put_output.resp)
@@ -1971,7 +1990,7 @@ class TosClientV2(TosClient):
                                                     expires, grant_full_control, grant_read, grant_read_acp,
                                                     grant_write_acp, key, meta, storage_class,
                                                     website_redirect_location, traffic_limit, if_match,
-                                                    self.disable_encoding_meta)
+                                                    self.disable_encoding_meta,object_expires)
         if self.except100_continue_threshold > 0 and (
                 content_length is None or content_length > self.except100_continue_threshold):
             headers['Expect'] = "100-continue"
@@ -2247,7 +2266,8 @@ class TosClientV2(TosClient):
                                 storage_class: StorageClassType = None,
                                 forbid_overwrite: bool = None,
                                 generic_input: GenericInput = None,
-                                tagging:str = None) -> CreateMultipartUploadOutput:
+                                tagging:str = None,
+                                object_expires: int = None) -> CreateMultipartUploadOutput:
         """初始化分片上传任务
 
         :param bucket: 桶名
@@ -2274,6 +2294,7 @@ class TosClientV2(TosClient):
         :param forbid_overwrite: 是否禁止覆盖同名对象，True表示禁止覆盖，False表示允许覆盖
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
         :param tagging: 指定上传对象的标签
+        :param object_expires: 指定对象过期时间
         return: CreateMultipartUploadOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -2291,7 +2312,7 @@ class TosClientV2(TosClient):
                                                        grant_read, grant_read_acp, grant_write_acp, key, meta,
                                                        ssec_algorithm, ssec_key, ssec_key_md5,
                                                        server_side_encryption, website_redirect_location, storage_class,
-                                                       forbid_overwrite, self.disable_encoding_meta,tagging)
+                                                       forbid_overwrite, self.disable_encoding_meta,tagging,object_expires)
 
         params = {'uploads': ''}
         if encoding_type:
@@ -4123,7 +4144,7 @@ class TosClientV2(TosClient):
                            key: str,
                            object_expires:int,
                            version_id: str = None,
-                           generic_input: GenericInput = None):
+                           generic_input: GenericInput = None)-> SetObjectExpiresOutput:
         """ 设置对象生命周期
         :param bucket: 桶名
         :param key: 对象名
@@ -4145,6 +4166,101 @@ class TosClientV2(TosClient):
 
         return SetObjectExpiresOutput(resp)
 
+    def put_bucket_inventory(self,bucket: str,
+                             bucket_inventory_configuration:BucketInventoryConfiguration,
+                             generic_input: GenericInput = None) -> PutBucketInventoryOutput:
+        """ 设置桶清单配置
+        :param bucket: 桶名
+        :param bucket_inventory_configuration: 桶清单规则
+        :param generic_input: 通用请求参数
+        :return: PutBucketInventoryOutput
+        """
+        params = {'inventory': ''}
+        if bucket_inventory_configuration:
+            params['id'] = bucket_inventory_configuration.inventory_id
+        data = bucket_inventory_configuration.to_json()
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, params=params,data=data, generic_input=generic_input)
+        return PutBucketInventoryOutput(resp)
+
+    def get_bucket_inventory(self,bucket: str,inventory_id:str,generic_input: GenericInput = None) ->GetBucketInventoryOutput:
+        """ 查看某个存储桶中指定桶清单规则
+        :param bucket: 桶名
+        :param inventory_id: 桶清单名称
+        :param generic_input: 通用请求参数
+        :return: GetBucketInventoryOutput
+        """
+        params = {'inventory': '',"id":inventory_id}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params,  generic_input=generic_input)
+        return GetBucketInventoryOutput(resp)
+
+    def list_bucket_inventory(self,bucket: str,continuation_token:str = None,generic_input: GenericInput = None)->ListBucketInventoryOutput:
+        """ 批量获取存储桶中的所有桶清单的规则
+        :param bucket: 桶名
+        :param continuation_token: 获取超过 100 条桶清单规则时，携带 continuation-token 的请求消息格式，使得本次返回的桶清单从上一次请求返回的桶清单后继续进行列举
+        :param generic_input: 通用请求参数
+        :return: ListBucketInventoryOutput
+        """
+        params = {'inventory': ''}
+        if continuation_token:
+            params['continuation-token'] = continuation_token
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value, params=params,generic_input=generic_input)
+        return ListBucketInventoryOutput(resp)
+
+    def delete_bucket_inventory(self,bucket: str,inventory_id:str,generic_input: GenericInput = None)->DeleteBucketInventoryOutput:
+        """ 删除桶清单配置
+        :param bucket:桶名
+        :param inventory_id: 桶清单名称
+        :param generic_input: 通用请求参数
+        :return: DeleteBucketInventoryOutput
+        """
+        params = {'inventory': '',"id":inventory_id}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Delete.value, params=params,
+                         generic_input=generic_input)
+        return DeleteBucketInventoryOutput(resp)
+
+    def simple_query(self,account_id:str,dataset_name:str,sort:str=None,order:QueryOrderType=None,max_results:int=100,next_token:str=None,
+                     with_fields:List[str]=None,query:QueryRequest=None,aggregations:List[AggregationRequest]=None,
+                     generic_input: GenericInput = None)->SimpleQueryOutput:
+        """  标量精确查询
+        :param account_id: 租户ID
+        :param dataset_name: 数据集名称，同一个账户下唯一
+        :param sort: 排序字段列表,多个排序字段可使用半角逗号（,）分隔，例如：Size, Filename
+        :param order: 排序字段的排序方式
+        :param max_results: 返回文件元数据的最大个数
+        :param next_token: 用于翻页的 token
+        :param with_fields: 仅返回特定字段的值，而不是全部已有的元信息字段
+        :param query: 查询参数条件
+        :param aggregations: 聚合字段信息列表。当您使用聚合查询时，仅返回聚合结果，不再返回匹配到的元信息列表
+        :param generic_input: 通用请求参数
+        :return: SimpleQueryOutput
+        """
+        params = {'mode': 'SimpleQuery'}
+        data = to_simple_query(dataset_name,sort,order,max_results,next_token,with_fields,query,aggregations)
+        resp = self._req(key="datasetquery",method=HttpMethodType.Http_Method_Post.value,data=data,params=params,
+                         generic_input=generic_input,account_id=account_id,is_control_req=True)
+        return SimpleQueryOutput(resp)
+
+    def semantic_query(self,account_id:str,dataset_name:str,semantic_query_input:str,semantic_query_type:SemanticQueryType,
+                       max_results:int=100,with_fields:List[str]=None,query:QueryRequest=None,generic_input: GenericInput = None)->SemanticQueryOutput:
+        """  向量混合查询
+        :param account_id: 租户ID
+        :param dataset_name: 数据集名称，同一个账户下唯一
+        :param semantic_query_input: 语义
+        :param semantic_query_type: 语义搜索类型
+        :param max_results: 返回文件元数据的最大个数
+        :param with_fields: 仅返回特定字段的值，而不是全部已有的元信息字段
+        :param query: 查询参数条件，可包含 SubQueries
+        :param generic_input: 通用请求参数
+        :return: SemanticQueryOutput
+        """
+        params = {'mode': 'SemanticQuery'}
+        data = to_semantic_query(dataset_name,semantic_query_input,semantic_query_type,max_results,with_fields,query)
+        resp = self._req(key="datasetquery", method=HttpMethodType.Http_Method_Post.value, data=data, params=params,
+                         generic_input=generic_input, account_id=account_id, is_control_req=True)
+        return SemanticQueryOutput(resp)
+
+
+
     def _req(self, bucket=None, key=None, method=None, data=None, headers=None, params=None, func=None,
              generic_input=None,account_id=None,is_control_req=None):
         consume_body()
@@ -4153,9 +4269,14 @@ class TosClientV2(TosClient):
         if key is not None and is_control_req is None:
             _is_valid_object_name(key)
         key = to_str(key)
+        if is_control_req and not account_id:
+            raise exceptions.TosClientError("account_id can't be empty")
 
         headers = self._to_case_insensitive_dict(headers)
         params = self._sanitize_dict(params)
+
+        if is_control_req:
+            headers["x-tos-account-id"] = account_id
 
         if headers.get('x-tos-content-sha256') is None:
             headers['x-tos-content-sha256'] = UNSIGNED_PAYLOAD

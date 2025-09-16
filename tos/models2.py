@@ -1,7 +1,7 @@
 import json
 import urllib.parse
 from datetime import datetime
-from typing import List
+from typing import List, Any
 from typing import Dict
 
 from . import utils
@@ -11,14 +11,14 @@ from .enum import CannedType, GranteeType, PermissionType, StorageClassType, Red
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
     convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType, convert_replication_status_type,\
     InventoryFormatType,InventoryFrequencyType,QueryOrderType,QueryOperationType,AggregationOperationType,\
-    ReplicationStatusType
+    ReplicationStatusType,InventoryIncludedObjType,SemanticQueryType
 from .consts import CHUNK_SIZE, BUCKET_TYPE_HNS, BUCKET_TYPE_FNS
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
 from .utils import (get_etag, get_value, meta_header_decode,
                     parse_gmt_time_to_utc_datetime,
                     parse_modify_time_to_utc_datetime, _param_to_quoted_query, _make_virtual_host_url,
-                    convert_meta)
+                    convert_meta,parse_iso_time_to_utc_datetime)
 
 
 class ResponseInfo(object):
@@ -138,7 +138,7 @@ class OriginalInfo:
     def __init__(self, bucket, key, image_info=None, etag=None):
         self.Bucket = bucket
         self.Key = key
-        self.ImageInfo = image_info # 应为ImageInfo实例或None
+        self.ImageInfo = image_info  # 应为ImageInfo实例或None
         self.ETag = etag
 
 
@@ -1024,12 +1024,99 @@ class MirrorHeader(object):
         self.remove = remove
         self.set_header = set_header
 
+class CredentialProvider:
+    def __init__(self, role: str = None):
+        self.role: str = role
+
+    @classmethod
+    def from_json(cls, data: Dict[str, Any]) -> 'CredentialProvider':
+        return cls(role=data.get('Role',""))
+
+    def to_dict(self) -> dict:
+        return {"Role": self.role}
+
+
+class EndpointCredentialProvider:
+    def __init__(
+        self,
+        endpoint: str = None,
+        bucket_name: str = None,
+        credential_provider: CredentialProvider = None
+    ) -> None:
+        self.endpoint: str = endpoint
+        self.bucket_name: str = bucket_name
+        self.credential_provider: CredentialProvider = credential_provider or CredentialProvider()
+
+    @classmethod
+    def from_json(cls, data: Dict[str, Any]) -> 'EndpointCredentialProvider':
+        cp_data = data.get('CredentialProvider', {})
+        credential_provider = CredentialProvider.from_json(cp_data)
+
+        return cls(
+            endpoint=data.get('Endpoint',""),
+            bucket_name=data.get('BucketName',""),
+            credential_provider=credential_provider
+        )
+
+    def to_dict(self) -> dict:
+        result = {
+            "Endpoint": self.endpoint,
+            "BucketName": self.bucket_name,
+            "CredentialProvider": self.credential_provider.to_dict()
+        }
+        return {k: v for k, v in result.items() if v is not None}
+
+
+class CommonSourceEndpoint:
+    def __init__(
+        self,
+        primary: List[EndpointCredentialProvider] = None,
+        follower: List[EndpointCredentialProvider] = None
+    ) -> None:
+        self.primary: List[EndpointCredentialProvider] = primary or []
+        self.follower: List[EndpointCredentialProvider] = follower or []
+
+    @classmethod
+    def from_json(cls, data: Dict[str, Any]) -> 'CommonSourceEndpoint':
+        primary = []
+        for item in data.get('Primary', []):
+            primary.append(EndpointCredentialProvider.from_json(item))
+
+        follower = []
+        for item in data.get('Follower', []):
+            follower.append(EndpointCredentialProvider.from_json(item))
+
+        return cls(primary=primary, follower=follower)
+
+    def to_dict(self) -> dict:
+        return {
+            "Primary": [item.to_dict() for item in self.primary],
+            "Follower": [item.to_dict() for item in self.follower]
+        }
+
+
+class PrivateSource:
+    def __init__(self, source_endpoint: CommonSourceEndpoint = None) -> None:
+        self.source_endpoint: CommonSourceEndpoint = source_endpoint or CommonSourceEndpoint()
+
+    @classmethod
+    def from_json(cls, json_data: Dict[str, Any]) -> 'PrivateSource':
+        source_ep_data = json_data.get('SourceEndpoint', {})
+        source_endpoint = CommonSourceEndpoint.from_json(source_ep_data)
+        return cls(source_endpoint=source_endpoint)
+
+    def to_dict(self) -> dict:
+        return {
+            "SourceEndpoint": self.source_endpoint.to_dict()
+        }
+
 
 class Redirect(object):
     def __init__(self, redirect_type: RedirectType = None, public_source: PublicSource = None,
                  fetch_source_on_redirect: bool = None, pass_query: bool = None, follow_redirect: bool = None,
                  mirror_header: MirrorHeader = None, transform: Transform = None,
-                 fetch_header_to_meta_data_rules: list = None,fetch_source_on_redirect_with_query:bool = None):
+                 fetch_header_to_meta_data_rules: list = None,fetch_source_on_redirect_with_query:bool = None,
+                 private_source: PrivateSource = None):
         self.redirect_type = redirect_type
         self.fetch_source_on_redirect = fetch_source_on_redirect
         self.public_source = public_source
@@ -1039,6 +1126,7 @@ class Redirect(object):
         self.transform = transform
         self.fetch_header_to_meta_data_rules = fetch_header_to_meta_data_rules
         self.fetch_source_on_redirect_with_query = fetch_source_on_redirect_with_query
+        self.private_source = private_source
 
 
 
@@ -1184,6 +1272,16 @@ class Tag(object):
     def __init__(self, key: str = None, value: str = None):
         self.key = key
         self.value = value
+
+    @classmethod
+    def from_json(cls, data: Dict[str, Any])->'Tag':
+        return cls(data.get('Key'), data.get('Value'))
+
+    def to_dict(self):
+        return {
+            "Key": self.key,
+            "Value": self.value
+        }
 
 
 class PutBucketStorageClassOutput(ResponseInfo):
@@ -1414,6 +1512,8 @@ class GetBucketMirrorBackOutput(ResponseInfo):
                             primary=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Primary'),
                             follower=get_value(get_value(get_value(red, 'PublicSource'), 'SourceEndpoint'), 'Follower')
                         )
+                if get_value(red, 'PrivateSource'):
+                    redirect.private_source = PrivateSource.from_json(get_value(red, 'PrivateSource'))
                 redirect.pass_query = get_value(red, 'PassQuery', lambda x: bool(x))
                 redirect.follow_redirect = get_value(red, 'FollowRedirect', lambda x: bool(x))
                 if get_value(red, 'MirrorHeader'):
@@ -1640,17 +1740,24 @@ class Progress(object):
         self.historical_object = historical_object
         self.new_object = new_object
 
+class AccessControlTranslation(object):
+    def __init__(self, owner:str):
+        self.owner = owner
+
 
 class ReplicationRule(object):
     def __init__(self, id: str = None, status: StatusType = None, prefix_set: [] = None,
                  destination: Destination = None,
-                 historical_object_replication: StatusType = None, progress: Progress = None):
+                 historical_object_replication: StatusType = None, progress: Progress = None,
+                 tags:List[Tag]=None,access_control_translation:AccessControlTranslation=None):
         self.id = id
         self.status = status
         self.prefix_set = prefix_set
         self.destination = destination
         self.historical_object_replication = historical_object_replication
         self.progress = progress
+        self.tags = tags
+        self.access_control_translation = access_control_translation
 
 
 class GetBucketReplicationOutput(ResponseInfo):
@@ -1669,6 +1776,7 @@ class GetBucketReplicationOutput(ResponseInfo):
 
             destination_json = get_value(rule_json, 'Destination')
             progress_json = get_value(rule_json, 'Progress')
+            tags_json = get_value(rule_json, 'Tags')
             if destination_json:
                 replication_rule.destination = Destination(
                     bucket=get_value(destination_json, 'Bucket'),
@@ -1681,6 +1789,10 @@ class GetBucketReplicationOutput(ResponseInfo):
                 replication_rule.progress = Progress(
                     historical_object=get_value(progress_json, 'HistoricalObject', lambda x: float(x)),
                     new_object=get_value(progress_json, 'NewObject'))
+            if tags_json:
+                replication_rule.tags = [Tag.from_json(t) for t in tags_json]
+            if rule_json.get("AccessControlTranslation",None):
+                replication_rule.access_control_translation = AccessControlTranslation(rule_json.get("AccessControlTranslation"))
             self.rules.append(replication_rule)
 
 
@@ -2249,12 +2361,12 @@ class GetBucketNotificationType2Output(ResponseInfo):
 
 
 class InventoryFilter(object):
-    def __init__(self, prefix: str = None):
+    def __init__(self, prefix: str):
         self.prefix = prefix
 
 
 class TOSBucketDestination(object):
-    def __init__(self, format: InventoryFormatType, account_id: str, role: str, bucket: str, prefix: str):
+    def __init__(self, format: InventoryFormatType, account_id: str, role: str, bucket: str, prefix: str=None):
         self.format = format
         self.account_id = account_id
         self.role = role
@@ -2265,11 +2377,11 @@ class InventoryDestination(object):
     def __init__(self, tos_bucket_destination: TOSBucketDestination):
         self.tos_bucket_destination = tos_bucket_destination
 
-class InventorySchedule:
+class InventorySchedule(object):
     def __init__(self, frequency: InventoryFrequencyType):
         self.frequency = frequency
 
-class InventoryOptionalFields:
+class InventoryOptionalFields(object):
     def __init__(self, fields: List[str]):
         self.fields = fields
 
@@ -2281,85 +2393,315 @@ class SetObjectExpiresOutput(ResponseInfo):
     def __init__(self, resp):
         super(SetObjectExpiresOutput, self).__init__(resp)
 
+class BucketInventoryConfiguration(object):
+    def __init__(self,inventory_id:str,
+                 is_enabled: bool,
+                 destination:InventoryDestination,
+                 schedule: InventorySchedule,
+                 included_object_versions: InventoryIncludedObjType,
+                 inventory_filter: InventoryFilter = None,
+                 optional_fields:InventoryOptionalFields=None):
+        self.inventory_id = inventory_id
+        self.is_enabled = is_enabled
+        self.inventory_filter = inventory_filter
+        self.destination = destination
+        self.schedule = schedule
+        self.included_object_versions = included_object_versions
+        self.optional_fields = optional_fields
+
+    @classmethod
+    def from_json(cls, config_data:Dict) -> 'BucketInventoryConfiguration':
+        filter_data = config_data.get("Filter")
+        inventory_filter = None
+        if filter_data:
+            inventory_filter = InventoryFilter(
+                prefix=filter_data.get("Prefix", "")
+            )
+
+        dest_data = config_data.get("Destination", {}).get("TOSBucketDestination")
+        destination = None
+        if dest_data:
+            tos_dest = TOSBucketDestination(
+                format=InventoryFormatType(dest_data.get("Format", "")),
+                account_id=dest_data.get("AccountId", ""),
+                role=dest_data.get("Role", ""),
+                bucket=dest_data.get("Bucket", ""),
+                prefix=dest_data.get("Prefix", None)
+            )
+            destination = InventoryDestination(tos_bucket_destination=tos_dest)
+
+        schedule_data = config_data.get("Schedule")
+        schedule = None
+        if schedule_data:
+            schedule = InventorySchedule(
+                frequency=InventoryFrequencyType(schedule_data.get("Frequency", ""))
+            )
+
+        optional_fields_data = config_data.get("OptionalFields", {}).get("Field")
+        optional_fields = None
+        if optional_fields_data:
+            optional_fields = InventoryOptionalFields(
+                fields=optional_fields_data
+            )
+
+        included_versions = None
+        if "IncludedObjectVersions" in config_data:
+            included_versions = InventoryIncludedObjType(config_data["IncludedObjectVersions"])
+
+        return cls(
+            inventory_id=config_data.get("Id", ""),
+            is_enabled=config_data.get("IsEnabled", False),
+            inventory_filter=inventory_filter,
+            destination=destination,
+            schedule=schedule,
+            included_object_versions=included_versions,
+            optional_fields=optional_fields
+        )
+
+    def to_dict(self) -> dict:
+        inventory_config = {}
+        inventory_config['Id'] = self.inventory_id
+        inventory_config['IsEnabled'] = self.is_enabled
+
+        if self.inventory_filter:
+            inventory_config["Filter"] = {"Prefix": self.inventory_filter.prefix}
+
+        if self.destination and self.destination.tos_bucket_destination:
+            tos_dest = self.destination.tos_bucket_destination
+            inventory_config["Destination"] = {
+                "TOSBucketDestination": {
+                    "Format": tos_dest.format.value,
+                    "AccountId": tos_dest.account_id,
+                    "Role": tos_dest.role,
+                    "Bucket": tos_dest.bucket,
+                }
+            }
+            if tos_dest.prefix:
+                inventory_config["Destination"]["TOSBucketDestination"]["Prefix"] = tos_dest.prefix
+        if self.schedule:
+            inventory_config["Schedule"] = {
+                "Frequency": self.schedule.frequency.value
+            }
+
+        if self.included_object_versions:
+            inventory_config["IncludedObjectVersions"] = self.included_object_versions.value
+
+        if self.optional_fields and self.optional_fields.fields:
+            inventory_config["OptionalFields"] = {
+                "Field": self.optional_fields.fields
+            }
+
+        return inventory_config
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict())
+
+class ListBucketInventoryOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(ListBucketInventoryOutput, self).__init__(resp)
+        json_data = resp.json_read()
+        list_data = json_data.get("InventoryConfigurations") or []
+        self.configurations = [BucketInventoryConfiguration.from_json(item) for item in list_data]
+        self.is_truncated = json_data.get("IsTruncated",False)
+        self.next_continuation_token = json_data.get("NextContinuationToken",None)
+
+
+
+class DeleteBucketInventoryOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteBucketInventoryOutput, self).__init__(resp)
+
+class GetBucketInventoryOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketInventoryOutput, self).__init__(resp)
+        config_data = resp.json_read()
+
+        filter_data = config_data.get("Filter")
+        inventory_filter = None
+        if filter_data:
+            inventory_filter = InventoryFilter(
+                prefix=filter_data.get("Prefix", "")
+            )
+
+        dest_data = config_data.get("Destination", {}).get("TOSBucketDestination")
+        destination = None
+        if dest_data:
+            tos_dest = TOSBucketDestination(
+                format=InventoryFormatType(dest_data.get("Format", "")),
+                account_id=dest_data.get("AccountId", ""),
+                role=dest_data.get("Role", ""),
+                bucket=dest_data.get("Bucket", ""),
+                prefix=dest_data.get("Prefix", None)
+            )
+            destination = InventoryDestination(tos_bucket_destination=tos_dest)
+
+        schedule_data = config_data.get("Schedule")
+        schedule = None
+        if schedule_data:
+            schedule = InventorySchedule(
+                frequency=InventoryFrequencyType(schedule_data.get("Frequency", ""))
+            )
+
+        optional_fields_data = config_data.get("OptionalFields", {}).get("Field")
+        optional_fields = None
+        if optional_fields_data:
+            optional_fields = InventoryOptionalFields(
+                fields=optional_fields_data
+            )
+
+        included_versions = None
+        if "IncludedObjectVersions" in config_data:
+            included_versions = InventoryIncludedObjType(config_data["IncludedObjectVersions"])
+
+        self.bucket_inventory_configuration = BucketInventoryConfiguration(
+            inventory_id=config_data.get("Id", ""),
+            is_enabled=config_data.get("IsEnabled", False),
+            inventory_filter=inventory_filter,
+            destination=destination,
+            schedule=schedule,
+            included_object_versions=included_versions,
+            optional_fields=optional_fields
+        )
 
 
 class QueryRequest:
     def __init__(self, operation: QueryOperationType,
-                 field: str,
+                 field: str = None,
                  value: str = None,
                  sub_queries: List['QueryRequest'] = None):
-        self.Operation = operation  # 枚举类型
-        self.Field = field
-        self.Value = value
-        self.SubQueries = sub_queries if sub_queries is not None else []
+        self.operation = operation  # 枚举类型
+        self.field = field
+        self.value = value
+        self.sub_queries = sub_queries if sub_queries is not None else []
+
+    def to_dict(self) -> Dict:
+        result = {"Operation": self.operation.value}
+
+        if self.field is not None:
+            result["Field"] = self.field
+        if self.value is not None:
+            result["Value"] = self.value
+        if self.sub_queries:
+            result["SubQueries"] = [q.to_dict() for q in self.sub_queries]
+
+        return result
 
 
 class AggregationRequest:
     def __init__(self, field: str, operation: AggregationOperationType):
-        self.Field = field
-        self.Operation = operation  # 枚举类型
+        self.field = field
+        self.operation = operation
 
+    def to_dict(self) -> Dict:
+        return {
+            "Field": self.field,
+            "Operation": self.operation.value
+        }
 
-# 响应相关类
+class SemanticQueryOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(SemanticQueryOutput, self).__init__(resp)
+        json_data = resp.json_read()
+        self.files = [FileResponse.from_json(item) for item in json_data.get("Files",[])]
+
 class SimpleQueryOutput(ResponseInfo):
     def __init__(self, resp):
         super(SimpleQueryOutput, self).__init__(resp)
+        json_data = resp.json_read()
+        self.aggregations = []
+        self.files = []
+        if json_data.get("Aggregations",None):
+            for agg in json_data.get("Aggregations",[]):
+                groups = [GroupResponse(g.get("Value",""), g.get("Count",0)) for g in (agg.get("Groups") or [])]
+                self.aggregations.append(AggregationResponse(
+                    field=agg.get("Field",""),
+                    operation=AggregationOperationType(agg.get("Operation","")) if agg.get("Operation",None) is not None else None,
+                    value=agg.get("Value",0),
+                    groups=groups
+                ))
+
+        if json_data.get("Files", None):
+            self.files = [FileResponse.from_json(item) for item in json_data.get("Files", [])]
+        self.next_token = json_data.get("NextToken", "")
 
 
-class AggregationResponse():
+class AggregationResponse:
     def __init__(self, field: str,
                  operation: AggregationOperationType,
                  value: float,
                  groups: List['GroupResponse'] = None):
-        self.Field = field
-        self.Operation = operation
-        self.Value = value
-        self.Groups = groups if groups is not None else []
+        self.field = field
+        self.operation = operation
+        self.value = value
+        self.groups = groups if groups is not None else []
 
 
 class GroupResponse:
     def __init__(self, value: str, count: int):
-        self.Value = value
-        self.Count = count
+        self.value = value
+        self.count = count
 
 class FileResponse:
-    def __init__(self, tos_bucket_name: str,
-                 file_name: str,
-                 etag: str,
-                 tos_storage_class: StorageClassType,
-                 tos_crc64: str,
-                 server_side_encryption: str,
-                 server_side_encryption_customer_algorithm: str,
-                 file_modified_time: datetime,
-                 size: int,
-                 score: float,
-                 tos_tagging_count: int,
-                 tos_tagging: Dict[str, str],
-                 tos_user_meta: Dict[str, str],
-                 tos_version_id: str,
-                 tos_object_type: str,
-                 content_type: str,
-                 tos_replication_status: ReplicationStatusType,
-                 tos_is_delete_marker: bool,
-                 account_id: str,
-                 create_time: datetime):
-        self.TOSBucketName = tos_bucket_name
-        self.FileName = file_name
-        self.ETag = etag
-        self.TOSStorageClass = tos_storage_class  # 枚举类型
-        self.TOSCRC64 = tos_crc64
-        self.ServerSideEncryption = server_side_encryption
-        self.ServerSideEncryptionCustomerAlgorithm = server_side_encryption_customer_algorithm
-        self.FileModifiedTime = file_modified_time  # time.Time类型
-        self.Size = size  # int64在Python中用int表示
-        self.Score = score  # float32在Python中用float表示
-        self.TOSTaggingCount = tos_tagging_count
-        self.TOSTagging = tos_tagging
-        self.TOSUserMeta = tos_user_meta
-        self.TOSVersionID = tos_version_id
-        self.TOSObjectType = tos_object_type
-        self.ContentType = content_type
-        self.TOSReplicationStatus = tos_replication_status  # 枚举类型
-        self.TOSIsDeleteMarker = tos_is_delete_marker
-        self.AccountID = account_id
-        self.CreateTime = create_time  # time.Time类型
+    def __init__(self,
+                    tos_bucket_name: str=None,
+                    file_name: str=None,
+                    etag: str=None,
+                    tos_storage_class: StorageClassType=None,
+                    size: int=None,
+                    content_type: str =None,
+                    tos_crc64: str = None,
+                    server_side_encryption: str = None,
+                    server_side_encryption_customer_algorithm: str = None,
+                    score: float = None,
+                    tos_tagging_count: int = None,
+                    tos_tagging: Dict[str, str] = None,
+                    tos_user_meta: Dict[str, str] = None,
+                    tos_version_id: str = None,
+                    tos_object_type: str = None,
+                    tos_replication_status: ReplicationStatusType = None,
+                    tos_is_delete_marker: bool = None,
+                    account_id: str = None):
+        self.tos_bucket_name = tos_bucket_name
+        self.file_name = file_name
+        self.etag = etag
+        self.tos_storage_class = tos_storage_class  # 枚举类型
+        self.tos_crc64 = tos_crc64
+        self.server_side_encryption = server_side_encryption
+        self.server_side_encryption_customer_algorithm = server_side_encryption_customer_algorithm
+        self.size = size
+        self.score = score
+        self.tos_tagging_count = tos_tagging_count
+        self.tos_tagging = tos_tagging
+        self.tos_user_meta = tos_user_meta
+        self.tos_version_id = tos_version_id
+        self.tos_object_type = tos_object_type
+        self.content_type = content_type
+        self.tos_replication_status = tos_replication_status  # 枚举类型
+        self.tos_is_delete_marker = tos_is_delete_marker
+        self.account_id = account_id
+
+    @classmethod
+    def from_json(cls,file_json:Dict)->'FileResponse':
+        result =cls(tos_bucket_name=file_json.get("TOSBucketName", None),
+            file_name=file_json.get("FileName", None),
+            etag=file_json.get("ETag", None),
+            tos_storage_class=StorageClassType(file_json.get("TOSStorageClass", "Unknown")),
+            size=file_json.get("Size", None),
+            content_type=file_json.get("ContentType", None),
+            tos_crc64=file_json.get("TOSCRC64", None),
+            server_side_encryption=file_json.get("ServerSideEncryption", None),
+            server_side_encryption_customer_algorithm=file_json.get("ServerSideEncryptionCustomerAlgorithm", None),
+            score=file_json.get("Score", None),
+            tos_tagging_count=file_json.get("TOSTaggingCount", None),
+            tos_tagging=file_json.get("TOSTagging", None),
+            tos_user_meta=file_json.get("TOSUserMeta", None),
+            tos_version_id=file_json.get("TOSVersionId", None),
+            tos_object_type=file_json.get("TOSObjectType", None),
+            tos_replication_status=file_json.get("TOSReplicationStatus", None),
+            tos_is_delete_marker=file_json.get("TOSIsDeleteMarker", None),
+            account_id=file_json.get("AccountId", None))
+        if file_json.get("FileModifiedTime",None):
+            result.file_modified_time = parse_iso_time_to_utc_datetime(file_json["FileModifiedTime"])
+        if file_json.get("CreateTime",None):
+            result.file_create_time = parse_iso_time_to_utc_datetime(file_json["CreateTime"])
+        return result

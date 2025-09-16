@@ -5,6 +5,8 @@ import os
 import time
 import time as tim
 import unittest
+import string
+import random
 
 import crcmod
 from pytz import UTC
@@ -17,7 +19,8 @@ from tos.clientv2 import USER_AGENT
 from tos.consts import BUCKET_TYPE_HNS, BUCKET_TYPE_FNS
 from tos.credential import EnvCredentialsProvider
 from tos.enum import ACLType, StorageClassType, RedirectType, StatusType, PermissionType, CannedType, GranteeType, \
-    VersioningStatusType, ProtocolType, AzRedundancyType, StorageClassInheritDirectiveType, CertStatus
+    VersioningStatusType, ProtocolType, AzRedundancyType, StorageClassInheritDirectiveType, CertStatus, \
+    InventoryFormatType, InventoryFrequencyType, InventoryIncludedObjType
 from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import CORSRule, Rule, Condition, Redirect, PublicSource, SourceEndpoint, MirrorHeader, \
     BucketLifeCycleRule, BucketLifeCycleExpiration, BucketLifeCycleNoCurrentVersionExpiration, \
@@ -28,7 +31,9 @@ from tos.models2 import CORSRule, Rule, Condition, Redirect, PublicSource, Sourc
     CloudFunctionConfiguration, Filter, FilterKey, FilterRule, RocketMQConfiguration, RocketMQConf, Transform, \
     ReplaceKeyPrefix, FetchHeaderToMetaDataRule, BucketEncryptionRule, ApplyServerSideEncryptionByDefault, \
     BucketLifecycleFilter, NotificationRule, NotificationFilter, NotificationFilterKey, NotificationFilterRule, \
-    NotificationDestination, DestinationVeFaaS, DestinationRocketMQ,KV
+    NotificationDestination, DestinationVeFaaS, DestinationRocketMQ, KV, BucketInventoryConfiguration, \
+    InventoryDestination, TOSBucketDestination, InventorySchedule, InventoryFilter, InventoryOptionalFields, \
+    AccessControlTranslation, PrivateSource, CommonSourceEndpoint, EndpointCredentialProvider, CredentialProvider
 
 tos.set_logger()
 
@@ -51,6 +56,41 @@ class TestBucket(TosTestBase):
         print(client.user_agent)
         print(USER_AGENT + " --tos/crr/v3.0.0 (aa/bb;cc/dd)")
         assert (client.user_agent == USER_AGENT + " --tos/crr/v3.0.0 (aa/bb;cc/dd)")
+
+    def test_hns_bucket_expires(self):
+        bucket_name = self.bucket_name + "hcl"
+        self.bucket_delete.append(bucket_name)
+        # bucket_name = "sun-eafrofzkzphcl"
+        rsp = self.client.create_bucket(bucket_name, bucket_type="hns")
+        print(rsp)
+        assert rsp.status_code == 200
+        rsp = self.client.head_bucket(bucket=bucket_name)
+        assert rsp.status_code == 200
+        assert rsp.bucket_type == BUCKET_TYPE_HNS
+
+        append_key_0 = "hns/test/0.txt"
+        rsp = self.client.append_object(bucket=bucket_name, key=append_key_0, offset=0, content="hello0",
+                                        content_length=6,object_expires=3)
+        assert rsp.status_code == 200
+        offset = rsp.next_append_offset
+        assert offset == 6
+        head_out = self.client.head_object(bucket=bucket_name,key=append_key_0)
+        assert head_out.status_code == 200
+        assert head_out.expiration is not None
+
+        append_key = "hns/test/2.txt"
+        rsp = self.client.append_object(bucket=bucket_name, key=append_key, offset=0, content_length=0,object_expires=3)
+        assert rsp.status_code == 200
+        rsp = self.client.head_object(bucket=bucket_name, key=append_key)
+        assert rsp.status_code == 200
+        assert head_out.expiration is not None
+        rsp = self.client.append_object(bucket=bucket_name, key=append_key, offset=0, content="hello1",
+                                        content_length=6)
+        offset = rsp.next_append_offset
+        assert rsp.status_code == 200
+        assert offset == 6
+        rsp = self.client.head_object(bucket=bucket_name, key=append_key)
+        assert rsp.status_code == 200
 
     def test_hns_bucket(self):
         bucket_name = self.bucket_name + "hcl"
@@ -377,6 +417,57 @@ class TestBucket(TosTestBase):
         self.assertIsNotNone(out.region)
         self.assertIsNotNone(out.extranet_endpoint)
         self.assertIsNotNone(out.intranet_endpoint)
+
+    def test_bucket_private_mirror(self):
+        bucket_name = self.bucket_name + 'private-mirror'
+        self.client.create_bucket(bucket=bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        rules = []
+        rules.append(Rule(
+            id='1',
+            condition=Condition(http_code=404, allow_host=["example.com"], http_method=["GET", "HEAD"]),
+            redirect=Redirect(
+                redirect_type=RedirectType.Mirror,
+                fetch_source_on_redirect=True,
+                private_source=PrivateSource(source_endpoint=CommonSourceEndpoint(
+                    primary=[EndpointCredentialProvider(
+                        endpoint="https://example.com",
+                        bucket_name=bucket_name,
+                        credential_provider=CredentialProvider("ServiceRoleBackSourceAccessTOS")
+                    )],
+                    follower=[EndpointCredentialProvider(
+                        endpoint="https://example2.com",
+                        bucket_name=bucket_name,
+                        credential_provider=CredentialProvider("ServiceRoleBackSourceAccessTOS")
+                    )]
+                ),),
+                pass_query=True,
+                follow_redirect=True,
+                mirror_header=MirrorHeader(pass_all=True, pass_headers=['aaa', 'bbb'], remove=['xxx', 'xxx'],
+                                           set_header=[KV("key1", "value1"), KV("key2", "value2")]),
+                transform=Transform(with_key_prefix='prefix', with_key_suffix='suffix',
+                                    replace_key_prefix=ReplaceKeyPrefix(key_prefix='prefix1', replace_with='replace')),
+                fetch_header_to_meta_data_rules=[FetchHeaderToMetaDataRule(source_header='a', meta_data_suffix='b')],
+                fetch_source_on_redirect_with_query=True,
+            )
+        ))
+        put_out = self.client.put_bucket_mirror_back(bucket=bucket_name, rules=rules)
+        self.assertIsNotNone(put_out.request_id)
+        get_out = self.client.get_bucket_mirror_back(bucket=bucket_name)
+        self.assertIsNotNone(get_out.request_id)
+        self.assertEqual(len(get_out.rules[0].redirect.private_source.source_endpoint.primary), 1)
+        self.assertEqual(get_out.rules[0].redirect.private_source.source_endpoint.primary[0].bucket_name,bucket_name)
+        self.assertEqual(get_out.rules[0].redirect.private_source.source_endpoint.primary[0].endpoint, 'https://example.com')
+        self.assertEqual(get_out.rules[0].redirect.private_source.source_endpoint.primary[0].credential_provider.role,"ServiceRoleBackSourceAccessTOS")
+
+        self.assertEqual(len(get_out.rules[0].redirect.private_source.source_endpoint.follower), 1)
+        self.assertEqual(get_out.rules[0].redirect.private_source.source_endpoint.follower[0].bucket_name, bucket_name)
+        self.assertEqual(get_out.rules[0].redirect.private_source.source_endpoint.follower[0].endpoint,
+                         'https://example2.com')
+        self.assertEqual(get_out.rules[0].redirect.private_source.source_endpoint.follower[0].credential_provider.role,
+                         "ServiceRoleBackSourceAccessTOS")
+
 
     def test_bucket_mirror(self):
         bucket_name = self.bucket_name + 'mirror'
@@ -762,12 +853,15 @@ class TestBucket(TosTestBase):
         bucket_name_src = self.bucket_name + 'replication'
         bucket_name_crr = self.bucket_name + '-crr'
         bucket_name_crr_2 = self.bucket_name + '-crr2'
+        bucket_name_crr_3 = self.bucket_name + '-crr3'
         self.client.create_bucket(bucket_name_src)
         self.client2.create_bucket(bucket_name_crr)
         self.client2.create_bucket(bucket_name_crr_2)
+        self.client2.create_bucket(bucket_name_crr_3)
         self.bucket_delete.append(bucket_name_src)
         self.bucket_delete.append(bucket_name_crr)
         self.bucket_delete.append(bucket_name_crr_2)
+        self.bucket_delete.append(bucket_name_crr_3)
         rules = []
         rules.append(ReplicationRule(id='1',
                                      status=StatusType.Status_Enable,
@@ -784,6 +878,15 @@ class TestBucket(TosTestBase):
                                                              storage_class=StorageClassType.Storage_Class_Standard,
                                                              storage_class_inherit_directive=StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object),
                                      historical_object_replication=StatusType.Status_Disable))
+
+        rules.append(ReplicationRule(id='3',
+                                     status=StatusType.Status_Enable,
+                                     prefix_set=['prefix5'],
+                                     destination=Destination(bucket=bucket_name_crr_3, location=self.region2,
+                                                             storage_class=StorageClassType.Storage_Class_Ia,
+                                                             storage_class_inherit_directive=StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object),
+                                     historical_object_replication=StatusType.Status_Disable,tags=[Tag("key1","value1"),Tag("key2","value2")],
+                                     access_control_translation=AccessControlTranslation("BucketOwnerEntrusted")))
 
         put_out = self.client.put_bucket_replication(bucket_name_src, role='ServiceRoleforReplicationAccessTOS',
                                                      rules=rules)
@@ -815,8 +918,24 @@ class TestBucket(TosTestBase):
         self.assertIsNotNone(out.rules[0].progress)
         self.assertEqual(out.rules[0].progress.historical_object, 0.0)
 
+        out = self.client.get_bucket_replication(bucket_name_src, '3')
+        self.assertEqual(out.rules[0].id, '3')
+        self.assertEqual(out.rules[0].prefix_set, ['prefix5'])
+        self.assertEqual(out.rules[0].destination.bucket, bucket_name_crr_3)
+        self.assertEqual(out.rules[0].destination.location, self.region2)
+        self.assertEqual(out.rules[0].destination.storage_class, StorageClassType.Storage_Class_Ia)
+        self.assertEqual(out.rules[0].destination.storage_class_inherit_directive,
+                         StorageClassInheritDirectiveType.Storage_Class_ID_Source_Object)
+        self.assertEqual(out.rules[0].historical_object_replication, StatusType.Status_Disable)
+        self.assertIsNotNone(out.rules[0].progress)
+        self.assertEqual(out.rules[0].progress.historical_object, 0.0)
+        self.assertEqual(out.rules[0].access_control_translation.owner['Owner'], 'BucketOwnerEntrusted')
+        self.assertEqual(len(out.rules[0].tags), 2)
+        self.assertEqual(out.rules[0].tags[0].key, 'key1')
+        self.assertEqual(out.rules[0].tags[1].key, 'key2')
+
         out = self.client.get_bucket_replication(bucket_name_src)
-        self.assertEqual(len(out.rules), 2)
+        self.assertEqual(len(out.rules), 3)
 
         out = self.client.delete_bucket_replication(bucket_name_src)
         self.assertIsNotNone(out.request_id)
@@ -1035,6 +1154,170 @@ class TestBucket(TosTestBase):
     #                      rules[0].destination.rocket_mq[0].access_key_id)
     #     self.assertEqual(out.rules[0].destination.rocket_mq[0].instance_id,
     #                      rules[0].destination.rocket_mq[0].instance_id)
+
+    def test_bucket_inventory(self):
+        bucket_name = self.bucket_name + '-inventory'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        inventory_id = "py-sdk-test"
+        bucket_inventory_configuration = BucketInventoryConfiguration(
+            inventory_id=inventory_id,
+            is_enabled=True,
+            destination=InventoryDestination(tos_bucket_destination=TOSBucketDestination(
+                format=InventoryFormatType.InventoryFormatCsv,
+                account_id=self.account_id,
+                role="TosArchiveTOSInventory",
+                bucket=bucket_name)),
+            inventory_filter=InventoryFilter(prefix="prefix1"),
+            schedule=InventorySchedule(frequency=InventoryFrequencyType.InventoryFrequencyTypeDaily),
+            included_object_versions=InventoryIncludedObjType.InventoryIncludedObjTypeCurrent,
+
+        )
+        resp = self.client.put_bucket_inventory(bucket_name,bucket_inventory_configuration)
+        self.assertEqual(resp.status_code,200)
+
+        inventory_id2 = "py-sdk-test2"
+        bucket_inventory_configuration = BucketInventoryConfiguration(
+            inventory_id=inventory_id2,
+            is_enabled=False,
+            destination=InventoryDestination(tos_bucket_destination=TOSBucketDestination(
+                format=InventoryFormatType.InventoryFormatCsv,
+                account_id=self.account_id,
+                role="TosArchiveTOSInventory",
+                bucket=bucket_name)),
+            schedule=InventorySchedule(frequency=InventoryFrequencyType.InventoryFrequencyTypeWeekly),
+            included_object_versions=InventoryIncludedObjType.InventoryIncludedObjTypeAll,
+            inventory_filter=InventoryFilter(prefix="prefix2"),
+            optional_fields=InventoryOptionalFields(["Size","CRC64"])
+        )
+        resp = self.client.put_bucket_inventory(bucket_name, bucket_inventory_configuration)
+        self.assertEqual(resp.status_code, 200)
+
+
+        resp = self.client.get_bucket_inventory(bucket_name,inventory_id=inventory_id)
+        self.assertEqual(resp.bucket_inventory_configuration.inventory_id, inventory_id)
+        self.assertEqual(resp.bucket_inventory_configuration.is_enabled, True)
+
+        resp = self.client.get_bucket_inventory(bucket_name, inventory_id=inventory_id2)
+        self.assertEqual(resp.bucket_inventory_configuration.inventory_id, inventory_id2)
+        self.assertEqual(resp.bucket_inventory_configuration.is_enabled, False)
+        self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.format, InventoryFormatType.InventoryFormatCsv)
+        self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.account_id, self.account_id)
+        self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.role, "TosArchiveTOSInventory")
+        self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.bucket, bucket_name)
+        self.assertEqual(resp.bucket_inventory_configuration.schedule.frequency, InventoryFrequencyType.InventoryFrequencyTypeWeekly)
+        self.assertEqual(resp.bucket_inventory_configuration.included_object_versions, InventoryIncludedObjType.InventoryIncludedObjTypeAll)
+        self.assertEqual(resp.bucket_inventory_configuration.inventory_filter.prefix, "prefix2")
+        self.assertEqual(resp.bucket_inventory_configuration.optional_fields.fields, ["Size","CRC64"])
+
+        resp = self.client.list_bucket_inventory(bucket_name)
+        self.assertEqual(len(resp.configurations), 2)
+        bucket_inventory_configuration = resp.configurations[1]
+        self.assertEqual(bucket_inventory_configuration.inventory_id, inventory_id2)
+        self.assertEqual(bucket_inventory_configuration.is_enabled, False)
+        self.assertEqual(bucket_inventory_configuration.destination.tos_bucket_destination.format,
+                         InventoryFormatType.InventoryFormatCsv)
+        self.assertEqual(bucket_inventory_configuration.destination.tos_bucket_destination.account_id,
+                         self.account_id)
+        self.assertEqual(bucket_inventory_configuration.destination.tos_bucket_destination.role,
+                         "TosArchiveTOSInventory")
+        self.assertEqual(bucket_inventory_configuration.destination.tos_bucket_destination.bucket, bucket_name)
+        self.assertEqual(bucket_inventory_configuration.schedule.frequency,
+                         InventoryFrequencyType.InventoryFrequencyTypeWeekly)
+        self.assertEqual(bucket_inventory_configuration.included_object_versions,
+                         InventoryIncludedObjType.InventoryIncludedObjTypeAll)
+        self.assertEqual(bucket_inventory_configuration.inventory_filter.prefix, "prefix2")
+        self.assertEqual(bucket_inventory_configuration.optional_fields.fields, ["Size", "CRC64"])
+
+        self.client.delete_bucket_inventory(bucket_name,inventory_id=inventory_id)
+        self.client.delete_bucket_inventory(bucket_name, inventory_id=inventory_id2)
+
+        try:
+            self.client.get_bucket_inventory(bucket_name, inventory_id=inventory_id)
+        except TosServerError as e:
+            self.assertEqual(e.status_code,404)
+
+        try:
+            self.client.get_bucket_inventory(bucket_name, inventory_id=inventory_id2)
+        except TosServerError as e:
+            self.assertEqual(e.status_code, 404)
+
+    def test_list_bucket_inventory(self):
+        bucket_name = self.bucket_name + '-inventory'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        for i in range(102):
+            inventory_id = "py-sdk-test"+str(i)
+            bucket_inventory_configuration = BucketInventoryConfiguration(
+                inventory_id=inventory_id,
+                is_enabled=True,
+                destination=InventoryDestination(tos_bucket_destination=TOSBucketDestination(
+                    format=InventoryFormatType.InventoryFormatCsv,
+                    account_id=self.account_id,
+                    role="TosArchiveTOSInventory",
+                    bucket=bucket_name)),
+                inventory_filter=InventoryFilter(prefix="prefix"+''.join(random.choice(string.ascii_lowercase) for i in range(5))),
+                schedule=InventorySchedule(frequency=InventoryFrequencyType.InventoryFrequencyTypeDaily),
+                included_object_versions=InventoryIncludedObjType.InventoryIncludedObjTypeCurrent,
+
+            )
+            resp = self.client.put_bucket_inventory(bucket_name, bucket_inventory_configuration)
+            self.assertEqual(resp.status_code, 200)
+
+        resp = self.client.list_bucket_inventory(bucket_name)
+        self.assertEqual(len(resp.configurations), 100)
+
+        resp = self.client.list_bucket_inventory(bucket_name,continuation_token=resp.next_continuation_token)
+        self.assertEqual(len(resp.configurations), 1)
+
+
+
+    def test_bucket_notification_type2(self):
+        bucket_name = self.bucket_name + "-notification-type2"
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        rules = [
+            NotificationRule(
+                rule_id="test1",
+                events=["tos:ObjectCreated:Post", "tos:ObjectCreated:Origin"],
+                filter=NotificationFilter(
+                    tos_key=NotificationFilterKey(
+                        filter_rules=[
+                            NotificationFilterRule(name="prefix", value="test-")
+                        ]
+                    )
+                ),
+                destination=NotificationDestination(
+                    ve_faas=[DestinationVeFaaS(function_id=self.cloud_function)],
+                    rocket_mq=[
+                        DestinationRocketMQ(
+                            role="trn:iam::{}:role/{}".format(self.account_id, self.mq_role_name),
+                            instance_id=self.mq_instance_id,
+                            topic="SDK",
+                            access_key_id=self.mq_access_key_id
+                        )
+                    ]
+                )
+            )
+        ]
+        self.client.put_bucket_notification_type2(bucket_name, rules)
+        out = self.client.get_bucket_notification_type2(bucket_name)
+
+        self.assertTrue(out.version != '')
+        self.assertEqual(len(out.rules), 1)
+        self.assertEqual(out.rules[0].rule_id, rules[0].rule_id)
+        self.assertEqual(out.rules[0].events, rules[0].events)
+        self.assertEqual(out.rules[0].filter.tos_key.filter_rules[0].name, rules[0].filter.tos_key.filter_rules[0].name)
+        self.assertEqual(out.rules[0].filter.tos_key.filter_rules[0].value,
+                         rules[0].filter.tos_key.filter_rules[0].value)
+        self.assertEqual(out.rules[0].destination.ve_faas[0].function_id, rules[0].destination.ve_faas[0].function_id)
+        self.assertEqual(out.rules[0].destination.rocket_mq[0].role, rules[0].destination.rocket_mq[0].role)
+        self.assertEqual(out.rules[0].destination.rocket_mq[0].topic, rules[0].destination.rocket_mq[0].topic)
+        self.assertEqual(out.rules[0].destination.rocket_mq[0].access_key_id,
+                         rules[0].destination.rocket_mq[0].access_key_id)
+        self.assertEqual(out.rules[0].destination.rocket_mq[0].instance_id,
+                         rules[0].destination.rocket_mq[0].instance_id)
 
     def retry_assert(self, func):
         for i in range(5):
