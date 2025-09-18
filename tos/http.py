@@ -34,6 +34,7 @@ class Response(object):
         self.request_id = self.headers.get('x-tos-request-id', '')
         self._all_read = False
         self.offset = 0
+        self.content_encoding = resp.headers.get('content-encoding',None)
 
     def __iter__(self):
         return self
@@ -54,8 +55,12 @@ class Response(object):
 
         if amt is None:
             content_list = []
-            for chunk in self.resp.iter_content(CHUNK_SIZE):
-                content_list.append(chunk)
+            if self.content_encoding and hasattr(self.resp.raw, "stream"):
+                for chunk in self.resp.raw.stream(CHUNK_SIZE, decode_content=False):
+                    content_list.append(chunk)
+            else:
+                for chunk in self.resp.iter_content(CHUNK_SIZE):
+                    content_list.append(chunk)
             content = b''.join(content_list)
 
             self._all_read = True
@@ -64,7 +69,10 @@ class Response(object):
             return content
         else:
             try:
-                read = next(self.resp.iter_content(amt))
+                if self.content_encoding and hasattr(self.resp.raw, "stream"):
+                    read = next(self.resp.raw.stream(amt, decode_content=False))
+                else:
+                    read = next(self.resp.iter_content(amt))
                 self.offset += len(read)
                 return read
             except StopIteration:

@@ -1495,6 +1495,18 @@ class TestObject(TosTestBase):
         out_2 = self.client.get_object(bucket_name, key, range='bytes=1024-')
         self.assertEqual(out_2.read(), content[1024:])
 
+    def test_get_object_gzip(self):
+        bucket_name = self.bucket_name + 'object-gzip'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        key = self.random_key('.zp')
+        content = random_bytes(1024 * 1024)
+        self.client.put_object(bucket_name, key, content=content,content_encoding="gzip")
+        out = self.client.get_object(bucket_name, key, range='bytes=0-1023')
+        self.assertEqual(out.read(), content[0:1024])
+        out_2 = self.client.get_object(bucket_name, key, range='bytes=1024-')
+        self.assertEqual(out_2.read(), content[1024:])
+
     def test_copy_object_range(self):
         src_bucket_name = self.bucket_name + 'copy-object-range'
         key = self.random_key('.js')
