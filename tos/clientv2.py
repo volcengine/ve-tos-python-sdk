@@ -905,7 +905,7 @@ class TosClientV2(TosClient):
                  enable_crc=True,
                  connection_time=10,
                  enable_verify_ssl=True,
-                 dns_cache_time=0,
+                 dns_cache_time=15,
                  proxy_host: str = None,
                  proxy_port: int = None,
                  proxy_username: str = None,
@@ -936,7 +936,7 @@ class TosClientV2(TosClient):
         :param max_connections: 连接池中允许打开的最大 HTTP 连接数，默认 1024
         :param enable_crc: 是否开启上传后客户端 CRC 校验，默认为 true
         :param enable_verify_ssl: 是否开启 SSL 证书校验，默认为 true
-        :param dns_cache_time: DNS 缓存的有效期，单位：分钟，小于等于 0 时代表关闭 DNS 缓存，默认为 0
+        :param dns_cache_time: DNS 缓存的有效期，单位：分钟，小于等于 0 时代表关闭 DNS 缓存，默认为 15
         :param proxy_host: 代理服务器的主机地址，当前只支持 http 协议
         :param proxy_port: 代理服务器的端口
         :param proxy_username: 连接代理服务器时使用的用户名
@@ -2238,9 +2238,12 @@ class TosClientV2(TosClient):
         if os.path.isdir(file_path):
             file_path = os.path.join(file_path, key)
             try_make_file_dir(file_path)
+        tmp_file_path = file_path + ".temp."+str(uuid.uuid4())
 
-        with open(file_path, 'wb') as f:
+        with open(tmp_file_path, 'wb') as f:
             shutil.copyfileobj(result, f)
+
+        os.rename(tmp_file_path, file_path)
 
         return result
 
