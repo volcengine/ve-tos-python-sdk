@@ -1147,7 +1147,7 @@ class TosClientV2(TosClient):
         SDK 会对依照该规范做校验，如果用户指定的桶名与规范不匹配则报错客户端校验失败 TosClientError。
 
         :param bucket: 桶名
-        :param acl: 访问控制列表，用于管理桶和对象的访问权限
+        :param acl: 访问控制列表，用于管理桶和对象的访问权限，请使用 ACLType 枚举类型
         :param grant_full_control: 对桶具有读、写、读ACP、写ACP的权限
         :param grant_read: 允许被授权者列举桶内对象。
         :param grant_read_acp: 允许被授权者读取桶ACL。
@@ -1312,8 +1312,7 @@ class TosClientV2(TosClient):
         :param src_bucket: 原桶名
         :param key: 目标对象名
         :param src_key: 原目标名
-        :param acl: private'|'public-read'|'public-read-write'|'authenticated-read'|'bucket-owner-read'|
-               'bucket-owner-full-control'
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param src_version_id: 原数据 version
         :param cache_control: 缓存控制
         :param content_disposition: 展示形式
@@ -1639,8 +1638,7 @@ class TosClientV2(TosClient):
 
         :param bucket: 桶名
         :param key: 对象名
-        :param acl: 'private'|'public-read'|'public-read-write'|'authenticated-read'|'bucket-owner-read'|
-                'bucket-owner-full-control'
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param content_length: 消息体大小
         :param content_md5: 消息体的md5摘要
         :param content_sha256: 消息体的sha256加密值
@@ -1755,8 +1753,7 @@ class TosClientV2(TosClient):
 
         :param bucket: 桶名
         :param key: 对象名
-        :param acl: 'private'|'public-read'|'public-read-write'|'authenticated-read'|'bucket-owner-read'|
-                'bucket-owner-full-control'
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param content_length: 消息体大小
         :param content_md5: 消息体的md5摘要
         :param content_sha256: 消息体的sha256加密值
@@ -1905,7 +1902,7 @@ class TosClientV2(TosClient):
         :param cache_control:	指定该对象被下载时网页的缓存行为
         :param content_disposition: 内容呈现方式
         :param offset: 指定从何处进行追加。
-        :param acl: 'private'|'public-read'|'public-read-write'|'authenticated-read'|'bucket-owner-read'|
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param content_encoding: 编码方式
         :param content_language: 上传内容语言类型
         :param content_type: 内容类型
@@ -2282,7 +2279,7 @@ class TosClientV2(TosClient):
         :param content_language:
         :param content_type: 上传对象类型
         :param expires: 有效时间
-        :param acl: 桶访问权限
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param grant_full_control: 具有对象的读、写、读ACL、写ACL的权限。
         :param grant_read: 允许被授权者读取对象
         :param grant_read_acp: 允许被授权者肚读取对象ACL
@@ -2369,7 +2366,7 @@ class TosClientV2(TosClient):
         :param content_language:
         :param content_type: 上传对象类型
         :param expires: 有效时间
-        :param acl: 桶访问权限
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param grant_full_control: 具有对象的读、写、读ACL、写ACL的权限。
         :param grant_read: 允许被授权者读取对象
         :param grant_read_acp: 允许被授权者肚读取对象ACL
@@ -2561,7 +2558,7 @@ class TosClientV2(TosClient):
         :param content_language:
         :param content_type: 上传对象类型
         :param expires: 有效时间
-        :param acl: 桶访问权限
+        :param acl: 访问控制，请使用 ACLType 枚举类型
         :param grant_full_control: 具有对象的读、写、读ACL、写ACL的权限。
         :param grant_read: 允许被授权者读取对象
         :param grant_read_acp: 允许被授权者肚读取对象ACL
