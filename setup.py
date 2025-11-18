@@ -14,6 +14,7 @@ AUTHOR = 'sunyushan'
 
 # 项目运行需要的依赖
 REQUIRES = [
+    'wrapt==1.16.0',
     'Deprecated>=1.2.13,<2.0.0',
     'pytz',
     "requests>=2.19.1, ==2.*",

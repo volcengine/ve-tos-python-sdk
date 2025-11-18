@@ -1,12 +1,12 @@
 import json
 import urllib.parse
 from datetime import datetime
-from typing import List, Any
+from typing import List, Any, Optional
 from typing import Dict
 
 from . import utils
-from .enum import CannedType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType, \
-    StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, \
+from .enum import CannedType, DataType, DistanceMetricType, GranteeType, PermissionType, StorageClassType, RedirectType, StatusType, \
+    StorageClassInheritDirectiveType, VersioningStatusType, ProtocolType, CertStatus, AzRedundancyType, convert_data_type, convert_distance_metric_type, \
     convert_storage_class_type, convert_az_redundancy_type, convert_permission_type, convert_grantee_type, \
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
     convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType, convert_replication_status_type,\
@@ -2705,3 +2705,246 @@ class FileResponse:
         if file_json.get("CreateTime",None):
             result.file_create_time = parse_iso_time_to_utc_datetime(file_json["CreateTime"])
         return result
+
+
+class VectorData(object):
+    def __init__(self, float32: List[float] = None):
+        self.float32 = float32
+
+
+class Vector(object):
+    def __init__(self, key: str = None, data: VectorData = None, metadata: Dict[str, Any] = None):
+        self.key = key
+        self.data = data
+        self.metadata = metadata
+
+
+class PutVectorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutVectorsOutput, self).__init__(resp)
+
+
+class CreateVectorBucketOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(CreateVectorBucketOutput, self).__init__(resp)
+
+
+class DeleteVectorBucketOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteVectorBucketOutput, self).__init__(resp)
+
+
+class GetVectorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetVectorsOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.vectors = []
+        for vector_data in data.get('vectors', []):
+            vector_key = get_value(vector_data, 'key')
+            vector_metadata = get_value(vector_data, 'metadata')
+            
+            # 处理 vector data
+            vector_data_obj = None
+            vector_data_dict = get_value(vector_data, 'data')
+            if vector_data_dict:
+                float32_data = get_value(vector_data_dict, 'float32', list)
+                if float32_data:
+                    vector_data_obj = VectorData(float32=float32_data)
+            
+            vector = Vector(key=vector_key, data=vector_data_obj, metadata=vector_metadata)
+            self.vectors.append(vector)
+
+
+class ListVectorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(ListVectorsOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.next_token = get_value(data, 'nextToken')
+        self.vectors = []
+        for vector_data in data.get('vectors', []):
+            vector_key = get_value(vector_data, 'key')
+            vector_metadata = get_value(vector_data, 'metadata')
+            
+            # 处理 vector data
+            vector_data_obj = None
+            vector_data_dict = get_value(vector_data, 'data')
+            if vector_data_dict:
+                float32_data = get_value(vector_data_dict, 'float32')
+                if float32_data:
+                    vector_data_obj = VectorData(float32=float32_data)
+            
+            vector = Vector(key=vector_key, data=vector_data_obj, metadata=vector_metadata)
+            self.vectors.append(vector)
+
+class DistanceVector(object):
+    def __init__(self, key: str = None, data: VectorData = None, distance: float = None, metadata: Dict[str, Any] = None):
+        self.key = key
+        self.data = data
+        self.distance = distance
+        self.metadata = metadata
+
+class DeleteVectorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteVectorsOutput, self).__init__(resp)
+
+
+class QueryVectorsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(QueryVectorsOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.vectors = []
+        for vector_data in data.get('vectors', []):
+            vector_key = get_value(vector_data, 'key')
+            vector_distance = get_value(vector_data, 'distance', float)
+            vector_metadata = get_value(vector_data, 'metadata')
+            
+            # 处理 vector data
+            vector_data_obj = None
+            vector_data_dict = get_value(vector_data, 'data')
+            if vector_data_dict:
+                float32_data = get_value(vector_data_dict, 'float32')
+                if float32_data:
+                    vector_data_obj = VectorData(float32=float32_data)
+            
+            vector = DistanceVector(key=vector_key, data=vector_data_obj, distance=vector_distance, metadata=vector_metadata)
+            self.vectors.append(vector)
+
+
+class CreateIndexOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(CreateIndexOutput, self).__init__(resp)
+
+
+class DeleteIndexOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteIndexOutput, self).__init__(resp)
+
+
+class VectorBucket(object):
+    def __init__(self, creation_time: int = None, vector_bucket_trn: str = None, 
+                 vector_bucket_name: str = None):
+        self.creation_time = creation_time
+        self.vector_bucket_trn = vector_bucket_trn
+        self.vector_bucket_name = vector_bucket_name
+
+
+class GetVectorBucketOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetVectorBucketOutput, self).__init__(resp)
+        data = resp.json_read()
+        vector_bucket_data = get_value(data, 'vectorBucket')
+        if vector_bucket_data:
+            self.vector_bucket = VectorBucket(
+                creation_time=get_value(vector_bucket_data, 'creationTime', int),
+                vector_bucket_trn=get_value(vector_bucket_data, 'vectorBucketTrn'),
+                vector_bucket_name=get_value(vector_bucket_data, 'vectorBucketName')
+            )
+        else:
+            self.vector_bucket = None
+
+
+class MetadataConfiguration(object):
+    def __init__(self, non_filterable_metadata_keys: List[str] = None):
+        self.non_filterable_metadata_keys = non_filterable_metadata_keys or []
+
+
+class IndexSummary(object):
+    def __init__(self, creation_time: int, index_name: str = None, 
+                 index_trn: str = None, vector_bucket_name: str = None):
+        self.creation_time = creation_time
+        self.index_name = index_name
+        self.index_trn = index_trn
+        self.vector_bucket_name = vector_bucket_name
+
+
+class ListIndexesOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(ListIndexesOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.next_token = get_value(data, 'nextToken')
+        self.indexes = []
+        for index_data in data.get('indexes', []):
+            creation_time = get_value(index_data, 'creationTime', int)
+            
+            index_summary = IndexSummary(
+                creation_time=creation_time,
+                index_name=get_value(index_data, 'indexName'),
+                index_trn=get_value(index_data, 'indexTrn'),
+                vector_bucket_name=get_value(index_data, 'vectorBucketName')
+            )
+            self.indexes.append(index_summary)
+
+
+class Index(object):
+    def __init__(self, creation_time: int = None, data_type: DataType = None, dimension: int = None,
+                 distance_metric: DistanceMetricType = None, metadata_configuration: MetadataConfiguration = None,
+                 index_name: str = None, index_trn: str = None, vector_bucket_name: str = None):
+        self.creation_time = creation_time
+        self.data_type = data_type
+        self.dimension = dimension
+        self.distance_metric = distance_metric
+        self.metadata_configuration = metadata_configuration
+        self.index_name = index_name
+        self.index_trn = index_trn
+        self.vector_bucket_name = vector_bucket_name
+
+
+class GetIndexOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetIndexOutput, self).__init__(resp)
+        data = resp.json_read()
+        index_data = get_value(data, 'index')
+        if index_data:
+            # 处理 metadata_configuration
+            metadata_config = None
+            metadata_config_data = get_value(index_data, 'metadataConfiguration')
+            if metadata_config_data:
+                non_filterable_keys = get_value(metadata_config_data, 'nonFilterableMetadataKeys') or []
+                metadata_config = MetadataConfiguration(non_filterable_metadata_keys=non_filterable_keys)
+            
+            self.index = Index(
+                creation_time=get_value(index_data, 'creationTime', int),
+                data_type=get_value(index_data, 'dataType', convert_data_type),
+                dimension=get_value(index_data, 'dimension', int),
+                distance_metric=get_value(index_data, 'distanceMetric', convert_distance_metric_type),
+                metadata_configuration=metadata_config,
+                index_name=get_value(index_data, 'indexName'),
+                index_trn=get_value(index_data, 'indexTrn'),
+                vector_bucket_name=get_value(index_data, 'vectorBucketName')
+            )
+        else:
+            self.index = None
+
+class PutVectorBucketPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutVectorBucketPolicyOutput, self).__init__(resp)
+
+
+class GetVectorBucketPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetVectorBucketPolicyOutput, self).__init__(resp)
+        self.policy = resp.read().decode("utf-8")
+
+
+class DeleteVectorBucketPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteVectorBucketPolicyOutput, self).__init__(resp)
+
+
+class ListVectorBucketsOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(ListVectorBucketsOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.next_token = get_value(data, 'nextToken')
+        
+        # 解析向量存储桶列表
+        self.vector_buckets = []
+        vector_buckets_data = get_value(data, 'vectorBuckets', list)
+        if vector_buckets_data:
+            for bucket_data in vector_buckets_data:
+                vector_bucket = VectorBucket(
+                    creation_time=get_value(bucket_data, 'creationTime', int),
+                    vector_bucket_trn=get_value(bucket_data, 'vectorBucketTrn'),
+                    vector_bucket_name=get_value(bucket_data, 'vectorBucketName')
+                )
+                self.vector_buckets.append(vector_bucket)

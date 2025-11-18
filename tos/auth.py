@@ -129,10 +129,11 @@ def _get_policy(conditions: []):
 
 
 class AuthBase():
-    def __init__(self, credentials_provider, region):
+    def __init__(self, credentials_provider, region,service='tos'):
         self.credentials_provider = credentials_provider
         self.region = region.strip()
         self.credential = None
+        self.service = service
 
     def sign_request(self, req):
         self.credential = self.credentials_provider.get_credentials()
@@ -232,32 +233,32 @@ class AuthBase():
         return '\n'.join(sts)
 
     def _credential(self, date):
-        return "{0}/{1}/{2}/tos/request".format(self.credential.get_ak(), date[0:8], self.region)
+        return "{0}/{1}/{2}/{3}/request".format(self.credential.get_ak(), date[0:8], self.region,self.service)
 
     def _credential_scope(self, date):
-        return "{0}/{1}/tos/request".format(date[0:8], self.region)
+        return "{0}/{1}/{2}/request".format(date[0:8], self.region,self.service)
 
     def _signature(self, string_to_sign, date):
         k_date = _sign(to_bytes(self.credential.get_sk()), date[0:8])
         k_region = _sign(k_date, self.region)
-        k_service = _sign(k_region, 'tos')
+        k_service = _sign(k_region, self.service)
         k_signing = _sign(k_service, 'request')
         return _sign(k_signing, string_to_sign, hex=True)
 
 
 class Auth(AuthBase):
-    def __init__(self, access_key_id, access_key_secret, region, sts=None):
-        super(Auth, self).__init__(StaticCredentialsProvider(access_key_id, access_key_secret, sts), region)
+    def __init__(self, access_key_id, access_key_secret, region, sts=None,service='tos'):
+        super(Auth, self).__init__(StaticCredentialsProvider(access_key_id, access_key_secret, sts), region,service)
 
 
 class CredentialProviderAuth(AuthBase):
-    def __init__(self, credential_provider, region):
-        super(CredentialProviderAuth, self).__init__(credential_provider, region)
+    def __init__(self, credential_provider, region,service='tos'):
+        super(CredentialProviderAuth, self).__init__(credential_provider, region,service)
 
 
 class FederationAuth(AuthBase):
-    def __init__(self, credentials_provider: FederationCredentials, region: str):
-        super(FederationAuth, self).__init__(credentials_provider, region)
+    def __init__(self, credentials_provider: FederationCredentials, region: str,service='tos'):
+        super(FederationAuth, self).__init__(credentials_provider, region,service)
 
 
 class AnonymousAuth(object):
