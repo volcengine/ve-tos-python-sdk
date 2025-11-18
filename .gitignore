@@ -16,3 +16,4 @@ target/
 test.py
 /tests/TosClient.log
 TosClient.log
+log/

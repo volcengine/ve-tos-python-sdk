@@ -91,8 +91,9 @@ from .utils import (SizeAdapter, _make_copy_source,
                     meta_header_encode, to_bytes, to_str,
                     to_unicode, init_path, DnsCacheService, check_enum_type, check_part_size, check_part_number,
                     check_client_encryption_algorithm, check_server_encryption_algorithm, try_make_file_dir,
-                    _IterableAdapter, init_checkpoint_dir, resolve_ip_list,_get_control_host,
-                    UploadEventHandler, ResumableCopyObject, DownloadEventHandler, LogInfo, content_disposition_encode)
+                    _IterableAdapter, init_checkpoint_dir, resolve_ip_list, _get_control_host,
+                    UploadEventHandler, ResumableCopyObject, DownloadEventHandler, LogInfo, content_disposition_encode,
+                    _build_user_agent)
 
 _dns_cache = DnsCacheService()
 _orig_create_connection = connection.create_connection
@@ -1002,21 +1003,9 @@ class TosClientV2(TosClient):
         self.socket_timeout = socket_timeout if socket_timeout > 0 else self.request_timeout if self.request_timeout > 0 else 30
         self.disable_encoding_meta = disable_encoding_meta
         self.except100_continue_threshold = except100_continue_threshold
-        user_agent = USER_AGENT
-        if user_agent_product_name is not None or user_agent_soft_name is not None or user_agent_soft_version is not None:
-            user_agent = '{} --{}/{}/{}'.format(
-                USER_AGENT,
-                (user_agent_product_name if user_agent_product_name else UNDEFINED),
-                (user_agent_soft_name if user_agent_product_name else UNDEFINED),
-                (user_agent_soft_version if user_agent_soft_version else UNDEFINED)
-            )
-        if user_agent_customized_key_values:
-            user_agent = user_agent + ' ('
-            for k, v in user_agent_customized_key_values.items():
-                user_agent = user_agent + k + '/' + v + ';'
-            user_agent = user_agent[:-1]
-            user_agent = user_agent + ')'
-        self.user_agent = user_agent
+        self.user_agent = _build_user_agent(USER_AGENT, user_agent_product_name, user_agent_soft_name,
+                                            user_agent_soft_version, user_agent_customized_key_values, UNDEFINED)
+
 
         # 通过 hook 机制实现in-request log
         self.session.hooks['response'].append(hook_request_log)

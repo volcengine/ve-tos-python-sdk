@@ -309,3 +309,24 @@ class AggregationOperationType(Enum):
 class SemanticQueryType(Enum):
     SemanticQueryTypeText = "text"
     SemanticQueryTypeImage = "image"
+
+class DataType(Enum):
+    DataTypeFloat32 = "float32"
+    DataTypeUnknown = "unknown"
+
+def convert_data_type(s: str):
+    for t in DataType:
+        if t.value == s:
+            return t
+    return DataType.DataTypeFloat32
+
+class DistanceMetricType(Enum):
+    DistanceMetricEuclidean = "euclidean"
+    DistanceMetricCosine = "cosine"
+    DistanceMetricUnknown = "unknown"
+
+def convert_distance_metric_type(s: str):
+    for t in DistanceMetricType:
+        if t.value == s:
+            return t
+    return DistanceMetricType.DistanceMetricUnknown
