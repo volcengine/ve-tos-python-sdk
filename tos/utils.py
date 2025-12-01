@@ -1147,10 +1147,10 @@ def check_server_encryption_algorithm(algorithm):
 
 
 def is_ip(host):
-    p = re.compile('^((25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(25[0-5]|2[0-4]\d|[01]?\d\d?)$')
-    if p.match(host):
+    try:
+        ipaddress.IPv4Address(host)
         return True
-    else:
+    except ipaddress.AddressValueError:
         return False
 
 
