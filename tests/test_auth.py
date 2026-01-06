@@ -131,5 +131,39 @@ class TestAuth(TosTestCase):
                              'https://test.tos-cn-beijing.volces.com/exampleobject?X-Tos-Policy=eyJjb25kaXRpb25zIjogW3siYnVja2V0IjogImV4YW1wbGVidWNrZXQifSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFiYy8iXSwgWyJzdGFydHMtd2l0aCIsICIka2V5IiwgImFhYS9hYmMvIl0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0Il0sIFsiZXEiLCAiJGtleSIsICJleGFtcGxlb2JqZWN0MSJdLCB7ImJ1Y2tldCI6ICJ0ZXN0In0sIHsiYnVja2V0IjogInRlc3QifV19&k1=v1&k2=v2')
 
 
+    def test_pre_signed_post_signature_with_multi_values_conditions(self):
+        datetime_mock = mock.Mock(wraps=datetime.datetime)
+        datetime_mock.utcnow.return_value = datetime.datetime(2022, 1, 1)
+        with mock.patch('datetime.datetime', new=datetime_mock):
+            tos_cli = tos.TosClientV2(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com', region='beijing')
+            
+            from tos.models2 import PostSignatureMultiValuesCondition
+            
+            multi_conds = [
+                PostSignatureMultiValuesCondition(key='key1', values=['value1', 'value2'], operator='in'),
+                PostSignatureMultiValuesCondition(key='key2', values=['value3', 'value4'], operator='not-in')
+            ]
+            
+            out = tos_cli.pre_signed_post_signature(conditions=[], bucket='bkt', key='key', multi_values_conditions=multi_conds)
+            
+            # Decode policy to check conditions
+            import base64
+            import json
+            policy_json = base64.b64decode(out.policy).decode('utf-8')
+            policy = json.loads(policy_json)
+            
+            conditions = policy['conditions']
+            found_in = False
+            found_not_in = False
+            for cond in conditions:
+                if isinstance(cond, list) and len(cond) == 3:
+                    if cond[0] == 'in' and cond[1] == 'key1' and cond[2] == ['value1', 'value2']:
+                        found_in = True
+                    if cond[0] == 'not-in' and cond[1] == 'key2' and cond[2] == ['value3', 'value4']:
+                        found_not_in = True
+            
+            self.assertTrue(found_in)
+            self.assertTrue(found_not_in)
+
 if __name__ == '__main__':
     unittest.main()

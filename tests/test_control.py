@@ -1,13 +1,44 @@
-# # -*- coding: utf-8 -*-
-# from tests.common import TosTestBase
-#
+# -*- coding: utf-8 -*-
+import json
+
+from tests.common import TosTestBase
+
 # from tos.enum import (QueryOrderType, AggregationOperationType, SemanticQueryType,
 #                       QueryOperationType)
 #
 # from tos.models2 import  AggregationRequest, QueryRequest
-#
-#
-# class TestObject(TosTestBase):
+
+
+class TestObject(TosTestBase):
+    def test_qos_policy(self):
+
+        self.client.delete_qos_policy(self.account_id)
+        policy = {
+              "Statement": [
+                {
+                  "Sid": "test1",
+                  "Quota": {
+                    "WritesQps": "",
+                    "ReadsQps": "",
+                    "ListQps": "",
+                    "WritesRate": "5000",
+                    "ReadsRate": ""
+                  },
+                  "Principal": [
+                    "trn:iam::*"
+                  ],
+                  "Resource": "trn:tos:::bucketname/*"
+                }
+              ]
+        }
+        out = self.client.put_qos_policy(self.account_id,policy=json.dumps(policy))
+        assert out.status_code == 204
+
+        out = self.client.get_qos_policy(self.account_id)
+        assert out.status_code == 200
+        assert out.policy is not None
+        self.client.delete_qos_policy(self.account_id)
+
 #
 #     def test_simple_query(self):
 #         # base simple query

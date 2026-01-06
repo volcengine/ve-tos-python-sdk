@@ -2,6 +2,7 @@ import time
 import json
 import unittest
 from tests.vector_client import TosVectorClientBase
+from tos import exceptions
 from tos.exceptions import TosClientError, TosServerError
 from tos.enum import  DataType, DistanceMetricType
 from tos.models2 import Vector, VectorData
@@ -256,7 +257,6 @@ class TestVectorBucket(TosVectorClientBase):
 
     def test_list_indexes_basic(self):
         """P0: 基本功能测试 - 列举向量索引"""
-        import time
         test_vector_bucket_name = self.get_bucket_name()
         
         # 创建测试用的向量存储桶
@@ -309,7 +309,6 @@ class TestVectorBucket(TosVectorClientBase):
 
     def test_list_indexes_max_results(self):
         """P0: maxResults参数限制测试"""
-        import time
         test_vector_bucket_name = self.get_bucket_name()
         
         # 创建测试用的向量存储桶
@@ -648,6 +647,21 @@ class TestVectorBucket(TosVectorClientBase):
         self.assertEqual(res2.status_code, 200)
         self.assertIsNotNone(res2)
         self.assertEqual(len(res2.vectors), 0)
+        
+    def test_vector_bucket_name_validation(self):
+        """测试向量存储桶名称验证"""
+        invalid_names = [
+            "-bucket",
+            "bucket-",
+            "bucket/name",
+            "bucket*name",
+            "a",
+            "".join(["a" for _ in range(33)]),
+        ]
+        
+        for name in invalid_names:
+            with self.assertRaises(exceptions.TosClientError):
+                self.vector_client.create_vector_bucket(name)
         
 if __name__ == "__main__":
     unittest.main()

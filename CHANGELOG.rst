@@ -1,5 +1,31 @@
 TOS SDK for Python 版本记录
 ===========================
+Version 2.9.0
+-------------
+- 修改: CreateBucket 接口支持设置 Tagging 参数；
+- 修改: 桶清单接口新增字段 IsUnCompressed；
+- 修改: ACL 枚举值新增 ACLDefault，PutObjectACL/GetObjectACL 支持 IsDefault，PutBucketACL/GetBucketACL 支持 BucketAclDelivered
+- 修改: 分层桶 ListObjects/ListObjectsType2/ListObjectVersions 带分隔符列举的 CommonPrefixes 中支持返回 LastModified
+- 修改: RenameObject 接口，新增参数 RecursiveMkdir、ForbidOverwrite
+- 修改: PermissionType 枚举值新增 PermissionReadNonList，支持桶 ACL 设置为可读不可列举
+- 修改: PutBucketLifecyle/GetBucketLifecycle 支持按最后访问时间转存
+- 新增: 初始化参数新增 FollowRedirectTimes，支持在 Get/Head 请求发生 3xx 时，跟随请求重定向
+- 新增: 开启桶跟踪对象访问时间接口 PutBucketAccessMonitor/GetBucketAccessMonitor
+- 新增: 支持快速判断桶/对象是否存在的接口 DoesObjectExist/DoesBucketExist
+- 修改: PreSignedUrl 支持指定是否签名所有头信息
+- 新增:获取桶信息 GetBucketInfo 接口
+- 修改:PutBucketNotificationType2/GetBucketNotificationType2 接口支持配置 kafka
+- 修改:UploadFile 接口支持上传回调参数
+- 修改:GetFileStatus 接口返回结果新增 ETag 字段和 ObjectType 字段
+- 新增:支持判断桶存储类型接口 GetBucketType
+- 修改:DeleteObject/DeleteMultiObjects 在 HNS 桶支持直接透传 recursive 参数和 skipTrash，实现服务端目录删除语义和跳过回收站语义
+- 新增:支持流控策略配置接口 PutQosPolicy/GetQosPolicy/DeleteQosPolicy
+- 修改:POST 签名接口 PreSignedPostSignature 新增支持 in/notin 操作符
+- 新增:初始化参数增加 ClientCrt、ClientKey、CaCrt 支持 HTTPS 场景配置客户端证书和服务端自定义根证书
+
+Version 2.8.8b1
+-------------
+- 新增: 支持vector_bucket 相关接口
 Version 2.8.7
 -------------
 - 修改:对Content-Encoding:gzip的数据不进行自动解压

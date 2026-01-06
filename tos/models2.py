@@ -11,7 +11,7 @@ from .enum import CannedType, DataType, DistanceMetricType, GranteeType, Permiss
     convert_canned_type, convert_redirect_type, convert_status_type, convert_versioning_status_type, \
     convert_protocol_type, convert_cert_status, TierType, convert_tier_type, ACLType, convert_replication_status_type,\
     InventoryFormatType,InventoryFrequencyType,QueryOrderType,QueryOperationType,AggregationOperationType,\
-    ReplicationStatusType,InventoryIncludedObjType,SemanticQueryType
+    ReplicationStatusType,InventoryIncludedObjType,SemanticQueryType, AuthProtocolType, convert_auth_protocol_type
 from .consts import CHUNK_SIZE, BUCKET_TYPE_HNS, BUCKET_TYPE_FNS
 from .exceptions import TosClientError, make_server_error_with_exception
 from .models import CommonPrefixInfo, DeleteMarkerInfo
@@ -49,6 +49,100 @@ class HeadBucketOutput(ResponseInfo):
         self.bucket_type = BUCKET_TYPE_FNS if bucket_type is None else bucket_type
 
 
+class GetBucketTypeOutput(HeadBucketOutput):
+    def __init__(self, resp):
+        super(GetBucketTypeOutput, self).__init__(resp)
+        self.expire_at = None
+
+
+
+class ServerSideEncryptionConfiguration(object):
+    def __init__(self, rule: 'BucketEncryptionRule' = None):
+        self.rule = rule
+
+class BucketInfo(object):
+    def __init__(self, name=None, owner=None, creation_date=None, storage_class=None,
+                 project_name=None, bucket_type=None, location=None, az_redundancy=None,
+                 extranet_endpoint=None, intranet_endpoint=None,
+                 extranet_s3_endpoint=None, intranet_s3_endpoint=None,
+                 versioning=None, cross_region_replication=None,
+                 transfer_acceleration=None, access_monitor=None,
+                 server_side_encryption_configuration: ServerSideEncryptionConfiguration = None):
+        self.name = name
+        self.owner = owner
+        self.creation_date = creation_date
+        self.storage_class = storage_class
+        self.project_name = project_name
+        self.bucket_type = bucket_type
+        self.location = location
+        self.az_redundancy = az_redundancy
+        self.extranet_endpoint = extranet_endpoint
+        self.intranet_endpoint = intranet_endpoint
+        self.extranet_s3_endpoint = extranet_s3_endpoint
+        self.intranet_s3_endpoint = intranet_s3_endpoint
+        self.versioning = versioning
+        self.cross_region_replication = cross_region_replication
+        self.transfer_acceleration = transfer_acceleration
+        self.access_monitor = access_monitor
+        self.server_side_encryption_configuration = server_side_encryption_configuration
+
+    def __str__(self):
+        return str(self.__dict__)
+
+
+class GetBucketInfoOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketInfoOutput, self).__init__(resp)
+        data = resp.json_read()
+        bucket_data = get_value(data, "Bucket")
+        self.bucket_info = None
+        if bucket_data:
+            owner = None
+            owner_data = get_value(bucket_data, "Owner")
+            if owner_data:
+                owner = Owner(get_value(owner_data, "ID"), get_value(owner_data, "DisplayName"))
+
+            creation_date = get_value(bucket_data, "CreationDate")
+            if creation_date:
+                creation_date = parse_iso_time_to_utc_datetime(creation_date)
+
+            server_side_encryption_configuration = None
+            sse_config_data = get_value(bucket_data, "ServerSideEncryptionConfiguration")
+            if sse_config_data:
+                rule_data = get_value(sse_config_data, "Rule")
+                if rule_data:
+                    apply_sse = get_value(rule_data, "ApplyServerSideEncryptionByDefault")
+                    if apply_sse:
+                        server_side_encryption_configuration = ServerSideEncryptionConfiguration(
+                            rule=BucketEncryptionRule(
+                                apply_server_side_encryption_by_default=ApplyServerSideEncryptionByDefault(
+                                    sse_algorithm=get_value(apply_sse, 'SSEAlgorithm'),
+                                    kms_master_key_id=get_value(apply_sse, 'KMSMasterKeyID')
+                                )
+                            )
+                        )
+
+            self.bucket_info = BucketInfo(
+                name=get_value(bucket_data, "Name"),
+                owner=owner,
+                creation_date=creation_date,
+                storage_class=convert_storage_class_type(get_value(bucket_data, "StorageClass")),
+                project_name=get_value(bucket_data, "ProjectName"),
+                bucket_type=get_value(bucket_data, "Type"),
+                location=get_value(bucket_data, "Location"),
+                az_redundancy=convert_az_redundancy_type(get_value(bucket_data, "AzRedundancy")),
+                extranet_endpoint=get_value(bucket_data, "ExtranetEndpoint"),
+                intranet_endpoint=get_value(bucket_data, "IntranetEndpoint"),
+                extranet_s3_endpoint=get_value(bucket_data, "ExtranetS3Endpoint"),
+                intranet_s3_endpoint=get_value(bucket_data, "IntranetS3Endpoint"),
+                versioning=convert_versioning_status_type(get_value(bucket_data, "Versioning")),
+                cross_region_replication=convert_status_type(get_value(bucket_data, "CrossRegionReplication")),
+                transfer_acceleration=convert_status_type(get_value(bucket_data, "TransferAcceleration")),
+                access_monitor=convert_status_type(get_value(bucket_data, "AccessMonitor")),
+                server_side_encryption_configuration=server_side_encryption_configuration
+            )
+
+
 class FileStatusOutput(ResponseInfo):
     def __init__(self, key, bucket_type, resp):
         super(FileStatusOutput, self).__init__(resp)
@@ -58,6 +152,8 @@ class FileStatusOutput(ResponseInfo):
             self.last_modified = get_value(resp.headers, 'Last-Modified')
             self.crc64 = get_value(resp.headers, 'x-tos-hash-crc64ecma')
             self.crc32 = get_value(resp.headers, 'x-tos-hash-crc32c')
+            self.etag = get_etag(resp.headers)
+            self.object_type = get_value(resp.headers, 'x-tos-object-type')
             return
         data = json.loads(resp.read())
         self.key = get_value(data, 'Key')
@@ -65,6 +161,8 @@ class FileStatusOutput(ResponseInfo):
         self.last_modified = get_value(data, 'LastModified')
         self.crc32 = get_value(data, 'CRC32')
         self.crc64 = get_value(data, 'CRC64')
+        self.etag = get_etag(data)
+        self.object_type = get_value(data, 'Type')
 
 
 class DeleteBucketOutput(ResponseInfo):
@@ -250,15 +348,17 @@ class DeleteObjectOutput(ResponseInfo):
         super(DeleteObjectOutput, self).__init__(resp)
         self.version_id = get_value(resp.headers, 'x-tos-version-id')
         self.delete_marker = get_value(resp.headers, 'x-tos-delete-marker', bool)
+        self.trash_path = get_value(resp.headers, 'x-tos-trash-path')
 
 
 class Deleted(object):
     def __init__(self, key: str, version_id: str = None, delete_marker=None,
-                 delete_marker_version_id: str = None):
+                 delete_marker_version_id: str = None, trash_path: str = None):
         self.key = key
         self.version_id = version_id
         self.delete_marker = delete_marker
         self.delete_marker_version_id = delete_marker_version_id
+        self.trash_path = trash_path
 
 
 class ObjectTobeDeleted(object):
@@ -289,7 +389,8 @@ class DeleteObjectsOutput(ResponseInfo):
                 get_value(delete, "Key"),
                 get_value(delete, "VersionId"),
                 get_value(delete, "DeleteMarker"),
-                get_value(delete, "DeleteMarkerVersionId")
+                get_value(delete, "DeleteMarkerVersionId"),
+                get_value(delete, "TrashPath")
             ))
         err_list = get_value(data, 'Error') or []
         for err in err_list:
@@ -348,6 +449,13 @@ class HeadObjectOutput(ResponseInfo):
         self.last_modified = get_value(resp.headers, 'last-modified')
         if self.last_modified:
             self.last_modified = parse_gmt_time_to_utc_datetime(self.last_modified)
+        
+        self.last_modify_timestamp = self.last_modified
+        if self.last_modified:
+            ns = get_value(resp.headers, "x-tos-last-modified-ns")
+            if ns:
+                self.last_modify_timestamp = self.last_modified.replace(microsecond=int(ns)//1000)
+
         self.expires = get_value(resp.headers, 'expires')
         if self.expires:
             self.expires = parse_gmt_time_to_utc_datetime(self.expires)
@@ -403,7 +511,10 @@ class ListObjectsOutput(ResponseInfo):
 
         common_prefix_list = get_value(data, 'CommonPrefixes') or []
         for common_prefix in common_prefix_list:
-            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix')))
+            last_modified = get_value(common_prefix, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix'), last_modified))
 
         object_list = get_value(data, 'Contents') or []
         for object in object_list:
@@ -495,7 +606,10 @@ class ListObjectType2Output(ResponseInfo):
         self.next_continuation_token = get_value(data, 'NextContinuationToken')
         common_prefix_list = get_value(data, 'CommonPrefixes') or []
         for common_prefix in common_prefix_list:
-            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix')))
+            last_modified = get_value(common_prefix, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix'), last_modified))
 
         object_list = get_value(data, 'Contents') or []
         for object in object_list:
@@ -611,7 +725,10 @@ class ListObjectVersionsOutput(ResponseInfo):
 
         common_prefix_list = get_value(data, 'CommonPrefixes') or []
         for common_prefix in common_prefix_list:
-            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix')))
+            last_modified = get_value(common_prefix, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix'), last_modified))
 
         object_list = get_value(data, 'Versions') or []
         for object in object_list:
@@ -677,12 +794,15 @@ class GetObjectACLOutput(ResponseInfo):
         self.version_id = get_value(self.header, 'x-tos-version-id')
         self.owner = None
         self.grants = []
+        self.is_default = None
         data = resp.json_read()
 
         self.owner = Owner(
             get_value(data['Owner'], 'ID'),
             get_value(data['Owner'], 'DisplayName'),
         )
+
+        self.is_default = data.get('IsDefault')
 
         grant_list = data.get('Grants') or []
         for grant in grant_list:
@@ -904,7 +1024,10 @@ class ListMultipartUploadsOutput(ResponseInfo):
 
         common_prefix_list = get_value(data, 'CommonPrefixes') or []
         for common_prefix in common_prefix_list:
-            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix')))
+            last_modified = get_value(common_prefix, 'LastModified')
+            if last_modified:
+                last_modified = parse_modify_time_to_utc_datetime(last_modified)
+            self.common_prefixes.append(CommonPrefixInfo(get_value(common_prefix, 'Prefix'), last_modified))
 
 
 class ListPartsOutput(ResponseInfo):
@@ -1330,6 +1453,18 @@ class BucketLifeCycleNonCurrentVersionTransition(object):
         self.non_current_date = non_current_date
 
 
+class AccessTimeTransition(object):
+    def __init__(self, storage_class: StorageClassType = None, days: int = None):
+        self.storage_class = storage_class
+        self.days = days
+
+
+class NoncurrentVersionAccessTimeTransition(object):
+    def __init__(self, storage_class: StorageClassType = None, non_current_days: int = None):
+        self.storage_class = storage_class
+        self.non_current_days = non_current_days
+
+
 class BucketLifecycleFilter(object):
     def __init__(self, object_size_greater_than: int = None, greater_than_include_equal: StatusType = None,
                  object_size_less_than: int = None, less_than_include_equal: StatusType = None):
@@ -1350,7 +1485,9 @@ class BucketLifeCycleRule(object):
                  non_current_version_transitions: [] = None,
                  id: str = None,
                  prefix: str = None,
-                 filter: BucketLifecycleFilter = None):
+                 filter: BucketLifecycleFilter = None,
+                 access_time_transitions: [] = None,
+                 non_current_version_access_time_transitions: [] = None):
         self.id = id
         self.prefix = prefix
         self.status = status
@@ -1361,6 +1498,8 @@ class BucketLifeCycleRule(object):
         self.transitions = transitions
         self.non_current_version_transitions = non_current_version_transitions
         self.filter = filter
+        self.access_time_transitions = access_time_transitions
+        self.non_current_version_access_time_transitions = non_current_version_access_time_transitions
 
 
 class PutBucketLifecycleOutput(ResponseInfo):
@@ -1388,6 +1527,8 @@ class GetBucketLifecycleOutput(ResponseInfo):
             tags_json = get_value(rule_json, 'Tags') or []
             transitions_json = get_value(rule_json, 'Transitions') or []
             non_current_version_transitions_json = get_value(rule_json, 'NoncurrentVersionTransitions') or []
+            access_time_transitions_json = get_value(rule_json, 'AccessTimeTransitions') or []
+            non_current_version_access_time_transitions_json = get_value(rule_json, 'NoncurrentVersionAccessTimeTransitions') or []
             filter_json = get_value(rule_json, 'Filter')
 
             if expiration_json:
@@ -1418,6 +1559,23 @@ class GetBucketLifecycleOutput(ResponseInfo):
                     if get_value(transition_json, 'Date'):
                         ts.date = parse_modify_time_to_utc_datetime(get_value(transition_json, 'Date'))
                     rule.transitions.append(ts)
+
+            if access_time_transitions_json:
+                rule.access_time_transitions = []
+                for transition_json in access_time_transitions_json:
+                    ts = AccessTimeTransition()
+                    ts.storage_class = get_value(transition_json, 'StorageClass',
+                                                 lambda x: convert_storage_class_type(x))
+                    ts.days = get_value(transition_json, 'Days', int)
+                    rule.access_time_transitions.append(ts)
+
+            if non_current_version_access_time_transitions_json:
+                rule.non_current_version_access_time_transitions = []
+                for vt in non_current_version_access_time_transitions_json:
+                    tr = NoncurrentVersionAccessTimeTransition()
+                    tr.storage_class = get_value(vt, 'StorageClass', lambda x: convert_storage_class_type(x))
+                    tr.non_current_days = get_value(vt, 'NoncurrentDays', int)
+                    rule.non_current_version_access_time_transitions.append(tr)
 
             if tags_json:
                 rule.tags = []
@@ -1595,12 +1753,15 @@ class GetBucketACLOutput(ResponseInfo):
         super(GetBucketACLOutput, self).__init__(resp)
         self.owner = None
         self.grants = []
+        self.bucket_acl_delivered = None
         data = resp.json_read()
 
         self.owner = Owner(
             get_value(data['Owner'], 'ID'),
             get_value(data['Owner'], 'DisplayName'),
         )
+
+        self.bucket_acl_delivered = data.get('BucketAclDelivered')
 
         grant_list = data['Grants'] or []
         for grant in grant_list:
@@ -1628,6 +1789,13 @@ class PostSignatureCondition(object):
     def __init__(self, key: str, value: str, operator=None):
         self.key = key
         self.value = value
+        self.operator = operator
+
+
+class PostSignatureMultiValuesCondition(object):
+    def __init__(self, key: str, values: [], operator: str):
+        self.key = key
+        self.values = values
         self.operator = operator
 
 
@@ -2000,13 +2168,14 @@ class GetBucketNotificationOutput(ResponseInfo):
 
 class CustomDomainRule(object):
     def __init__(self, cert_id: str = None, cert_status: CertStatus = None, domain: str = None, cname: str = None,
-                 forbidden: bool = None, forbidden_reason: str = None):
+                 forbidden: bool = None, forbidden_reason: str = None, protocol: AuthProtocolType = None):
         self.cert_id = cert_id
         self.cert_status = cert_status
         self.domain = domain
         self.cname = cname
         self.forbidden = forbidden
         self.forbidden_reason = forbidden_reason
+        self.protocol = protocol
 
 
 class PutBucketCustomDomainOutput(ResponseInfo):
@@ -2028,7 +2197,9 @@ class ListBucketCustomDomainOutput(ResponseInfo):
                                  forbidden=get_value(custom_domain_rule, 'Forbidden'),
                                  forbidden_reason=get_value(custom_domain_rule, 'ForbiddenReason'),
                                  cert_status=get_value(custom_domain_rule, 'CertStatus',
-                                                       lambda x: convert_cert_status(x))))
+                                                       lambda x: convert_cert_status(x)),
+                                 protocol=get_value(custom_domain_rule, 'Protocol',
+                                                    lambda x: convert_auth_protocol_type(x))))
 
 
 class DeleteCustomDomainOutput(ResponseInfo):
@@ -2223,9 +2394,12 @@ class GetSymlinkOutput(ResponseInfo):
 
 
 class GenericInput(object):
-    def __init__(self, request_date: datetime = None,request_host: str = None):
+    def __init__(self, request_date: datetime = None, request_host: str = None, request_headers: Dict = None,
+                 request_query: Dict = None):
         self.request_date = request_date
         self.request_host = request_host
+        self.request_headers = request_headers or {}
+        self.request_query = request_query or {}
 
 
 class ApplyServerSideEncryptionByDefault(object):
@@ -2293,10 +2467,20 @@ class DestinationVeFaaS(object):
         self.function_id = function_id
 
 
+class DestinationKafka(object):
+    def __init__(self, role: str = None, instance_id: str = None, topic: str = None, user: str = None, region: str = None):
+        self.role = role
+        self.instance_id = instance_id
+        self.topic = topic
+        self.user = user
+        self.region = region
+
+
 class NotificationDestination(object):
-    def __init__(self, rocket_mq: [] = None, ve_faas: [] = None):
+    def __init__(self, rocket_mq: [] = None, ve_faas: [] = None, kafka: [] = None):
         self.rocket_mq = rocket_mq
         self.ve_faas = ve_faas
+        self.kafka = kafka
 
 
 class NotificationRule(object):
@@ -2311,6 +2495,24 @@ class NotificationRule(object):
 class PutBucketNotificationType2Output(ResponseInfo):
     def __init__(self, resp):
         super(PutBucketNotificationType2Output, self).__init__(resp)
+
+
+class Trash(object):
+    def __init__(self, trash_path: str = None, clean_interval: int = None, status: str = None):
+        self.trash_path = trash_path
+        self.clean_interval = clean_interval
+        self.status = status
+
+
+class BucketTrash(object):
+    def __init__(self, trash: Trash = None):
+        self.trash = trash
+
+
+class PutBucketTrashOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketTrashOutput, self).__init__(resp)
+
 
 
 class GetBucketNotificationType2Output(ResponseInfo):
@@ -2343,6 +2545,17 @@ class GetBucketNotificationType2Output(ResponseInfo):
                     for r in get_value(destination_json, 'VeFaaS'):
                         ve_faas.append(DestinationVeFaaS(function_id=get_value(r, 'FunctionId')))
                     config.destination.ve_faas = ve_faas
+                if get_value(destination_json, 'Kafka'):
+                    kafkas = []
+                    for r in get_value(destination_json, 'Kafka'):
+                        kafkas.append(DestinationKafka(
+                            role=get_value(r, 'Role'),
+                            instance_id=get_value(r, 'InstanceId'),
+                            topic=get_value(r, 'Topic'),
+                            user=get_value(r, 'User'),
+                            region=get_value(r, 'Region')
+                        ))
+                    config.destination.kafka = kafkas
             if get_value(rule, 'Filter') and get_value(get_value(rule, 'Filter'), 'TOSKey') and get_value(
                     get_value(get_value(rule, 'Filter'), 'TOSKey'), 'FilterRules'):
                 filter_rules = get_value(get_value(get_value(rule, 'Filter'), 'TOSKey'), 'FilterRules')
@@ -2393,6 +2606,11 @@ class SetObjectExpiresOutput(ResponseInfo):
     def __init__(self, resp):
         super(SetObjectExpiresOutput, self).__init__(resp)
 
+
+class SetObjectTimeOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(SetObjectTimeOutput, self).__init__(resp)
+
 class BucketInventoryConfiguration(object):
     def __init__(self,inventory_id:str,
                  is_enabled: bool,
@@ -2400,7 +2618,8 @@ class BucketInventoryConfiguration(object):
                  schedule: InventorySchedule,
                  included_object_versions: InventoryIncludedObjType,
                  inventory_filter: InventoryFilter = None,
-                 optional_fields:InventoryOptionalFields=None):
+                 optional_fields:InventoryOptionalFields=None,
+                 is_un_compressed: bool = False):
         self.inventory_id = inventory_id
         self.is_enabled = is_enabled
         self.inventory_filter = inventory_filter
@@ -2408,6 +2627,7 @@ class BucketInventoryConfiguration(object):
         self.schedule = schedule
         self.included_object_versions = included_object_versions
         self.optional_fields = optional_fields
+        self.is_un_compressed = is_un_compressed
 
     @classmethod
     def from_json(cls, config_data:Dict) -> 'BucketInventoryConfiguration':
@@ -2448,20 +2668,24 @@ class BucketInventoryConfiguration(object):
         if "IncludedObjectVersions" in config_data:
             included_versions = InventoryIncludedObjType(config_data["IncludedObjectVersions"])
 
+        is_un_compressed = config_data.get("IsUnCompressed", False)
+
         return cls(
             inventory_id=config_data.get("Id", ""),
             is_enabled=config_data.get("IsEnabled", False),
-            inventory_filter=inventory_filter,
             destination=destination,
             schedule=schedule,
             included_object_versions=included_versions,
-            optional_fields=optional_fields
+            inventory_filter=inventory_filter,
+            optional_fields=optional_fields,
+            is_un_compressed=is_un_compressed
         )
 
     def to_dict(self) -> dict:
         inventory_config = {}
         inventory_config['Id'] = self.inventory_id
         inventory_config['IsEnabled'] = self.is_enabled
+        inventory_config['IsUnCompressed'] = self.is_un_compressed
 
         if self.inventory_filter:
             inventory_config["Filter"] = {"Prefix": self.inventory_filter.prefix}
@@ -2516,52 +2740,7 @@ class GetBucketInventoryOutput(ResponseInfo):
         super(GetBucketInventoryOutput, self).__init__(resp)
         config_data = resp.json_read()
 
-        filter_data = config_data.get("Filter")
-        inventory_filter = None
-        if filter_data:
-            inventory_filter = InventoryFilter(
-                prefix=filter_data.get("Prefix", "")
-            )
-
-        dest_data = config_data.get("Destination", {}).get("TOSBucketDestination")
-        destination = None
-        if dest_data:
-            tos_dest = TOSBucketDestination(
-                format=InventoryFormatType(dest_data.get("Format", "")),
-                account_id=dest_data.get("AccountId", ""),
-                role=dest_data.get("Role", ""),
-                bucket=dest_data.get("Bucket", ""),
-                prefix=dest_data.get("Prefix", None)
-            )
-            destination = InventoryDestination(tos_bucket_destination=tos_dest)
-
-        schedule_data = config_data.get("Schedule")
-        schedule = None
-        if schedule_data:
-            schedule = InventorySchedule(
-                frequency=InventoryFrequencyType(schedule_data.get("Frequency", ""))
-            )
-
-        optional_fields_data = config_data.get("OptionalFields", {}).get("Field")
-        optional_fields = None
-        if optional_fields_data:
-            optional_fields = InventoryOptionalFields(
-                fields=optional_fields_data
-            )
-
-        included_versions = None
-        if "IncludedObjectVersions" in config_data:
-            included_versions = InventoryIncludedObjType(config_data["IncludedObjectVersions"])
-
-        self.bucket_inventory_configuration = BucketInventoryConfiguration(
-            inventory_id=config_data.get("Id", ""),
-            is_enabled=config_data.get("IsEnabled", False),
-            inventory_filter=inventory_filter,
-            destination=destination,
-            schedule=schedule,
-            included_object_versions=included_versions,
-            optional_fields=optional_fields
-        )
+        self.bucket_inventory_configuration = BucketInventoryConfiguration.from_json(config_data)
 
 
 class QueryRequest:
@@ -2948,3 +3127,30 @@ class ListVectorBucketsOutput(ResponseInfo):
                     vector_bucket_name=get_value(bucket_data, 'vectorBucketName')
                 )
                 self.vector_buckets.append(vector_bucket)
+
+class PutBucketAccessMonitorOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutBucketAccessMonitorOutput, self).__init__(resp)
+
+
+class GetBucketAccessMonitorOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetBucketAccessMonitorOutput, self).__init__(resp)
+        data = resp.json_read()
+        self.status = get_value(data, 'Status', lambda x: convert_status_type(x))
+
+
+class PutQosPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(PutQosPolicyOutput, self).__init__(resp)
+
+
+class GetQosPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(GetQosPolicyOutput, self).__init__(resp)
+        self.policy = resp.read().decode("utf-8")
+
+
+class DeleteQosPolicyOutput(ResponseInfo):
+    def __init__(self, resp):
+        super(DeleteQosPolicyOutput, self).__init__(resp)

@@ -14,7 +14,7 @@ class ACLType(Enum):
     ACL_Bucket_Owner_Read = "bucket-owner-read"
     ACL_Bucket_Owner_Full_Control = "bucket-owner-full-control"
     ACL_Bucket_Owner_Entrusted = "bucket-owner-entrusted"
-
+    ACL_Default = "default"
 
 def convert_acl_type(acl: str):
     for t in ACLType:
@@ -95,6 +95,7 @@ class PermissionType(Enum):
     Permission_Read_Acp = "READ_ACP"
     Permission_Write_Acp = "WRITE_ACP"
     Permission_Full_Control = "FULL_CONTROL"
+    Permission_Read_Non_List = "READ_NON_LIST"
 
 
 def convert_permission_type(s: str):
@@ -236,6 +237,18 @@ class CertStatus(Enum):
     Cert_Status_Bound = 'CertBound'
     Cert_Status_Unbound = 'CertUnbound'
     Cert_Status_Expired = 'CertExpired'
+
+
+class AuthProtocolType(Enum):
+    AuthProtocolTos = "tos"
+    AuthProtocolS3 = "s3"
+
+
+def convert_auth_protocol_type(s: str):
+    for t in AuthProtocolType:
+        if t.value == s:
+            return t
+    return None
 
 
 def convert_cert_status(s: str):
