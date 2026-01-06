@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import datetime
+import json
 import os
 import time
 import unittest
@@ -10,6 +11,7 @@ from requests.exceptions import RetryError
 from urllib3.exceptions import NewConnectionError
 
 import tos
+from tests.common import MockResponse
 from tos import DnsCacheService, RateLimiter, exceptions, utils, convert_storage_class_type, ACLType, convert_acl_type, \
     StorageClassType, MetadataDirectiveType, convert_metadata_directive_type, AzRedundancyType, \
     convert_az_redundancy_type, PermissionType, convert_permission_type, GranteeType, convert_grantee_type, \
@@ -22,7 +24,9 @@ from tos.checkpoint import CancelHook
 from tos.clientv2 import _handler_retry_policy, _is_wrapper_data, _signed_req
 from tos.exceptions import TosServerError, CancelNotWithAbortError, CancelWithAbortError
 from tos.http import Response, Request
+from tos.models2 import GenericInput
 from tos.utils import SizeAdapter
+# from tos.vector_client import VectorClient
 
 
 class BaseFuncTestCase(unittest.TestCase):
@@ -153,6 +157,86 @@ class BaseFuncTestCase(unittest.TestCase):
         client = tos.TosClientV2(self.ak, self.sk, self.endpoint, self.region)
         self.assertEqual(client.endpoint, "https://" + self.endpoint)
         self.assertEqual(client.scheme, "https://")
+
+    def test_follow_redirect_init(self):
+        # Test default
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region')
+        self.assertEqual(client.follow_redirect_times, 0)
+        # Default requests session max_redirects is 30, it shouldn't be changed if follow_redirect_times is 0
+        self.assertEqual(client.session.max_redirects, 30)
+
+        # Test with custom value
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region', follow_redirect_times=5)
+        self.assertEqual(client.follow_redirect_times, 5)
+        self.assertEqual(client.session.max_redirects, 5)
+
+    @mock.patch('requests.Session.request')
+    def test_follow_redirect_request(self, mock_request):
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.content = b''
+        mock_request.return_value = mock_response
+
+        # 1. follow_redirect_times=0 (Default)
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region')
+
+        # GET request
+        try:
+            client.get_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'GET')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+        # HEAD request
+        try:
+            client.head_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'HEAD')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+        # PUT request
+        try:
+            client.put_object(bucket='bucket', key='key', content=b'data')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'PUT')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+        # 2. follow_redirect_times=5
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region', follow_redirect_times=5)
+
+        # GET request -> allow_redirects=True
+        try:
+            client.get_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'GET')
+        self.assertTrue(kwargs.get('allow_redirects'))
+
+        # HEAD request -> allow_redirects=True
+        try:
+            client.head_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'HEAD')
+        self.assertTrue(kwargs.get('allow_redirects'))
+
+        # PUT request -> allow_redirects=False (Only GET/HEAD supported)
+        try:
+            client.put_object(bucket='bucket', key='key', content=b'data')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'PUT')
+        self.assertFalse(kwargs.get('allow_redirects'))
         self.assertEqual(client.host, self.endpoint)
 
         client_2 = tos.TosClientV2(self.ak, self.sk, 'http://' + self.endpoint, self.region)
@@ -248,6 +332,146 @@ class BaseFuncTestCase(unittest.TestCase):
             self.assertEqual(req.headers['Host'], host)
             self.assertEqual(req.headers['x-tos-date'], '20210101T000000Z')
             self.assertEqual(req.headers['x-tos-security-token'], 'sts')
+
+    def test_follow_redirect_init(self):
+        # Test default
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region')
+        self.assertEqual(client.follow_redirect_times, 0)
+        # Default requests session max_redirects is 30, it shouldn't be changed if follow_redirect_times is 0
+        self.assertEqual(client.session.max_redirects, 30)
+
+        # Test with custom value
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region', follow_redirect_times=5)
+        self.assertEqual(client.follow_redirect_times, 5)
+        self.assertEqual(client.session.max_redirects, 5)
+
+    @mock.patch('requests.Session.request')
+    def test_follow_redirect_request(self, mock_request):
+        mock_response = mock.Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {}
+        mock_response.content = b''
+        mock_request.return_value = mock_response
+
+        # 1. follow_redirect_times=0 (Default)
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region')
+
+        # GET request
+        try:
+            client.get_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'GET')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+        # HEAD request
+        try:
+            client.head_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'HEAD')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+        # PUT request
+        try:
+            client.put_object(bucket='bucket', key='key', content=b'data')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'PUT')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+        # 2. follow_redirect_times=5
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='endpoint', region='region', follow_redirect_times=5)
+
+        # GET request -> allow_redirects=True
+        try:
+            client.get_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'GET')
+        self.assertTrue(kwargs.get('allow_redirects'))
+
+        # HEAD request -> allow_redirects=True
+        try:
+            client.head_object(bucket='bucket', key='key')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'HEAD')
+        self.assertTrue(kwargs.get('allow_redirects'))
+
+        # PUT request -> allow_redirects=False (Only GET/HEAD supported)
+        try:
+            client.put_object(bucket='bucket', key='key', content=b'data')
+        except:
+            pass
+        args, kwargs = mock_request.call_args
+        self.assertEqual(args[0], 'PUT')
+        self.assertFalse(kwargs.get('allow_redirects'))
+
+
+class GenericInputTestCase(unittest.TestCase):
+    @mock.patch('requests.Session.request')
+    def test_generic_input_request_header_and_query(self, mock_request):
+        mock_request.return_value = MockResponse(status_code=200, headers={'x-tos-bucket-region': 'beijing'})
+
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com', region='beijing')
+        try:
+            gi = GenericInput(request_headers={'x-test-header': 'v1'}, request_query={'q1': 'v2'})
+            client.head_bucket(bucket='bkt', generic_input=gi)
+        finally:
+            client.close()
+
+        _, kwargs = mock_request.call_args
+        self.assertEqual(kwargs['headers'].get('x-test-header'), 'v1')
+        self.assertEqual(kwargs['params'].get('q1'), 'v2')
+
+    @mock.patch('requests.Session.request')
+    def test_generic_input_request_header_priority(self, mock_request):
+        mock_request.return_value = MockResponse(
+            body=json.dumps({'Owner': {'ID': 'id', 'Name': 'name'}, 'Buckets': []})
+        )
+
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com', region='beijing')
+        try:
+            gi = GenericInput(request_headers={'x-tos-project-name': 'bad'})
+            client.list_buckets(project_name='p', generic_input=gi)
+        finally:
+            client.close()
+
+        _, kwargs = mock_request.call_args
+        self.assertEqual(kwargs['headers'].get('x-tos-project-name'), 'p')
+
+    @mock.patch('requests.Session.request')
+    def test_generic_input_request_header_forbid_keys(self, mock_request):
+        mock_request.return_value = MockResponse(status_code=200, headers={'x-tos-bucket-region': 'beijing'})
+
+        client = tos.TosClientV2(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com', region='beijing')
+        try:
+            gi = GenericInput(request_headers={'Connection': 'close', 'Transfer-Encoding': 'chunked'})
+            client.head_bucket(bucket='bkt', generic_input=gi)
+        finally:
+            client.close()
+
+        _, kwargs = mock_request.call_args
+        self.assertIsNone(kwargs['headers'].get('Connection'))
+        self.assertIsNone(kwargs['headers'].get('Transfer-Encoding'))
+
+    # @mock.patch('requests.Session.request')
+    # def test_vector_generic_input_request_header_and_query(self, mock_request):
+    #     mock_request.return_value = MockResponse(body=json.dumps({}))
+    #
+    #     client = VectorClient(ak='ak', sk='sk', endpoint='tos-cn-beijing.volces.com', region='beijing')
+    #     gi = GenericInput(request_headers={'x-test-header': 'v1'}, request_query={'q1': 'v2'})
+    #     client.list_vector_buckets(generic_input=gi)
+    #
+    #     _, kwargs = mock_request.call_args
+    #     self.assertEqual(kwargs['headers'].get('x-test-header'), 'v1')
+    #     self.assertEqual(kwargs['params'].get('q1'), 'v2')
 
 
 class args(object):

@@ -257,8 +257,9 @@ class UploadPartInfo(object):
 
 
 class CommonPrefixInfo(object):
-    def __init__(self, prefix):
+    def __init__(self, prefix, last_modified=None):
         self.prefix = prefix
+        self.last_modified = last_modified
 
 
 class ObjectInfo(object):

@@ -32,6 +32,8 @@ from .log import get_logger
 from .mine_type import TYPES_MAP
 from io import StringIO
 
+from tos import exceptions
+
 REGION_MAP = {
     'cn-beijing': 'tos-cn-beijing.volces.com',
     'cn-guangzhou': 'tos-cn-guangzhou.volces.com',
@@ -92,7 +94,10 @@ def parse_gmt_time_to_utc_datetime(value):
     return datetime.datetime.strptime(value, GMT_DATE_FORMAT).replace(tzinfo=pytz.utc)
 
 def parse_iso_time_to_utc_datetime(value):
-    return datetime.datetime.strptime(value,ECS_DATE_FORMAT).astimezone(pytz.utc)
+    try:
+        return datetime.datetime.strptime(value, ECS_DATE_FORMAT).astimezone(pytz.utc)
+    except ValueError:
+        return datetime.datetime.strptime(value, LAST_MODIFY_TIME_DATE_FORMAT).replace(tzinfo=pytz.utc)
 
 
 def get_content_type(key):
@@ -1434,6 +1439,62 @@ def _to_case_insensitive_dict(headers: dict):
     _sanitize_dict(headers)
     return CaseInsensitiveDict(headers)
 
+
+def _merge_generic_input(headers: dict, params: dict, generic_input):
+    if generic_input is None:
+        return headers, params
+
+    forbid_header_keys = {
+        'content-length',
+        'host',
+        'connection',
+        'x-tos-date',
+        'range',
+        'transfer-encoding',
+        'authorization',
+        'date',
+    }
+
+    request_headers = getattr(generic_input, 'request_headers', None)
+    if request_headers:
+        for k, v in request_headers.items():
+            if k is None:
+                continue
+            if isinstance(k, bytes):
+                k = k.decode('utf-8')
+            else:
+                k = str(k)
+            k = k.strip()
+            if not k or k.lower() in forbid_header_keys:
+                continue
+            if isinstance(v, bytes):
+                v = v.decode('utf-8')
+            elif not isinstance(v, str):
+                v = str(v)
+            if k not in headers:
+                headers[k] = v
+
+    request_query = getattr(generic_input, 'request_query', None)
+    if request_query:
+        existing_query_keys = {str(k).lower() for k in params.keys() if k is not None}
+        for k, v in request_query.items():
+            if k is None:
+                continue
+            if isinstance(k, bytes):
+                k = k.decode('utf-8')
+            else:
+                k = str(k)
+            k = k.strip()
+            if not k or k.lower() in existing_query_keys:
+                continue
+            if isinstance(v, bytes):
+                v = v.decode('utf-8')
+            elif not isinstance(v, str):
+                v = str(v)
+            params[k] = v
+
+    return headers, params
+
 def _get_sleep_time(rsp, retry_count):
     sleep_time = SLEEP_BASE_TIME * math.pow(2, retry_count - 1)
     if sleep_time > 60:
@@ -1454,3 +1515,23 @@ def _validate_account_id(account_id: str):
         raise TosClientError("account_id is required")
     if not isinstance(account_id, str) or not account_id.isdigit():
         raise TosClientError("account_id must be a non-empty numeric string")
+
+
+def _is_valid_vector_bucket_name(bucket_name):
+    """
+    向量桶命名规范：
+    - 向量桶名字符长度为 3~32 个字符；
+    - 向量桶名字符集包括：小写字母 a-z、数字 0-9 和连字符 '-'；
+    - 向量桶名不能以连字符 '-' 作为开头或结尾；
+    SDK 会对依照该规范做校验，如果用户指定的向量桶名与规范不匹配则报错客户端校验失败
+    """
+    if len(bucket_name) < 3 or len(bucket_name) > 32:
+        raise exceptions.TosClientError('invalid vector bucket name, the length must be [3, 32]')
+
+    if bucket_name[0] == '-' or bucket_name[len(bucket_name) - 1] == '-':
+        raise exceptions.TosClientError(
+            "invalid vector bucket name, the vector bucket name can be neither starting with ' - ' nor ending with ' - '")
+
+    for i in range(0, len(bucket_name)):
+        if not ('a' <= bucket_name[i] <= 'z' or '0' <= bucket_name[i] <= '9' or bucket_name[i] == '-'):
+            raise exceptions.TosClientError('invalid vector bucket name, the character set is illegal')

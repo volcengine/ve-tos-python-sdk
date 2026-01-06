@@ -32,10 +32,14 @@ def to_delete_multi_objects_request(objects: [], quiet: bool, recursive: bool):
     return data
 
 
-def to_put_acl_request(owner: Owner, grants: []):
+def to_put_acl_request(owner: Owner, grants: [], is_default: bool = None, bucket_acl_delivered: bool = None):
     data = {}
     if owner:
         data['Owner'] = {"ID": owner.id, "DisplayName": owner.display_name}
+    if is_default is not None:
+        data['IsDefault'] = is_default
+    if bucket_acl_delivered is not None:
+        data['BucketAclDelivered'] = bucket_acl_delivered
     if grants:
         convertor_grant = []
         for grant in grants:
@@ -243,6 +247,30 @@ def to_put_bucket_lifecycle(rules: []):
                 current_version_transition_arr.append(non_current_version_transition_info)
 
             info['NoncurrentVersionTransitions'] = current_version_transition_arr
+
+        if rule.access_time_transitions:
+            trans_arr = []
+            for t in rule.access_time_transitions:
+                transition_info = {}
+                if t.days:
+                    transition_info['Days'] = t.days
+                if t.storage_class:
+                    transition_info['StorageClass'] = t.storage_class.value
+                trans_arr.append(transition_info)
+            info['AccessTimeTransitions'] = trans_arr
+
+        if rule.non_current_version_access_time_transitions:
+            current_version_transition_arr = []
+            for tr in rule.non_current_version_access_time_transitions:
+                non_current_version_transition_info = {}
+                if tr.non_current_days:
+                    non_current_version_transition_info['NoncurrentDays'] = tr.non_current_days
+                if tr.storage_class:
+                    non_current_version_transition_info['StorageClass'] = tr.storage_class.value
+
+                current_version_transition_arr.append(non_current_version_transition_info)
+
+            info['NoncurrentVersionAccessTimeTransitions'] = current_version_transition_arr
 
         if rule.filter:
             info['Filter'] = {}
@@ -465,6 +493,11 @@ def to_put_custom_domain(custom_domain_rule: CustomDomainRule):
             info['CustomDomainRule']['Forbidden'] = custom_domain_rule.forbidden
         if custom_domain_rule.forbidden_reason:
             info['CustomDomainRule']['ForbiddenReason'] = custom_domain_rule.forbidden_reason
+        if custom_domain_rule.protocol:
+            if hasattr(custom_domain_rule.protocol, 'value'):
+                info['CustomDomainRule']['Protocol'] = custom_domain_rule.protocol.value
+            else:
+                info['CustomDomainRule']['Protocol'] = custom_domain_rule.protocol
 
     return info
 
@@ -598,10 +631,27 @@ def to_put_bucket_notification_type2(rules: [], version: str):
                 if rule.destination.ve_faas:
                     ve_faas = []
                     for r in rule.destination.ve_faas:
-                        ve_faas.append({
-                            'FunctionID': r.function_id
-                        })
+                        ve_faa = {}
+                        if r.function_id:
+                            ve_faa['FunctionId'] = r.function_id
+                        ve_faas.append(ve_faa)
                     config['Destination']['VeFaaS'] = ve_faas
+                if rule.destination.kafka:
+                    kafkas = []
+                    for r in rule.destination.kafka:
+                        kafka = {}
+                        if r.role:
+                            kafka['Role'] = r.role
+                        if r.instance_id:
+                            kafka['InstanceId'] = r.instance_id
+                        if r.topic:
+                            kafka['Topic'] = r.topic
+                        if r.user:
+                            kafka['User'] = r.user
+                        if r.region:
+                            kafka['Region'] = r.region
+                        kafkas.append(kafka)
+                    config['Destination']['Kafka'] = kafkas
 
             info['Rules'].append(config)
     return info

@@ -30,7 +30,8 @@ class TestListObjects(TosTestCase):
             'IsTruncated': True,
             'CommonPrefixes': [
                 {
-                    'Prefix': prefix
+                    'Prefix': prefix,
+                    'LastModified': '2021-01-01T00:00:00.000Z'
                 }
             ],
             'Contents': [
@@ -62,7 +63,6 @@ class TestListObjects(TosTestCase):
 
         self.assertEqual(len(res.common_prefix_list), 1)
         self.assertEqual(res.common_prefix_list[0].prefix, prefix)
-
         self.assertEqual(len(res.object_list), 1)
         self.assertEqual(res.object_list[0].key, 'key1')
         self.assertEqual(res.object_list[0].last_modified, datetime.datetime(2021, 1, 1, tzinfo=pytz.utc))
@@ -95,7 +95,8 @@ class TestListObjects(TosTestCase):
             'IsTruncated': True,
             'CommonPrefixes': [
                 {
-                    'Prefix': prefix
+                    'Prefix': prefix,
+                    'LastModified': '2021-01-01T00:00:00.000Z'
                 }
             ],
             'Versions': [

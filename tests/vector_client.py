@@ -11,7 +11,7 @@ class TosVectorClientBase(unittest.TestCase):
     self.vector_endpoint = os.getenv('VectorEndpoint')
     self.region = os.getenv('Region')
     self.account_id = os.getenv('AccountId')
-    self.bucket_name = "py-sdk-" + random_string(10)
+    self.bucket_name = "py-sdk-" + random_string(5)
     self.bucket_delete = []
   def setUp(self):
     self.vector_client = VectorClient(self.ak, self.sk, self.vector_endpoint, self.region)
