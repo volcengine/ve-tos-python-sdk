@@ -74,5 +74,9 @@ resp = client.delete_object(bucket_name, key_name)
 assert resp.status_code == 204
 ```
 
+## Security and privacy
+This project takes security seriously.
+For vulnerability reporting and supported versions, see [SECURITY.md](SECURITY.md)
+
 ## License
 [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0.html)
