@@ -850,40 +850,41 @@ def high_latency_log(f):
             ex = e
             raise e
         finally:
-            if len(args) <= 0 or not isinstance(args[0], TosClientV2):
-                return
+            # NOTE: avoid `return` in finally block — it suppresses exceptions
+            # and triggers SyntaxWarning on Python 3.12+
+            should_log = (
+                len(args) > 0
+                and isinstance(args[0], TosClientV2)
+                and args[0].high_latency_log_threshold > 0
+            )
+            if should_log:
+                try:
+                    total = consume_body()
+                    # 不足 1KB 当 1KB 计算
+                    if total < 1024:
+                        total = 1024
+                    # 耗时，单位：秒
+                    cost = time.perf_counter() - start
+                    rate = total / 1024 / cost
+                    # 传输速率小于 threshold 且耗时超过 500 毫秒
+                    if cost > 0 and rate < threshold and cost * 1000 > 500:
+                        # 包含 HTTP 状态码、RequestID、接口调用总耗时
+                        pf = get_logger().warning
+                        if get_logger().getEffectiveLevel() < log.DEBUG or get_logger().getEffectiveLevel() > log.WARNING:
+                            pf = print
 
-            threshold = args[0].high_latency_log_threshold
-            if threshold <= 0:
-                return
-
-            try:
-                total = consume_body()
-                # 不足 1KB 当 1KB 计算
-                if total < 1024:
-                    total = 1024
-                # 耗时，单位：秒
-                cost = time.perf_counter() - start
-                rate = total / 1024 / cost
-                # 传输速率小于 threshold 且耗时超过 500 毫秒
-                if cost > 0 and rate < threshold and cost * 1000 > 500:
-                    # 包含 HTTP 状态码、RequestID、接口调用总耗时
-                    pf = get_logger().warning
-                    if get_logger().getEffectiveLevel() < log.DEBUG or get_logger().getEffectiveLevel() > log.WARNING:
-                        pf = print
-
-                    if res:
-                        pf(
-                            'high latency request: exec httpCode: {}, requestId: {}, usedTime: {} s'.format(
-                                res.status_code,
-                                res.request_id,
-                                cost))
-                    else:
-                        pf(
-                            'high latency request: exception: {}, usedTime:{} s'.format(ex, cost))
-            except Exception:
-                # ignore Exception
-                pass
+                        if res:
+                            pf(
+                                'high latency request: exec httpCode: {}, requestId: {}, usedTime: {} s'.format(
+                                    res.status_code,
+                                    res.request_id,
+                                    cost))
+                        else:
+                            pf(
+                                'high latency request: exception: {}, usedTime:{} s'.format(ex, cost))
+                except Exception:
+                    # ignore Exception
+                    pass
 
     return wrapper
 
