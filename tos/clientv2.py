@@ -12,7 +12,6 @@ import socket
 import sys
 import tempfile
 import time
-import traceback
 import urllib.parse
 import uuid
 from datetime import datetime
@@ -4257,7 +4256,7 @@ class TosClientV2(TosClient):
              generic_input=None,account_id=None,is_control_req=None):
         consume_body()
         # 获取调用方法的名称
-        func_name = func or traceback.extract_stack()[-2][2]
+        func_name = func or sys._getframe(1).f_code.co_name
         if key is not None and is_control_req is None:
             _is_valid_object_name(key)
         key = to_str(key)
