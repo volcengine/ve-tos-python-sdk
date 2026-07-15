@@ -1,7 +1,7 @@
 import json
 import random
+import sys
 import time
-import traceback
 from typing import Dict, List, Any
 
 import requests
@@ -115,7 +115,7 @@ class VectorClient():
              generic_input=None, account_id=None):
         consume_body()
         # 获取调用方法的名称
-        func_name = func or traceback.extract_stack()[-2][2]
+        func_name = func or sys._getframe(1).f_code.co_name
 
         headers = _to_case_insensitive_dict(headers)
         params = _sanitize_dict(params)
