@@ -77,6 +77,9 @@ class TosTestBase(unittest.TestCase):
         self.callback_url = os.getenv('CallbackUrl')
         self.cloud_function = os.getenv('CloudFunction')
         self.control_endpoint = os.getenv('ControlEndpoint')
+        self.kafka_instance_id = os.getenv('KafkaInstanceId')
+        self.kafka_topic = os.getenv('KafkaTopic')
+        self.kafka_username = os.getenv('KafkaUsername')
     def setUp(self):
         self.client = TosClientV2(self.ak, self.sk, self.endpoint, self.region, enable_crc=True, max_retry_count=2,
                                   control_endpoint=self.control_endpoint)

@@ -9,7 +9,7 @@ import string
 import random
 
 import crcmod
-from pytz import UTC
+from pytz import UTC, all_timezones_set
 
 import tos
 from tests.common import TosTestBase, clean_and_delete_bucket
@@ -20,7 +20,7 @@ from tos.consts import BUCKET_TYPE_HNS, BUCKET_TYPE_FNS
 from tos.credential import EnvCredentialsProvider
 from tos.enum import ACLType, StorageClassType, RedirectType, StatusType, PermissionType, CannedType, GranteeType, \
     VersioningStatusType, ProtocolType, AzRedundancyType, StorageClassInheritDirectiveType, CertStatus, \
-    InventoryFormatType, InventoryFrequencyType, InventoryIncludedObjType
+    InventoryFormatType, InventoryFrequencyType, InventoryIncludedObjType, AuthProtocolType
 from tos.exceptions import TosClientError, TosServerError
 from tos.models2 import CORSRule, Rule, Condition, Redirect, PublicSource, SourceEndpoint, MirrorHeader, \
     BucketLifeCycleRule, BucketLifeCycleExpiration, BucketLifeCycleNoCurrentVersionExpiration, \
@@ -31,9 +31,10 @@ from tos.models2 import CORSRule, Rule, Condition, Redirect, PublicSource, Sourc
     CloudFunctionConfiguration, Filter, FilterKey, FilterRule, RocketMQConfiguration, RocketMQConf, Transform, \
     ReplaceKeyPrefix, FetchHeaderToMetaDataRule, BucketEncryptionRule, ApplyServerSideEncryptionByDefault, \
     BucketLifecycleFilter, NotificationRule, NotificationFilter, NotificationFilterKey, NotificationFilterRule, \
-    NotificationDestination, DestinationVeFaaS, DestinationRocketMQ, KV, BucketInventoryConfiguration, \
+    NotificationDestination, DestinationVeFaaS, DestinationRocketMQ, DestinationKafka, KV, BucketInventoryConfiguration, \
     InventoryDestination, TOSBucketDestination, InventorySchedule, InventoryFilter, InventoryOptionalFields, \
-    AccessControlTranslation, PrivateSource, CommonSourceEndpoint, EndpointCredentialProvider, CredentialProvider
+    AccessControlTranslation, PrivateSource, CommonSourceEndpoint, EndpointCredentialProvider, CredentialProvider, Owner, \
+    AccessTimeTransition, NoncurrentVersionAccessTimeTransition
 
 tos.set_logger()
 
@@ -109,6 +110,7 @@ class TestBucket(TosTestBase):
 
         rsp = self.client.get_file_status(bucket=bucket_name, key=key)
         assert rsp.status_code == 200
+        assert rsp.etag is not None
 
         append_key_0 = "hns/test/0.txt"
         rsp = self.client.append_object(bucket=bucket_name, key=append_key_0, offset=0, content="hello0",
@@ -139,6 +141,13 @@ class TestBucket(TosTestBase):
         rsp = self.client.get_object(bucket=bucket_name, key=append_key)
         data = rsp.read().decode('utf-8')
         assert data == 'hello1hello2'
+
+        symlink_key = "hns/test/symlink"
+        self.client2.put_symlink(bucket_name, symlink_key, append_key)
+        rsp = self.client.get_file_status(bucket=bucket_name, key=symlink_key)
+        assert rsp.status_code == 200
+        assert rsp.object_type == 'Symlink'
+        assert rsp.etag is not None
 
         rsp = self.client.list_buckets(bucket_type=BUCKET_TYPE_HNS)
         assert rsp.status_code == 200
@@ -231,10 +240,15 @@ class TestBucket(TosTestBase):
     def test_bucket(self):
         bucket_name = self.bucket_name + "basic"
         self.bucket_delete.append(bucket_name)
+        res = self.client.does_bucket_exist(bucket_name)
+        self.assertFalse(res)
+
         out = self.client.create_bucket(bucket_name)
         self.assertIsNotNone(out.location)
 
         self.retry_assert(lambda: self.bucket_name + "basic" in (b.name for b in self.client.list_buckets().buckets))
+        res = self.client.does_bucket_exist(bucket_name)
+        self.assertTrue(res)
         head_out = self.client.head_bucket(bucket=bucket_name)
         self.assertIsNotNone(head_out.region)
         self.assertEqual(head_out.storage_class, StorageClassType.Storage_Class_Standard)
@@ -343,7 +357,7 @@ class TestBucket(TosTestBase):
     def test_bucket_with_acl(self):
         bucket_name = self.bucket_name + "-acl"
         for acl in ACLType:
-            if acl is not ACLType.ACL_Bucket_Owner_Entrusted and acl is not ACLType.ACL_Unknown:
+            if acl is not ACLType.ACL_Bucket_Owner_Entrusted and acl is not ACLType.ACL_Unknown and acl is not ACLType.ACL_Default:
                 self.client.create_bucket(bucket_name + acl.value, acl=acl)
                 self.client.delete_bucket(bucket_name + acl.value)
 
@@ -776,6 +790,40 @@ class TestBucket(TosTestBase):
         self.assertEqual(rule1.non_current_version_transitions[0].non_current_days, 30)
         self.assertEqual(rule1.non_current_version_transitions[0].storage_class, StorageClassType.Storage_Class_Ia)
 
+    def test_lifecycle_access_time(self):
+        bucket_name = self.bucket_name + 'lifecycle-access-time'
+        rules = []
+        rules.append(BucketLifeCycleRule(
+            id='1',
+            prefix='test',
+            status=StatusType.Status_Enable,
+            access_time_transitions=[AccessTimeTransition(
+                storage_class=StorageClassType.Storage_Class_Ia,
+                days=30
+            )],
+            non_current_version_access_time_transitions=[NoncurrentVersionAccessTimeTransition(
+                storage_class=StorageClassType.Storage_Class_Ia,
+                non_current_days=60
+            )],
+        ))
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        res = self.client.put_bucket_access_monitor(bucket=bucket_name, status=StatusType.Status_Enable)
+        assert res.status_code == 200
+        out = self.client.get_bucket_access_monitor(bucket=bucket_name)
+        self.assertEqual(out.status, StatusType.Status_Enable)
+
+        self.client.put_bucket_lifecycle(bucket=bucket_name, rules=rules)
+        out = self.client.get_bucket_lifecycle(bucket=bucket_name)
+        
+        self.assertEqual(len(out.rules), 1)
+        rule1 = out.rules[0]
+        self.assertEqual(rule1.id, '1')
+        self.assertEqual(rule1.access_time_transitions[0].days, 30)
+        self.assertEqual(rule1.access_time_transitions[0].storage_class, StorageClassType.Storage_Class_Ia)
+        self.assertEqual(rule1.non_current_version_access_time_transitions[0].non_current_days, 60)
+        self.assertEqual(rule1.non_current_version_access_time_transitions[0].storage_class, StorageClassType.Storage_Class_Ia)
+
     def test_lifecycle_filter(self):
         bucket_name = self.bucket_name + 'lifecycle'
         rules = []
@@ -840,6 +888,10 @@ class TestBucket(TosTestBase):
         self.assertIsNotNone(get_out.owner.id)
         self.assertEqual(get_out.grants[0].permission, PermissionType.Permission_Read)
         self.assertEqual(get_out.grants[0].grantee.canned, CannedType.Canned_All_Users)
+
+        self.client.put_bucket_acl(bucket_name, owner=Owner(self.account_id, ""), bucket_acl_delivered=True)
+        get_out = self.client.get_bucket_acl(bucket=bucket_name)
+        self.assertEqual(get_out.bucket_acl_delivered, True)
 
         try:
             self.client.put_bucket_acl(bucket_name+':8080', acl=ACLType.ACL_Public_Read)
@@ -1074,10 +1126,22 @@ class TestBucket(TosTestBase):
         with self.assertRaises(TosServerError):
             self.client.get_bucket_tagging(bucket_name)
 
+    def test_create_bucket_with_tagging(self):
+        bucket_name = self.bucket_name + "-create-tagging"
+        self.bucket_delete.append(bucket_name)
+
+        expected = {
+            'Key1': 'Value1',
+            'Key2': 'Value2'
+        }
+        self.client.create_bucket(bucket_name, tagging='Key1=Value1&Key2=Value2')
+        out = self.client.get_bucket_tagging(bucket_name)
+        self.assertIsNotNone(out.request_id)
+        self.assertEqual({t.key: t.value for t in out.tag_set}, expected)
+
     def test_bucket_project_name(self):
         bucket_name = self.bucket_name + "project-name"
         self.bucket_delete.append(bucket_name)
-
         project_name = 'default'
         self.client.create_bucket(bucket=bucket_name, project_name=project_name)
         head_out = self.client.head_bucket(bucket_name)
@@ -1188,7 +1252,8 @@ class TestBucket(TosTestBase):
             schedule=InventorySchedule(frequency=InventoryFrequencyType.InventoryFrequencyTypeWeekly),
             included_object_versions=InventoryIncludedObjType.InventoryIncludedObjTypeAll,
             inventory_filter=InventoryFilter(prefix="prefix2"),
-            optional_fields=InventoryOptionalFields(["Size","CRC64"])
+            optional_fields=InventoryOptionalFields(["Size","CRC64"]),
+            is_un_compressed=True
         )
         resp = self.client.put_bucket_inventory(bucket_name, bucket_inventory_configuration)
         self.assertEqual(resp.status_code, 200)
@@ -1197,10 +1262,12 @@ class TestBucket(TosTestBase):
         resp = self.client.get_bucket_inventory(bucket_name,inventory_id=inventory_id)
         self.assertEqual(resp.bucket_inventory_configuration.inventory_id, inventory_id)
         self.assertEqual(resp.bucket_inventory_configuration.is_enabled, True)
+        self.assertEqual(resp.bucket_inventory_configuration.is_un_compressed, False)
 
         resp = self.client.get_bucket_inventory(bucket_name, inventory_id=inventory_id2)
         self.assertEqual(resp.bucket_inventory_configuration.inventory_id, inventory_id2)
         self.assertEqual(resp.bucket_inventory_configuration.is_enabled, False)
+        self.assertEqual(resp.bucket_inventory_configuration.is_un_compressed, True)
         self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.format, InventoryFormatType.InventoryFormatCsv)
         self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.account_id, self.account_id)
         self.assertEqual(resp.bucket_inventory_configuration.destination.tos_bucket_destination.role, "TosArchiveTOSInventory")
@@ -1215,6 +1282,7 @@ class TestBucket(TosTestBase):
         bucket_inventory_configuration = resp.configurations[1]
         self.assertEqual(bucket_inventory_configuration.inventory_id, inventory_id2)
         self.assertEqual(bucket_inventory_configuration.is_enabled, False)
+        self.assertEqual(bucket_inventory_configuration.is_un_compressed, True)
         self.assertEqual(bucket_inventory_configuration.destination.tos_bucket_destination.format,
                          InventoryFormatType.InventoryFormatCsv)
         self.assertEqual(bucket_inventory_configuration.destination.tos_bucket_destination.account_id,
@@ -1319,6 +1387,40 @@ class TestBucket(TosTestBase):
         self.assertEqual(out.rules[0].destination.rocket_mq[0].instance_id,
                          rules[0].destination.rocket_mq[0].instance_id)
 
+    def test_bucket_notification_kafka(self):
+        bucket_name = self.bucket_name + "-notification-kafka"
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        rules = [
+            NotificationRule(
+                rule_id="test-kafka",
+                events=["tos:ObjectCreated:Post"],
+                destination=NotificationDestination(
+                    kafka=[
+                        DestinationKafka(
+                            role="trn:iam::{}:role/{}".format(self.account_id, self.mq_role_name),
+                            instance_id=self.kafka_instance_id,
+                            topic=self.kafka_topic,
+                            user=self.kafka_username,
+                            region=self.region
+                        )
+                    ]
+                )
+            )
+        ]
+        self.client.put_bucket_notification_type2(bucket_name, rules)
+        out = self.client.get_bucket_notification_type2(bucket_name)
+
+        self.assertTrue(out.version != '')
+        self.assertEqual(len(out.rules), 1)
+        self.assertEqual(out.rules[0].rule_id, rules[0].rule_id)
+        self.assertEqual(out.rules[0].destination.kafka[0].role, rules[0].destination.kafka[0].role)
+        self.assertEqual(out.rules[0].destination.kafka[0].instance_id, rules[0].destination.kafka[0].instance_id)
+        self.assertEqual(out.rules[0].destination.kafka[0].topic, rules[0].destination.kafka[0].topic)
+        self.assertEqual(out.rules[0].destination.kafka[0].user, rules[0].destination.kafka[0].user)
+        self.assertEqual(out.rules[0].destination.kafka[0].region, rules[0].destination.kafka[0].region)
+
     def retry_assert(self, func):
         for i in range(5):
             if func():
@@ -1338,6 +1440,112 @@ class TestBucket(TosTestBase):
                 if bucket.extranet_endpoint == self.endpoint:
                     task.submit(self.client, bucket.name)
         task.run()
+
+    def test_get_bucket_info(self):
+        bucket_name = self.bucket_name + '-info'
+        self.client.create_bucket(bucket_name, az_redundancy=AzRedundancyType.Az_Redundancy_Single_Az)
+        self.bucket_delete.append(bucket_name)
+
+        out = self.client.get_bucket_info(bucket_name)
+        self.assertEqual(out.status_code, 200)
+        self.assertEqual(out.bucket_info.name, bucket_name)
+        self.assertEqual(out.bucket_info.az_redundancy, AzRedundancyType.Az_Redundancy_Single_Az)
+        self.assertIsNotNone(out.bucket_info.owner)
+        self.assertIsNotNone(out.bucket_info.creation_date)
+
+        # Enable encryption
+        self.client.put_bucket_encryption(bucket_name, BucketEncryptionRule(
+            apply_server_side_encryption_by_default=ApplyServerSideEncryptionByDefault(
+                sse_algorithm="AES256"
+            )
+        ))
+
+        out = self.client.get_bucket_info(bucket_name)
+        self.assertEqual(out.status_code, 200)
+        self.assertIsNotNone(out.bucket_info.server_side_encryption_configuration)
+        self.assertIsNotNone(out.bucket_info.server_side_encryption_configuration.rule)
+        self.assertEqual(out.bucket_info.server_side_encryption_configuration.rule.apply_server_side_encryption_by_default.sse_algorithm, "AES256")
+
+    def test_put_bucket_custom_domain_with_protocol(self):
+        bucket_name = self.bucket_name + '-custom-domain-protocol'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        # Test with AuthProtocolType.AuthProtocolTos
+        domain1 = CustomDomainRule(domain='example-tos.test.com', protocol=AuthProtocolType.AuthProtocolTos)
+        self.client.put_bucket_custom_domain(bucket_name, domain1)
+
+        list_out = self.client.list_bucket_custom_domain(bucket_name)
+        self.assertEqual(len(list_out.rules), 1)
+        self.assertEqual(list_out.rules[0].domain, 'example-tos.test.com')
+        self.assertEqual(list_out.rules[0].protocol, AuthProtocolType.AuthProtocolTos)
+
+        # Test with AuthProtocolType.AuthProtocolS3
+        domain2 = CustomDomainRule(domain='example-s3.test.com', protocol=AuthProtocolType.AuthProtocolS3)
+        self.client.put_bucket_custom_domain(bucket_name, domain2)
+
+        list_out = self.client.list_bucket_custom_domain(bucket_name)
+        self.assertEqual(len(list_out.rules), 2)
+
+        # Verify protocols
+        domains = {r.domain: r for r in list_out.rules}
+        self.assertIn('example-tos.test.com', domains)
+        self.assertEqual(domains['example-tos.test.com'].protocol, AuthProtocolType.AuthProtocolTos)
+        self.assertIn('example-s3.test.com', domains)
+        self.assertEqual(domains['example-s3.test.com'].protocol, AuthProtocolType.AuthProtocolS3)
+
+        # Clean up
+        self.client.delete_bucket_custom_domain(bucket_name, domain='example-tos.test.com')
+        self.client.delete_bucket_custom_domain(bucket_name, domain='example-s3.test.com')
+
+    def test_get_bucket_type(self):
+        bucket_name = self.bucket_name + "type"
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name)
+
+        # First call, should trigger head_bucket
+        out = self.client.get_bucket_type(bucket_name)
+        self.assertEqual(out.status_code, 200)
+        self.assertEqual(out.bucket_type, BUCKET_TYPE_FNS)
+        self.assertIsNotNone(out.expire_at)
+        first_expire = out.expire_at
+
+        # Second call, should be from cache
+        out2 = self.client.get_bucket_type(bucket_name)
+        self.assertEqual(out2.status_code, 200)
+        self.assertEqual(out2.bucket_type, BUCKET_TYPE_FNS)
+        # expire_at should be the same as it is from cache
+        self.assertEqual(out2.expire_at, first_expire)
+
+        # Create HNS bucket
+        bucket_name_hns = self.bucket_name + "hns-type"
+        self.bucket_delete.append(bucket_name_hns)
+        self.client.create_bucket(bucket_name_hns, bucket_type="hns")
+        out_hns = self.client.get_bucket_type(bucket_name_hns)
+        self.assertEqual(out_hns.status_code, 200)
+        self.assertEqual(out_hns.bucket_type, BUCKET_TYPE_HNS)
+
+class TestBucketInventoryConfigurationModel(unittest.TestCase):
+    def test_inventory_is_uncompressed_serde(self):
+        bucket_inventory_configuration = BucketInventoryConfiguration(
+            inventory_id="test",
+            is_enabled=True,
+            destination=InventoryDestination(tos_bucket_destination=TOSBucketDestination(
+                format=InventoryFormatType.InventoryFormatCsv,
+                account_id="123",
+                role="role",
+                bucket="bucket")),
+            schedule=InventorySchedule(frequency=InventoryFrequencyType.InventoryFrequencyTypeDaily),
+            included_object_versions=InventoryIncludedObjType.InventoryIncludedObjTypeCurrent,
+            is_un_compressed=True
+        )
+
+        data = bucket_inventory_configuration.to_dict()
+        self.assertIn("IsUnCompressed", data)
+        self.assertEqual(data["IsUnCompressed"], True)
+
+        bucket_inventory_configuration_2 = BucketInventoryConfiguration.from_json(data)
+        self.assertEqual(bucket_inventory_configuration_2.is_un_compressed, True)
 
 
 def _get_clean_endpoint(endpoint):

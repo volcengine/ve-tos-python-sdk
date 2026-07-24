@@ -37,7 +37,7 @@ from .consts import (GMT_DATE_FORMAT, SLEEP_BASE_TIME, UNSIGNED_PAYLOAD,
 from .credential import StaticCredentialsProvider
 from .enum import (ACLType, AzRedundancyType, DataTransferType, HttpMethodType,
                    MetadataDirectiveType, StorageClassType, UploadEventType, VersioningStatusType, CopyEventType,
-                   TaggingDirectiveType,InventoryIncludedObjType,SemanticQueryType)
+                   TaggingDirectiveType,InventoryIncludedObjType,SemanticQueryType,StatusType)
 from .exceptions import TosClientError, TosServerError, TosError
 from .http import Request, Response
 from .json_utils import (to_complete_multipart_upload_request,
@@ -79,10 +79,13 @@ from .models2 import (AbortMultipartUpload, AppendObjectOutput,
                       GenericInput, GetFetchTaskOutput, BucketEncryptionRule, GetBucketEncryptionOutput,
                       DeleteBucketEncryptionOutput, PutBucketEncryptionOutput, PutBucketNotificationType2Output,
                       GetBucketNotificationType2Output, FileStatusOutput, ModifyObjectOutput, SetObjectExpiresOutput,
+                      SetObjectTimeOutput,
                       PutBucketInventoryOutput, GetBucketInventoryOutput, ListBucketInventoryOutput,
                       DeleteBucketInventoryOutput,
                       BucketInventoryConfiguration, QueryOrderType, AggregationRequest, QueryRequest, SimpleQueryOutput,
-                      SemanticQueryOutput, ReplicationRule)
+                      SemanticQueryOutput, ReplicationRule, PutBucketAccessMonitorOutput, GetBucketAccessMonitorOutput,
+                      GetBucketInfoOutput, GetBucketTypeOutput, PutBucketTrashOutput, PutQosPolicyOutput,
+                      GetQosPolicyOutput, DeleteQosPolicyOutput)
 from .thread_ctx import consume_body
 from .utils import (SizeAdapter, _make_copy_source,
                     _make_range_string, _make_upload_part_file_content,
@@ -105,7 +108,8 @@ BASE_RETRY_DELAY_TIME = 500
 
 
 def _get_create_bucket_headers(ACL: ACLType, AzRedundancy: AzRedundancyType, GrantFullControl, GrantRead, GrantReadACP,
-                               GrantWrite, GrantWriteACP, StorageClass: StorageClassType, ProjectName, BucketType):
+                               GrantWrite, GrantWriteACP, StorageClass: StorageClassType, ProjectName, BucketType,
+                               Tagging):
     headers = {}
     if ACL:
         headers['x-tos-acl'] = ACL.value
@@ -127,6 +131,8 @@ def _get_create_bucket_headers(ACL: ACLType, AzRedundancy: AzRedundancyType, Gra
         headers['x-tos-project-name'] = ProjectName
     if BucketType:
         headers['x-tos-bucket-type'] = BucketType
+    if Tagging:
+        headers['x-tos-tagging'] = Tagging
     return headers
 
 
@@ -921,7 +927,11 @@ class TosClientV2(TosClient):
                  user_agent_soft_name: str = None,
                  user_agent_soft_version: str = None,
                  user_agent_customized_key_values: Dict[str, str] = None,
-                 control_endpoint: str = ''):
+                 control_endpoint: str = '',
+                 follow_redirect_times: int = 0,
+                 client_crt: str = None,
+                 client_key:str = None,
+                 ca_crt:str = None):
 
         """创建client
 
@@ -953,6 +963,10 @@ class TosClientV2(TosClient):
         :param user_agent_soft_version: user_agent扩展，软件版本号
         :param user_agent_customized_key_values: user_agent扩展，自定义扩展 KV 键值对
         :param control_endpoint: TOS 服务端控制面域名，完整格式：https://{host}:{port}
+        :param follow_redirect_times: 跟随重定向次数，默认为0，即不跟随重定向
+        :param client_crt: 客户端证书路径
+        :param client_key: 客户端密钥路径
+        :param ca_crt: 服务端证书路径
         :return TosClientV2:
         """
 
@@ -1006,6 +1020,13 @@ class TosClientV2(TosClient):
         self.user_agent = _build_user_agent(USER_AGENT, user_agent_product_name, user_agent_soft_name,
                                             user_agent_soft_version, user_agent_customized_key_values, UNDEFINED)
 
+        self.follow_redirect_times = follow_redirect_times
+        if self.follow_redirect_times > 0:
+            self.session.max_redirects = self.follow_redirect_times
+
+        self.client_crt = client_crt
+        self.client_key = client_key
+        self.ca_crt = ca_crt
 
         # 通过 hook 机制实现in-request log
         self.session.hooks['response'].append(hook_request_log)
@@ -1032,7 +1053,8 @@ class TosClientV2(TosClient):
                        header: Dict = None,
                        query: Dict = None,
                        alternative_endpoint: str = None,
-                       is_custom_domain: bool = None):
+                       is_custom_domain: bool = None,
+                       is_signed_all_headers: bool = False):
         """生成签名url
 
         :param http_method: http方法
@@ -1043,6 +1065,7 @@ class TosClientV2(TosClient):
         :param query: 需要签名的http查询参数
         :param alternative_endpoint: 签名url:如果该参数不为空，则声称的 signed url 使用该参数作为域名，而不是使用 TOS Client 初始化参数中的 endpoint
         :param is_custom_domain: 是否使用自定义域名，默认为None
+        :param is_signed_all_headers: 是否签名所有头部信息，默认为False
         :return
         """
         # if not _is_valid_expires(expires):
@@ -1062,16 +1085,17 @@ class TosClientV2(TosClient):
             params=params,
             headers=header
         )
-        signed_url = self.auth.sign_url(req, expires)
+        signed_url = self.auth.sign_url(req, expires, is_signed_all_headers=is_signed_all_headers)
         signed_header = req.headers.copy()
         signed_header['host'] = signed_header['Host']
         signed_header.pop('Host')
         return PreSignedURLOutput(signed_url, signed_header)
 
-    def pre_signed_post_signature(self, conditions: [],
+    def pre_signed_post_signature(self, conditions: [] = None,
                                   bucket: str = None, key: str = None,
                                   expires: int = 3600,
-                                  content_length_range: ContentLengthRange = None) -> PreSignedPostSignatureOutPut:
+                                  content_length_range: ContentLengthRange = None,
+                                  multi_values_conditions: [] = None) -> PreSignedPostSignatureOutPut:
         """ 生成POST上传预签名
 
         :param conditions: 拼接到 policy中的条件组
@@ -1079,6 +1103,7 @@ class TosClientV2(TosClient):
         :param key: 对象名
         :param expires: 过期时间
         :param content_length_range: body长度范围
+        :param multi_values_conditions: 拼接到 policy中的多值条件组
         :return: PreSignedPostSignatureOutPut
         """
         # _is_valid_expires(expires)
@@ -1089,7 +1114,8 @@ class TosClientV2(TosClient):
                 raise TosClientError("invalid content_length_range")
 
         return self.auth.post_sign(bucket=bucket, key=key, expires=expires, conditions=conditions,
-                                   content_length_range=content_length_range)
+                                   content_length_range=content_length_range,
+                                   multi_values_conditions=multi_values_conditions)
 
     def pre_signed_policy_url(self, bucket: str, conditions=None,
                               expires: int = 3600,
@@ -1126,7 +1152,8 @@ class TosClientV2(TosClient):
                       az_redundancy: AzRedundancyType = None,
                       project_name: str = None,
                       bucket_type: str = BUCKET_TYPE_FNS,
-                      generic_input: GenericInput = None) -> CreateBucketOutput:
+                      generic_input: GenericInput = None,
+                      tagging: str = None) -> CreateBucketOutput:
         """创建bucket
 
         桶命名规范（其他接口同）：
@@ -1146,6 +1173,7 @@ class TosClientV2(TosClient):
         :param az_redundancy: 支持设置桶的 AZ 属性
         :param project_name: 设置桶所属项目名
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param tagging: 设置桶标签，格式为 key1=value1&key2=value2
         :return: CreateBucketOutput
         """
 
@@ -1156,7 +1184,7 @@ class TosClientV2(TosClient):
         headers = _get_create_bucket_headers(acl, az_redundancy,
                                              grant_full_control,
                                              grant_read, grant_read_acp, grant_write,
-                                             grant_write_acp, storage_class, project_name, bucket_type)
+                                             grant_write_acp, storage_class, project_name, bucket_type, tagging)
 
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value, headers=headers,
                          generic_input=generic_input)
@@ -1181,7 +1209,7 @@ class TosClientV2(TosClient):
         if project_name:
             headers['x-tos-project-name'] = project_name
 
-        bucket_type = self._get_bucket_type(bucket)
+        bucket_type = self._get_bucket_type(bucket).bucket_type
         if bucket_type == BUCKET_TYPE_HNS:
             # head
             resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Head.value,
@@ -1195,15 +1223,24 @@ class TosClientV2(TosClient):
 
         return FileStatusOutput(key, bucket_type, resp)
 
-    def _get_bucket_type(self, bucket: str = None):
-        bucket_type = self.bucket_type_cache.get(bucket)
-        if bucket_type is None:
-            rsp = self.head_bucket(bucket=bucket)
-            bucket_type = rsp.bucket_type
-            if bucket_type is None:
-                bucket_type = BUCKET_TYPE_FNS
-            self.bucket_type_cache.put(key=bucket, value=bucket_type)
-        return bucket_type
+    def _get_bucket_type(self, bucket: str = None,generic_input: GenericInput = None):
+        bucket_type_output = self.bucket_type_cache.get(bucket)
+        if bucket_type_output is None:
+            rsp = self.head_bucket(bucket=bucket,generic_input=generic_input)
+            bucket_type_output = GetBucketTypeOutput(rsp.resp)
+            expiration_sec = self.bucket_type_cache.default_expiration_sec
+            bucket_type_output.expire_at = datetime.fromtimestamp(time.time() + expiration_sec)
+            self.bucket_type_cache.put(key=bucket, value=bucket_type_output)
+        return bucket_type_output
+
+    def get_bucket_type(self, bucket: str, generic_input: GenericInput = None) -> GetBucketTypeOutput:
+        """获取桶类型信息
+
+        :param bucket: 桶名
+        :param generic_input: 通用请求参数
+        :return: GetBucketTypeOutput
+        """
+        return self._get_bucket_type(bucket,generic_input)
 
     def head_bucket(self, bucket: str, project_name: str = None,
                     generic_input: GenericInput = None) -> HeadBucketOutput:
@@ -1224,6 +1261,17 @@ class TosClientV2(TosClient):
                          generic_input=generic_input)
 
         return HeadBucketOutput(resp)
+
+    def get_bucket_info(self, bucket: str, generic_input: GenericInput = None) -> GetBucketInfoOutput:
+        """获取桶信息
+
+        :param bucket: 桶名
+        :param generic_input: 通用请求参数
+        :return: GetBucketInfoOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value,
+                         params={"bucketInfo": ""}, generic_input=generic_input)
+        return GetBucketInfoOutput(resp)
 
     def delete_bucket(self, bucket: str, generic_input: GenericInput = None):
         """删除桶.
@@ -1365,19 +1413,22 @@ class TosClientV2(TosClient):
         return CopyObjectOutput(resp)
 
     def delete_object(self, bucket: str, key: str, version_id: str = None, recursive: bool = None,
-                      generic_input: GenericInput = None):
+                      skip_trash: bool = None, generic_input: GenericInput = None):
         """删除对象
 
         :param bucket: 桶名
         :param key: 对象名
         :param version_id: 版本号
         :param recursive: 是否递归删除
+        :param skip_trash: 是否跳过回收站，直接删除，hns桶下有效
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
         :return: DeleteObjectOutput
         """
         params = {}
         if recursive is not None:
             params['recursive'] = str(recursive).lower()
+        if skip_trash is not None:
+            params['skipTrash'] = str(skip_trash).lower()
         if version_id:
             params['versionId'] = version_id
         resp = self._req(bucket=bucket, key=key, params=params, method=HttpMethodType.Http_Method_Delete.value,
@@ -1386,7 +1437,7 @@ class TosClientV2(TosClient):
         return DeleteObjectOutput(resp)
 
     def delete_multi_objects(self, bucket: str, objects: [], quiet: bool = False, recursive: bool = None,
-                             generic_input: GenericInput = None):
+                             skip_trash: bool = None, generic_input: GenericInput = None):
         """批量删除对象
 
         在开启版本控制的桶中，在调用DeleteMultiObjects接口来批量删除对象时，如果在Delete请求中未指定versionId，
@@ -1400,6 +1451,7 @@ class TosClientV2(TosClient):
         :param objects: 对象名
         :param quiet: 批删之后响应模式
         :param recursive: 是否递归删除，hns桶下有效
+        :param skip_trash: 是否跳过回收站，直接删除，hns桶下有效
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
         :return: DeleteObjectsOutput
         """
@@ -1412,6 +1464,8 @@ class TosClientV2(TosClient):
         params = {'delete': ''}
         if recursive is not None:
             params['recursive'] = str(recursive).lower()
+        if skip_trash is not None:
+            params['skipTrash'] = str(skip_trash).lower()
         resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Post.value, data=data, headers=headers,
                          params=params, generic_input=generic_input)
 
@@ -1545,7 +1599,8 @@ class TosClientV2(TosClient):
                        grant_write_acp: str = None,
                        owner: Owner = None,
                        grants: [] = None,
-                       generic_input: GenericInput = None) -> PutObjectACLOutput:
+                       generic_input: GenericInput = None,
+                       is_default: bool = None) -> PutObjectACLOutput:
         """设置对象acl
 
         :param bucket: 桶名
@@ -1565,8 +1620,8 @@ class TosClientV2(TosClient):
         :param owner: 桶的拥有者
         :param grants: 访问控制列表.
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
-
-        return: PutObjectACLOutput
+        :param is_default: 是否设置对象的 ACL 为继承桶 ACL。
+        :return: PutObjectACLOutput
         """
 
         check_enum_type(acl=acl)
@@ -1579,8 +1634,8 @@ class TosClientV2(TosClient):
 
         data = None
 
-        if grants:
-            body = to_put_acl_request(owner, grants)
+        if grants or is_default is not None:
+            body = to_put_acl_request(owner, grants, is_default)
             data = json.dumps(body)
 
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, params=params,
@@ -1923,7 +1978,7 @@ class TosClientV2(TosClient):
 
         params = {'append': '', 'offset': offset}
 
-        bucket_type = self._get_bucket_type(bucket)
+        bucket_type = self._get_bucket_type(bucket).bucket_type
         if bucket_type == BUCKET_TYPE_HNS:
             # modify_object时，如果对象不存在，创建对象
             if offset == 0:
@@ -2345,7 +2400,9 @@ class TosClientV2(TosClient):
                     cancel_hook=None,
                     traffic_limit: int = None,
                     generic_input: GenericInput = None,
-                    tagging:str = None):
+                    tagging: str = None,
+                    callback: str = None,
+                    callback_var: str = None):
 
         """断点续传上传
 
@@ -2382,6 +2439,8 @@ class TosClientV2(TosClient):
         :param traffic_limit: 单连接限速
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
         :param tagging: 指定上传对象的标签
+        :param callback: 回调
+        :param callback_var: 回调参数
         :return: CreateMultipartUploadOutput
         """
         check_client_encryption_algorithm(ssec_algorithm)
@@ -2495,7 +2554,7 @@ class TosClientV2(TosClient):
                                        upload_event_listener=upload_event_listener, cancel_hook=cancel_hook,
                                        rate_limiter=rate_limiter, size=size, ssec_algorithm=ssec_algorithm,
                                        ssec_key=ssec_key, ssec_key_md5=ssec_key_md5, traffic_limit=traffic_limit,
-                                       generic_input=generic_input)
+                                       generic_input=generic_input, callback=callback, callback_var=callback_var)
 
         result = uploader.execute()
 
@@ -3395,6 +3454,64 @@ class TosClientV2(TosClient):
                          generic_input=generic_input)
         return DeleteBucketLifecycleOutput(resp)
 
+    def put_bucket_access_monitor(self, bucket: str, status: StatusType,
+                                  generic_input: GenericInput = None) -> PutBucketAccessMonitorOutput:
+        """ 设置 bucket 的访问追踪配置
+
+        :param bucket: 桶名
+        :param status: 访问追踪状态
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: PutBucketAccessMonitorOutput
+        """
+        data = {'Status': status.value}
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Put.value,
+                         params={'accessmonitor': ''}, data=json.dumps(data), generic_input=generic_input)
+        return PutBucketAccessMonitorOutput(resp)
+
+    def get_bucket_access_monitor(self, bucket: str, generic_input: GenericInput = None) -> GetBucketAccessMonitorOutput:
+        """ 获取 bucket 的访问追踪配置
+
+        :param bucket: 桶名
+        :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :return: GetBucketAccessMonitorOutput
+        """
+        resp = self._req(bucket=bucket, method=HttpMethodType.Http_Method_Get.value,
+                         params={'accessmonitor': ''}, generic_input=generic_input)
+        return GetBucketAccessMonitorOutput(resp)
+    
+    def does_bucket_exist(self, bucket: str, generic_input: GenericInput = None) -> bool:
+        if bucket is None:
+            raise TosClientError('bucket is required')
+
+        try:
+            out = self.head_bucket(bucket=bucket, generic_input=generic_input)
+        except TosServerError as e:
+            if e.header is not None and get_value(e.header, 'x-tos-ec') == '0006-00000001':
+                return False
+            raise e
+
+        return out.status_code == 200
+
+    def does_object_exist(self, bucket: str, key: str, version_id: str = None,
+                         generic_input: GenericInput = None) -> bool:
+        if bucket is None:
+            raise TosClientError('bucket is required')
+        if key is None:
+            raise TosClientError('key is required')
+
+        try:
+            out = self.head_object(bucket=bucket, key=key, version_id=version_id, generic_input=generic_input)
+        except TosServerError as e:
+            if e.header is not None:
+                ec = get_value(e.header, 'x-tos-ec')
+                if ec == '0015-00000008':
+                    return True
+                if ec == '0017-00000003':
+                    return False
+            raise e
+
+        return out.status_code == 200
+
     def put_bucket_policy(self, bucket: str, policy: str, generic_input: GenericInput = None) -> PutBucketPolicyOutPut:
         """ 设置 bucket 的授权规则
 
@@ -3569,7 +3686,8 @@ class TosClientV2(TosClient):
                        grant_write_acp: str = None,
                        owner: Owner = None,
                        grants: [] = None,
-                       generic_input: GenericInput = None) -> PutBucketACLOutput:
+                       generic_input: GenericInput = None,
+                       bucket_acl_delivered: bool = None) -> PutBucketACLOutput:
         """ 设计 bucket 的 acl 规则
 
         :param bucket: 桶名
@@ -3588,6 +3706,7 @@ class TosClientV2(TosClient):
         :param owner: 桶的拥有者
         :param grants: 访问控制列表.
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param bucket_acl_delivered: 是否开启对象默认继承桶 ACL 功能。
         :return: PutBucketACLOutput
         """
         check_enum_type(acl=acl)
@@ -3597,8 +3716,8 @@ class TosClientV2(TosClient):
 
         data = None
 
-        if grants:
-            body = to_put_acl_request(owner, grants)
+        if grants or bucket_acl_delivered is not None:
+            body = to_put_acl_request(owner, grants, bucket_acl_delivered=bucket_acl_delivered)
             data = json.dumps(body)
 
         resp = self._req(bucket=bucket, params=params, method=HttpMethodType.Http_Method_Put.value, headers=headers,
@@ -3821,6 +3940,28 @@ class TosClientV2(TosClient):
         """
         resp = self._req(bucket=bucket, method='GET', params={'versioning': ''}, generic_input=generic_input)
         return GetBucketVersionOutput(resp)
+    
+    # 内部接口，尚未对齐横向设计
+    def _put_bucket_trash(self, bucket: str, trash_path: str = None, clean_interval: int = None,
+                          status: str = 'Enabled', generic_input: GenericInput = None) -> PutBucketTrashOutput:
+        """ 设置桶的回收站
+        """
+        data = {}
+        trash = {}
+        if trash_path:
+            trash['TrashPath'] = trash_path
+        if clean_interval is not None:
+            trash['CleanInterval'] = clean_interval
+        if status:
+            trash['Status'] = status
+
+        data = {'Trash': trash}
+        data = json.dumps(data)
+
+        headers = {"Content-MD5": to_str(base64.b64encode(hashlib.md5(to_bytes(data)).digest()))}
+        resp = self._req(bucket=bucket, method='PUT', data=data, params={'trash': ''},
+                         headers=headers, generic_input=generic_input)
+        return PutBucketTrashOutput(resp)
 
     def put_bucket_website(self, bucket: str,
                            redirect_all_requests_to: RedirectAllRequestsTo = None,
@@ -4043,18 +4184,27 @@ class TosClientV2(TosClient):
 
         return RestoreObjectOutput(resp)
 
-    def rename_object(self, bucket: str, key: str, new_key: str, generic_input: GenericInput = None):
+    def rename_object(self, bucket: str, key: str, new_key: str, generic_input: GenericInput = None,
+                      recursive_mkdir: bool = None, forbid_overwrite: bool = None):
         """ 重命名对象
         :param bucket: 桶名
         :param key: 对象名
         :param new_key: 新对象名
         :param generic_input: 通用请求参数，比如request_date设置签名UTC时间，代表本次请求Header中指定的 X-Tos-Date 头域
+        :param recursive_mkdir: 是否递归创建父目录（仅分层桶有效）
+        :param forbid_overwrite: 是否禁止覆盖同名对象
         :return: RenameObjectOutput
         """
         _is_valid_object_name(new_key)
         params = {"rename": "", "name": new_key}
+        headers = {}
+        if recursive_mkdir is not None:
+            headers['x-tos-recursive-mkdir'] = str(recursive_mkdir).lower()
+        if forbid_overwrite is not None:
+            headers['x-tos-forbid-overwrite'] = str(forbid_overwrite).lower()
+
         resp = self._req(bucket=bucket, key=key, method=HttpMethodType.Http_Method_Put.value, params=params,
-                         generic_input=generic_input)
+                         headers=headers, generic_input=generic_input)
         return RenameObjectOutput(resp)
 
     def get_bucket_rename(self, bucket: str, generic_input: GenericInput = None):
@@ -4108,6 +4258,21 @@ class TosClientV2(TosClient):
                          method=HttpMethodType.Http_Method_Put.value, generic_input=generic_input)
         return PutBucketEncryptionOutput(resp)
 
+    def put_qos_policy(self, account_id: str, policy: str, generic_input: GenericInput = None) -> PutQosPolicyOutput:
+        resp = self._req(key='qospolicy', method=HttpMethodType.Http_Method_Put.value, data=policy,
+                         generic_input=generic_input, account_id=account_id, is_control_req=True)
+        return PutQosPolicyOutput(resp)
+
+    def get_qos_policy(self, account_id: str, generic_input: GenericInput = None) -> GetQosPolicyOutput:
+        resp = self._req(key='qospolicy', method=HttpMethodType.Http_Method_Get.value,
+                         generic_input=generic_input, account_id=account_id, is_control_req=True)
+        return GetQosPolicyOutput(resp)
+
+    def delete_qos_policy(self, account_id: str, generic_input: GenericInput = None) -> DeleteQosPolicyOutput:
+        resp = self._req(key='qospolicy', method=HttpMethodType.Http_Method_Delete.value,
+                         generic_input=generic_input, account_id=account_id, is_control_req=True)
+        return DeleteQosPolicyOutput(resp)
+
     def get_bucket_encryption(self, bucket, generic_input: GenericInput = None) -> GetBucketEncryptionOutput:
         """ 获取桶加密规则
 
@@ -4157,6 +4322,32 @@ class TosClientV2(TosClient):
         resp = self._req(bucket,key,HttpMethodType.Http_Method_Post.value,data,params=params,generic_input=generic_input)
 
         return SetObjectExpiresOutput(resp)
+
+    def set_object_time(self, bucket: str, key: str,
+                        modify_timestamp: datetime = None,
+                        generic_input: GenericInput = None) -> SetObjectTimeOutput:
+        """ Set Object Time
+        :param bucket: Bucket name
+        :param key: Object name
+        :param modify_timestamp: Modify timestamp
+        :param generic_input: Generic input
+        :return: SetObjectTimeOutput
+        """
+        _is_valid_object_name(key)
+
+        params = {'time': ''}
+        headers = {}
+        if modify_timestamp is not None:
+            if isinstance(modify_timestamp, datetime):
+                headers['x-modify-timestamp'] = str(int(modify_timestamp.timestamp()))
+                headers['x-modify-timestamp-ns'] = str(modify_timestamp.microsecond * 1000)
+            else:
+                 raise TosClientError("modify_timestamp must be datetime")
+
+        resp = self._req(bucket, key, HttpMethodType.Http_Method_Post.value, headers=headers, params=params,
+                         generic_input=generic_input)
+
+        return SetObjectTimeOutput(resp)
 
     def put_bucket_inventory(self,bucket: str,
                              bucket_inventory_configuration:BucketInventoryConfiguration,
@@ -4265,7 +4456,9 @@ class TosClientV2(TosClient):
             raise exceptions.TosClientError("account_id can't be empty")
 
         headers = self._to_case_insensitive_dict(headers)
-        params = self._sanitize_dict(params)
+        params = self._sanitize_dict(params) or {}
+
+        headers, params = utils._merge_generic_input(headers, params, generic_input)
 
         if is_control_req:
             headers["x-tos-account-id"] = account_id
@@ -4322,6 +4515,18 @@ class TosClientV2(TosClient):
                     del req.headers['Host']
                 # 由于TOS的重定向场景尚未明确, 目前关闭重定向功能
                 stream = False if method == HttpMethodType.Http_Method_Head.value else True
+                allow_redirects = False
+                if method.upper() in ['GET', 'HEAD'] and self.follow_redirect_times > 0:
+                    allow_redirects = True
+
+                verify = self.enable_verify_ssl
+                if verify and self.ca_crt:
+                    verify = self.ca_crt
+
+                cert = None
+                if self.client_crt and self.client_key:
+                    cert = (self.client_crt, self.client_key)
+
                 res = self.session.request(method,
                                            req.url,
                                            data=req.data,
@@ -4329,9 +4534,10 @@ class TosClientV2(TosClient):
                                            params=req.params,
                                            stream=stream,
                                            timeout=(self.connection_time, self.socket_timeout),
-                                           verify=self.enable_verify_ssl,
+                                           verify=verify,
                                            proxies=self.proxies,
-                                           allow_redirects=False)
+                                           allow_redirects=allow_redirects,
+                                           cert=cert)
                 rsp = Response(res)
                 if rsp.status >= 300 or (rsp.status == 203 and func_name in CALLBACK_FUNCTION):
                     raise exceptions.make_server_error(rsp,key)

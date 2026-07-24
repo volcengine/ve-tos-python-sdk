@@ -236,7 +236,8 @@ class _BreakpointUploader(BreakpointBase):
                  parts_to_update, upload_id, record: Dict,
                  size, ssec_algorithm, ssec_key, ssec_key_md5, rate_limiter, cancel_hook,
                  datatransfer_listener, upload_event_listener,
-                 file_path, traffic_limit, generic_input):
+                 file_path, traffic_limit, generic_input,
+                 callback: str = None, callback_var: str = None):
 
         super(_BreakpointUploader, self).__init__(client=client, bucket=bucket, key=key, store=store, task_num=task_num,
                                                   parts_to_do=parts_to_update, record=record, size=size,
@@ -251,6 +252,8 @@ class _BreakpointUploader(BreakpointBase):
         self.ssec_algorithm = ssec_algorithm
         self.ssec_key = ssec_key
         self.ssec_key_md5 = ssec_key_md5
+        self.callback = callback
+        self.callback_var = callback_var
 
     def _cover_to_finished_parts(self):
         for p in self.record["parts_info"]:
@@ -291,7 +294,9 @@ class _BreakpointUploader(BreakpointBase):
         try:
             parts = _cover_to_uploaded_parts(self.finished_parts)
             result = self.client.complete_multipart_upload(self.bucket, self.key, self.upload_id, parts=parts,
-                                                           generic_input=self.generic_input)
+                                                           generic_input=self.generic_input,
+                                                           callback=self.callback,
+                                                           callback_var=self.callback_var)
             if self.client.enable_crc:
                 parts = sorted(self.finished_parts, key=lambda p: p.part_number)
                 download_crc = cal_crc_from_upload_parts(parts)

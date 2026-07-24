@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.parse
 from io import StringIO, BytesIO
+from tos.consts import BUCKET_TYPE_HNS, BUCKET_TYPE_FNS
 
 import crcmod
 import requests
@@ -77,6 +78,84 @@ class TestObject(TosTestBase):
         self.client.delete_object(bucket=bucket_name, key=key)
         self.client.delete_bucket(bucket=bucket_name)
 
+    def test_hns_list_objects(self):
+        bucket_name = self.bucket_name + "hns"
+        self.bucket_delete.append(bucket_name)
+        rsp = self.client.create_bucket(bucket_name, bucket_type="hns")
+
+        assert rsp.status_code == 200
+        rsp = self.client.head_bucket(bucket=bucket_name)
+        assert rsp.status_code == 200
+        assert rsp.bucket_type == BUCKET_TYPE_HNS
+        key = "hns/test/1.txt"
+
+        rsp = self.client.put_object(bucket=bucket_name, key=key, content="hello")
+        assert rsp.status_code == 200
+        rsp = self.client.head_object(bucket=bucket_name, key=key)
+        assert rsp.is_directory is False
+        rsp = self.client.head_object(bucket=bucket_name, key="hns/")
+        assert rsp.is_directory is True
+
+        rsp = self.client.list_objects(bucket=bucket_name, delimiter='/')
+        assert len(rsp.common_prefixes) == 1
+        assert rsp.common_prefixes[0].last_modified is not None
+
+        rsp = self.client.list_objects_type2(bucket=bucket_name, delimiter='/')
+        assert len(rsp.common_prefixes) == 1
+        assert rsp.common_prefixes[0].last_modified is not None
+
+    def test_delete_object_skip_trash(self):
+        bucket_name = self.bucket_name + "skiptrash"
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name, bucket_type="hns")
+        self.client._put_bucket_trash(bucket_name, trash_path=".Trash", clean_interval=1, status="Enabled")
+        time.sleep(30)
+
+        key = "test_skip_trash"
+        self.client.put_object(bucket_name, key, content="content")
+
+        # Test skip_trash=True
+        out = self.client.delete_object(bucket_name, key, skip_trash=True)
+        self.assertEqual(out.status_code, 204)
+        self.assertTrue(out.trash_path is None)
+
+        self.client.put_object(bucket_name, key, content="content")
+        # Test skip_trash=False
+        out = self.client.delete_object(bucket_name, key, skip_trash=False)
+        self.assertEqual(out.status_code, 204)
+        self.assertTrue(out.trash_path is not None)
+
+
+    def test_delete_multi_objects_skip_trash(self):
+        bucket_name = self.bucket_name + "multiskip"
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name, bucket_type="hns")
+        self.client._put_bucket_trash(bucket_name, trash_path=".Trash", clean_interval=1, status="Enabled")
+        time.sleep(30)
+
+        key1 = "test_skip_trash_1"
+        key2 = "test_skip_trash_2"
+        self.client.put_object(bucket_name, key1, content="content")
+        self.client.put_object(bucket_name, key2, content="content")
+
+        objects = [ObjectTobeDeleted(key1), ObjectTobeDeleted(key2)]
+
+        # Test skip_trash=True
+        out = self.client.delete_multi_objects(bucket_name, objects, skip_trash=True)
+        self.assertEqual(out.status_code, 200)
+        self.assertEqual(len(out.deleted), 2)
+        self.assertTrue(out.deleted[0].trash_path is None)
+
+
+        # Test skip_trash=False
+        self.client.put_object(bucket_name, key1, content="content")
+        self.client.put_object(bucket_name, key2, content="content")
+        out = self.client.delete_multi_objects(bucket_name, objects, skip_trash=False)
+        self.assertEqual(out.status_code, 200)
+        self.assertEqual(len(out.deleted), 2)
+        self.assertTrue(out.deleted[0].trash_path is not None)
+
+
     def test_object(self):
         bucket_name = self.bucket_name + '-test-object'
         self.bucket_delete.append(bucket_name)
@@ -84,6 +163,8 @@ class TestObject(TosTestBase):
         content = random_bytes(1024)
 
         self.client.create_bucket(bucket_name)
+        res = self.client.does_object_exist(bucket_name, key)
+        self.assertFalse(res)
         put_object_out = self.client.put_object(bucket_name, key=key, content=content)
         self.assertTrue(len(put_object_out.etag) > 0)
         self.assertTrue(len(put_object_out.id2) > 0)
@@ -1068,6 +1149,18 @@ class TestObject(TosTestBase):
         head_obj_out = self.client.head_object(bucket_name, key)
         self.assertEqual(head_obj_out.expiration, None)
 
+    def test_set_object_time(self):
+        bucket_name = self.bucket_name + '-test-set-object-time'
+        key = self.random_key()
+        self.client.create_bucket(bucket=bucket_name,bucket_type=BUCKET_TYPE_HNS)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object(bucket_name, key, content=random_bytes(5))
+        now = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+        self.client.set_object_time(bucket_name, key, modify_timestamp=now)
+
+        out = self.client.head_object(bucket_name, key)
+        self.assertEqual(out.last_modify_timestamp, now)
+
     def test_put_object_acl(self):
         bucket_name = self.bucket_name + '-test-put-object-acl'
         key = self.random_key('.js')
@@ -1078,9 +1171,35 @@ class TestObject(TosTestBase):
         grantee = Grantee(id="123", display_name="123", type=GranteeType.Grantee_User)
         grant = Grant(grantee, permission=PermissionType.Permission_Full_Control)
         grants.append(grant)
-        # self.client.put_object_acl(bucket_name, key, acl=ACLType.ACL_Bucket_Owner_Full_Control)
-        # self.client.get_object_acl(bucket_name, key)
         self.client.put_object_acl(bucket_name, key, owner=Owner("123", "test"), grants=grants)
+
+    def test_put_object_acl_read_non_list(self):
+        bucket_name = self.bucket_name + '-test-put-object-acl'
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object(bucket_name, key, content=random_bytes(5))
+        grants = []
+        grantee = Grantee(id="123", display_name="123", type=GranteeType.Grantee_User)
+        grant = Grant(grantee, permission=PermissionType.Permission_Read_Non_List)
+        grants.append(grant)
+        self.client.put_object_acl(bucket_name, key, owner=Owner("123", "test"), grants=grants)
+
+        res = self.client.get_object_acl(bucket_name, key)
+        assert res.status_code == 200
+        assert len(res.grants) == 1
+        assert res.grants[0].permission.name == 'Permission_Read_Non_List'
+
+    def test_put_object_acl_is_default(self):
+        bucket_name = self.bucket_name + '-test-put-object-acl-default'
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        self.client.put_object(bucket_name, key, content=random_bytes(5))
+
+        self.client.put_object_acl(bucket_name, key, owner=Owner(self.account_id, ""), is_default=True)
+        out = self.client.get_object_acl(bucket_name, key)
+        self.assertEqual(out.is_default, True)
 
     def test_put_with_chunked_invalid_length(self):
         bucket_name = self.bucket_name + '-put-with-chunked-invalid-length'
@@ -1404,6 +1523,29 @@ class TestObject(TosTestBase):
         resp = self.client.get_object(bucket_name, key)
         self.assertEqual(resp.status_code, 200)
 
+        # MultiValuesCondition test
+        from tos.models2 import PostSignatureMultiValuesCondition
+        key = self.random_key()
+        condition = [PostSignatureMultiValuesCondition(key='x-tos-meta-tag', values=['a', 'b'], operator='in')]
+        out4 = self.client.pre_signed_post_signature(bucket=bucket_name, key=key, multi_values_conditions=condition)
+        form4 = {'key': key, 'x-tos-algorithm': out4.algorithm, 'bucket': bucket_name, 'x-tos-date': out4.date,
+                 'policy': out4.policy, 'x-tos-signature': out4.signature, 'x-tos-credential': out4.credential,
+                 'x-tos-meta-tag': 'a'}
+        resp = requests.post(url=self.client._make_virtual_host_url(bucket_name),
+                             files={"upload_file": open(file_name, 'rb')},
+                             data=form4)
+        resp.close()
+        self.assertEqual(resp.status_code, 204)
+
+        form4['x-tos-meta-tag'] = 'c'
+        resp = requests.post(url=self.client._make_virtual_host_url(bucket_name),
+                             files={"upload_file": open(file_name, 'rb')},
+                             data=form4)
+        resp.close()
+        self.assertEqual(resp.status_code, 403)
+
+        os.remove(file_name)
+
     def test_pre_signed_policy_url(self):
         bucket_name = self.bucket_name + 'test-policy-url'
         self.client.create_bucket(bucket_name)
@@ -1533,6 +1675,55 @@ class TestObject(TosTestBase):
         self.assertEqual(out.read(), content[0:101])
         self.assertEqual(2,out.tagging_count)
 
+    def test_pre_signed_url_with_all_headers(self):
+        bucket_name = self.bucket_name + 'test-presigned-all-headers'
+        self.client.create_bucket(bucket_name)
+        self.bucket_delete.append(bucket_name)
+        key = 'test-key'
+        self.client.put_object(bucket_name, key, content=b'test-content')
+
+        headers = {
+            'x-tos-meta-test': 'test-value',
+            'Custom-Header': 'custom-value'
+        }
+
+        # 1. Test with is_signed_all_headers=True
+        # When is_signed_all_headers=True, all headers including 'Custom-Header' should be signed.
+        out = self.client.pre_signed_url(HttpMethodType.Http_Method_Get, bucket_name, key, header=headers, is_signed_all_headers=True)
+        signed_url = out.signed_url
+        
+        # Verify signed headers in URL params
+        import urllib.parse
+        parsed = urllib.parse.urlparse(signed_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        signed_headers_list = params['X-Tos-SignedHeaders'][0].split(';')
+        self.assertIn('custom-header', signed_headers_list)
+        self.assertIn('x-tos-meta-test', signed_headers_list)
+
+        # Send request with headers - should succeed
+        resp = requests.get(signed_url, headers=headers)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b'test-content')
+
+        # Test failure case: Missing signed header
+        resp_missing_header = requests.get(signed_url, headers={'x-tos-meta-test': 'test-value'})
+        self.assertNotEqual(resp_missing_header.status_code, 200)
+
+        # 2. Test with is_signed_all_headers=False (default)
+        out_default = self.client.pre_signed_url(HttpMethodType.Http_Method_Get, bucket_name, key, header=headers)
+        signed_url_default = out_default.signed_url
+        
+        parsed_default = urllib.parse.urlparse(signed_url_default)
+        params_default = urllib.parse.parse_qs(parsed_default.query)
+        signed_headers_list_default = params_default['X-Tos-SignedHeaders'][0].split(';')
+        
+        self.assertNotIn('custom-header', signed_headers_list_default)
+        self.assertIn('x-tos-meta-test', signed_headers_list_default) 
+
+        # Send request with all headers - should still succeed 
+        resp_default = requests.get(signed_url_default, headers=headers)
+        self.assertEqual(resp_default.status_code, 200)
+
     def test_non_file(self):
         bucket_name = self.bucket_name + 'non-file'
         key = self.random_key('.js')
@@ -1652,6 +1843,38 @@ class TestObject(TosTestBase):
         bucket_rename_output = self.client.get_bucket_rename(bucket=bucket_name)
         self.assertEqual(bucket_rename_output.rename_enable, False)
 
+    def test_rename_object_with_params(self):
+        bucket_name = self.bucket_name + '-rename-params'
+        content = random_bytes(1024)
+        key = self.random_key('.js')
+        self.client.create_bucket(bucket=bucket_name)
+        self.bucket_delete.append(bucket_name)
+
+        self.client.put_bucket_rename(bucket=bucket_name, rename_enable=True)
+        time.sleep(30)
+
+        # Test forbid_overwrite=True
+        new_key = self.random_key('.js')
+        self.client.put_object(bucket=bucket_name, key=key, content=content)
+        self.client.put_object(bucket=bucket_name, key=new_key, content=b'existing')
+
+        with self.assertRaises(TosServerError) as cm:
+            self.client.rename_object(bucket=bucket_name, key=key, new_key=new_key, forbid_overwrite=True)
+        self.assertEqual(cm.exception.status_code, 409)
+
+        # Test forbid_overwrite=False (should succeed)
+        self.client.rename_object(bucket=bucket_name, key=key, new_key=new_key, forbid_overwrite=False)
+        get_object_out = self.client.get_object(bucket=bucket_name, key=new_key)
+        self.assertEqual(get_object_out.read(), content)
+
+        # Test recursive_mkdir (just parameter passing, effect depends on bucket type)
+        key2 = self.random_key('.js')
+        new_key2 = "folder/" + self.random_key('.js')
+        self.client.put_object(bucket=bucket_name, key=key2, content=content)
+        self.client.rename_object(bucket=bucket_name, key=key2, new_key=new_key2, recursive_mkdir=True)
+        get_object_out = self.client.get_object(bucket=bucket_name, key=new_key2)
+        self.assertEqual(get_object_out.read(), content)
+
     def test_custom_domain(self):
         bucket_name = self.bucket_name + '-custom-domain'
         self.client.create_bucket(bucket=bucket_name)
@@ -1690,6 +1913,12 @@ class TestObject(TosTestBase):
         content = random_bytes(100)
         self.client2.put_object(bucket_name, dst_key, content=content)
         self.client2.put_symlink(bucket_name, symlink_key, dst_key)
+
+        rsp = self.client.get_file_status(bucket=bucket_name, key=symlink_key)
+        assert rsp.status_code == 200
+        assert rsp.etag is not None
+        assert rsp.object_type == 'Symlink'
+
         get_symlink_out = self.client2.get_symlink(bucket_name, symlink_key)
         self.assertEqual(get_symlink_out.symlink_target_key, dst_key)
         get_out = self.client2.get_object(bucket_name, symlink_key)
@@ -1927,6 +2156,40 @@ class TestObject(TosTestBase):
     def random_key(self, suffix=''):
         key = self.prefix + random_string(12) + suffix
         return key
+
+    def test_upload_file_with_callback(self):
+        bucket_name = self.bucket_name + '-upload-callback'
+        self.bucket_delete.append(bucket_name)
+        self.client.create_bucket(bucket_name)
+        file_name = self.random_filename()
+        content = random_bytes(1024 * 1024 * 2)
+        with open(file_name, 'wb') as f:
+            f.write(content)
+
+        key = self.random_key()
+
+        callback_url = self.callback_url
+        callback_body = '{"bucket":${bucket},"object":${object},"key1":${x:key1}}'
+        callback_param = {
+            "callbackUrl": callback_url,
+            "callbackBody": callback_body,
+            "callbackBodyType": "application/json",
+        }
+        callback = json.dumps(callback_param)
+        callback_var_param = {"x:key1": "ceshi"}
+        callback_var = json.dumps(callback_var_param)
+
+        out = self.client.upload_file(
+            bucket_name,
+            key,
+            file_name,
+            part_size=5 * 1024 * 1024,
+            task_num=5,
+            callback=base64.b64encode(callback.encode('utf-8')).decode('utf-8'),
+            callback_var=base64.b64encode(callback_var.encode('utf-8')).decode('utf-8')
+        )
+        self.assertEqual(out.status_code, 200)
+        os.remove(file_name)
 
 
 if __name__ == '__main__':
